@@ -582,8 +582,9 @@ class IntegerStreamingConverter : public IndexConverter {
     // The extra quantized params storage size to save for each vector
     constexpr size_t kExtraSize = 4 * sizeof(float);
     constexpr size_t kAdditionalInt32 = sizeof(int32_t);
-    return type == IndexMeta::DataType::DT_INT8 ? (kExtraSize + kAdditionalInt32)
-                                                  : (kExtraSize * 2);
+    return type == IndexMeta::DataType::DT_INT8
+               ? (kExtraSize + kAdditionalInt32)
+               : (kExtraSize * 2);
   }
 
   //! Members
