@@ -1,5 +1,7 @@
 #include "turbo/euclidean/avx512_impl.h"
+#if defined(__AVX512VNNI__)
 #include <immintrin.h>
+#endif
 #include <array>
 
 namespace zvec::turbo {
