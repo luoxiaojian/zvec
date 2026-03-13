@@ -15,6 +15,10 @@ static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
 
 #define FMA_INT8_GENERAL(m, q, sum) sum += static_cast<float>(m * q);
 
+// This is done to align with the previous behavior
+// (DistanceMatrixCompute<SquaredEuclidean, int8_t>), where SquaredEuclidean
+// assumes no preprocessing on the query, and both the query and data are of
+// type int8_t.
 static __attribute__((always_inline)) void ip_int8_distance_avx512_vnni(
     const void *a, const void *b, int size, float *distance) {
   const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
