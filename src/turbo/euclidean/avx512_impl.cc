@@ -5,8 +5,7 @@
 namespace zvec::turbo {
 
 #if defined(__AVX512VNNI__)
-static __attribute__((always_inline)) int32_t HorizontalAdd_INT32_V256(
-    __m256i v) {
+static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
   __m256i x1 = _mm256_hadd_epi32(v, v);
   __m256i x2 = _mm256_hadd_epi32(x1, x1);
   __m128i x3 = _mm256_extractf128_si256(x2, 1);
