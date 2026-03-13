@@ -18,6 +18,7 @@
 #include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "metric_params.h"
 #include "quantized_integer_metric_batch.h"
 #include "quantized_integer_metric_matrix.h"
@@ -95,6 +96,12 @@ class QuantizedIntegerMetric : public IndexMetric {
     switch (origin_metric_type_) {
       case MetricType::kSquaredEuclidean:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
+          auto turbo_ret = turbo::get_distance_func(
+              turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+              turbo::QuantizeType::kDefault);
+          if (turbo_ret) {
+            return turbo_ret;
+          }
           return DistanceMatrixCompute<SquaredEuclidean, int8_t>(m, n);
         }
         if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
@@ -146,6 +153,12 @@ class QuantizedIntegerMetric : public IndexMetric {
     switch (origin_metric_type_) {
       case MetricType::kSquaredEuclidean:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
+          auto turbo_ret = turbo::get_batch_distance_func(
+              turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+              turbo::QuantizeType::kDefault);
+          if (turbo_ret) {
+            return turbo_ret;
+          }
           return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
               BaseDistanceBatchWithScoreUnquantized<SquaredEuclidean, int8_t,
                                                     12, 2>::ComputeBatch);
@@ -268,6 +281,12 @@ class QuantizedIntegerMetric : public IndexMetric {
           int8_t, 1, 1>::GetQueryPreprocessFunc();
     } else if (origin_metric_type_ == MetricType::kSquaredEuclidean &&
                meta_.data_type() == IndexMeta::DataType::DT_INT8) {
+      auto turbo_ret = turbo::get_query_preprocess_func(
+          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+          turbo::QuantizeType::kDefault);
+      if (turbo_ret) {
+        return turbo_ret;
+      }
       return SquaredEuclideanDistanceBatchWithScoreUnquantized<
           int8_t, 1, 1>::GetQueryPreprocessFunc();
     }
