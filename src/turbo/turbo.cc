@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <iostream>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
 #include "euclidean/avx512_impl.h"

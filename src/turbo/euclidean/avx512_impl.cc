@@ -251,11 +251,11 @@ __attribute__((always_inline)) void ip_int8_batch_distance_avx512_vnni_impl(
     temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
   }
   for (; dim < dimensionality; ++dim) {
-    uint q = reinterpret_cast<const uint8_t *>(query)[dim];
+    int q = static_cast<int>(reinterpret_cast<const uint8_t *>(query)[dim]);
     for (int i = 0; i < batch_size; ++i) {
       temp_results[i] +=
           q *
-          static_cast<int>(reinterpret_cast<const uint8_t *>(vectors[i])[dim]);
+          static_cast<int>(reinterpret_cast<const int8_t *>(vectors[i])[dim]);
     }
   }
   for (int i = 0; i < batch_size; ++i) {
@@ -336,13 +336,13 @@ void l2_int8_query_preprocess_avx512_vnni(void *query, size_t dim) {
   const int8_t *input = reinterpret_cast<const int8_t *>(query);
   uint8_t *output = reinterpret_cast<uint8_t *>(query);
 
-  // // AVX512 constant: 128 in each byte (cast to int8_t, which becomes -128
-  // // in signed representation, but addition works correctly due to two's
-  // // complement arithmetic)
+  // AVX512 constant: 128 in each byte (cast to int8_t, which becomes -128
+  // in signed representation, but addition works correctly due to two's
+  // complement arithmetic)
   const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(128));
-  //
+
   int i = 0;
-  // // Process 64 bytes at a time using AVX512
+  // Process 64 bytes at a time using AVX512
   for (; i + 64 <= d; i += 64) {
     __m512i data =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(input + i));
