@@ -240,15 +240,13 @@ __attribute__((always_inline)) void ip_int8_batch_distance_avx512_vnni_impl(
       data_regs[i] = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(
           reinterpret_cast<const int8_t *>(vectors[i]) + dim));
     }
-    if (prefetch_ptrs[0]) {
-      for (int i = 0; i < batch_size; ++i) {
+    for (int i = 0; i < batch_size; ++i) {
+      if (prefetch_ptrs[i]) {
         _mm_prefetch(
             reinterpret_cast<const char *>(
                 reinterpret_cast<const int8_t *>(prefetch_ptrs[i]) + dim),
             _MM_HINT_T0);
       }
-    }
-    for (int i = 0; i < batch_size; ++i) {
       accs[i] = _mm512_dpbusd_epi32(accs[i], q, data_regs[i]);
     }
   }
