@@ -226,14 +226,11 @@ if(NOT AUTO_DETECT_ARCH)
 
 else()
   # AUTO DETECT
-  # Heuristic: detect host architecture and probe appropriate flags.
-  # For x86, per-file march flags are managed via setup_compiler_march_for_x86()
-  # in each library's CMakeLists.txt, so no global -march is set here to avoid
-  # conflicting with per-file flags (e.g. -march=icelake, -march=core-avx2).
+  # Heuristic: detect host architecture and probe appropriate flags
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     _setup_armv8_march()
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
-    # intentionally no global -march for x86 in AUTO_DETECT_ARCH mode
+    _setup_x86_march()
   else()
     message(WARNING "Unknown host architecture: ${CMAKE_SYSTEM_PROCESSOR}; no -march= set.")
   endif()
