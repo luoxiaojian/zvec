@@ -16,19 +16,7 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
     endif()
 endif()
 
-# Collect source files explicitly
-set(TURBO_SRCS
-    ${CMAKE_CURRENT_SOURCE_DIR}/turbo.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/euclidean/avx2_impl.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/euclidean/avx512_impl.cc
-)
-
-set(TURBO_HDRS
-    ${CMAKE_CURRENT_SOURCE_DIR}/euclidean/avx2_impl.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/euclidean/avx512_impl.h
-)
-
-set(ALL_SRCS ${TURBO_SRCS} ${TURBO_HDRS})
+file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
 cc_library(
     NAME zvec_turbo STATIC STRICT PACKED
