@@ -26,9 +26,6 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
         if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
           return l2_int8_distance_avx512_vnni;
         }
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-          return nullptr;
-        }
       }
     }
   }
@@ -44,9 +41,6 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
         if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
           return l2_int8_batch_distance_avx512_vnni;
         }
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-          return nullptr;
-        }
       }
     }
   }
@@ -61,9 +55,6 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
       if (quantize_type == QuantizeType::kDefault) {
         if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
           return l2_int8_query_preprocess_avx512_vnni;
-        }
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-          return nullptr;
         }
       }
     }
