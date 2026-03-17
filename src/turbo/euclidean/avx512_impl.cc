@@ -278,7 +278,7 @@ static __attribute__((always_inline)) void ip_int8_batch_distance_avx512_vnni(
   for (; i + batch_size <= n; i += batch_size) {
     std::array<const void *, batch_size> prefetch_ptrs;
     for (int j = 0; j < batch_size; ++j) {
-      if (i + j + batch_size * prefetch_step <= n) {
+      if (i + j + batch_size * prefetch_step < n) {
         prefetch_ptrs[j] = vectors[i + j + batch_size * prefetch_step];
       } else {
         prefetch_ptrs[j] = nullptr;
