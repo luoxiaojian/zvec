@@ -9,6 +9,10 @@ if(NOT ANDROID)
             PROPERTIES
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
         )
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        # ARM64 architecture - no special march flags needed for now
+        # NEON implementations can be added here if needed
+        message(STATUS "turbo: ARM64 detected, skipping x86-specific optimizations")
     endif()
 endif()
 
