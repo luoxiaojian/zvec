@@ -42,7 +42,7 @@ static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
 // The result is written to `*distance` as a float.
 // Both `a` and `b` must point to int8_t arrays.
 static __attribute__((always_inline)) void ip_int8_avx512_vnni(
-    const void *a, const void *b, int size, float *distance) {
+    const void *a, const void *b, size_t size, float *distance) {
   const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
   const __m128i ONES_INT16_SSE = _mm_set1_epi32(0x00010001);
 
@@ -212,7 +212,7 @@ static __attribute__((always_inline)) void ip_int8_avx512_vnni(
 // by adding 128 to each element. The metadata tail beyond `original_dim` is
 // left untouched. This prepares the query for use with dpbusd (uint8 * int8).
 static __attribute__((always_inline)) void shift_int8_to_uint8_avx512(
-    void *query, int original_dim) {
+    void *query, size_t original_dim) {
   const int8_t *input = reinterpret_cast<const int8_t *>(query);
   uint8_t *output = reinterpret_cast<uint8_t *>(query);
 
@@ -239,7 +239,7 @@ template <int batch_size>
 __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
     const void *query, const void *const *vectors,
     const std::array<const void *, batch_size> &prefetch_ptrs,
-    int dimensionality, float *distances) {
+    size_t dimensionality, float *distances) {
   __m512i accs[batch_size];
   for (int i = 0; i < batch_size; ++i) {
     accs[i] = _mm512_setzero_si512();
@@ -282,7 +282,7 @@ __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
 
 // Dispatch batched inner product over all `n` vectors with prefetching.
 static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
-    const void *const *vectors, const void *query, int n, int dim,
+    const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances) {
   static constexpr int batch_size = 2;
   static constexpr int prefetch_step = 2;
