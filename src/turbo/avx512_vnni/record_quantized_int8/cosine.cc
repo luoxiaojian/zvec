@@ -110,7 +110,7 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
     // int8_sum is stored as the 5th int-sized field after the 4 floats.
     int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
     float &result = distances[i];
-    result -= static_cast<float>(128 * int8_sum);
+    result -= 128.0f * static_cast<float>(int8_sum);
 
     // Dequantize and compute cosine distance:
     //   cosine_dist = -(ma * qa * ip + mb * qa * qs + qb * ma * ms
