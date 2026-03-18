@@ -35,10 +35,12 @@
 //
 // Total tail size: 4 floats + 1 int = 20 bytes, so dim = original_dim + 20.
 //
-// Single-vector path: query remains int8, use sign+maddubs (ip_int8_avx512_vnni).
-// Batch path: query is preprocessed to uint8 (+128 shift) so that the
+// Single-vector path: query remains int8, use sign+maddubs
+// (ip_int8_avx512_vnni). Batch path: query is preprocessed to uint8 (+128
+// shift) so that the
 //   AVX512-VNNI dpbusd instruction (ip_int8_batch_avx512_vnni) can be used.
-//   The bias introduced by the shift is corrected via 128 * int8_sum per vector.
+//   The bias introduced by the shift is corrected via 128 * int8_sum per
+//   vector.
 
 namespace zvec::turbo {
 
