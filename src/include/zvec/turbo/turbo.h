@@ -27,6 +27,8 @@ using QueryPreprocessFunc =
 
 enum class MetricType {
   kSquaredEuclidean,
+  kCosine,
+  kMipsSquaredEuclidean,
   kUnknown,
 };
 

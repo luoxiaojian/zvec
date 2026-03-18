@@ -6,6 +6,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
         setup_compiler_march_for_x86(TURBO_MARCH_FLAG_SSE TURBO_MARCH_FLAG_AVX2 TURBO_MARCH_FLAG_AVX512)
         set_source_files_properties(
             ${CMAKE_CURRENT_SOURCE_DIR}/euclidean/avx512_impl.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/cosine/avx512_impl.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/mips_euclidean/avx512_impl.cc
             PROPERTIES
             COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
         )
