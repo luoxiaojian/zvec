@@ -36,7 +36,7 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-void squared_euclidean_int8_distance(const void *a, const void *b, int dim,
+void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
                                      float *distance) {
 #if defined(__AVX512VNNI__)
   const int original_dim = dim - 20;
@@ -75,8 +75,8 @@ void squared_euclidean_int8_distance(const void *a, const void *b, int dim,
 }
 
 void squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                           const void *query, int n, int dim,
-                                           float *distances) {
+                                           const void *query, size_t n,
+                                           size_t dim, float *distances) {
 #if defined(__AVX512VNNI__)
   const int original_dim = dim - 20;
   if (original_dim <= 0) {

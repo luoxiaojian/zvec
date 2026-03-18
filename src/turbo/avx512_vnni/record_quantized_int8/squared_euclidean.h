@@ -22,7 +22,7 @@ namespace zvec::turbo::avx512_vnni {
 // vector pair.
 // `dim` includes the original vector bytes plus a 20-byte metadata tail
 // (4 floats: scale_a, bias_a, sum_a, sum2_a).
-void squared_euclidean_int8_distance(const void *a, const void *b, int dim,
+void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
                                      float *distance);
 
 // Batch version of squared_euclidean_int8_distance.
@@ -30,8 +30,8 @@ void squared_euclidean_int8_distance(const void *a, const void *b, int dim,
 // squared_euclidean_int8_query_preprocess (int8 -> uint8 via +128 shift)
 // before calling this function.
 void squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                           const void *query, int n, int dim,
-                                           float *distances);
+                                           const void *query, size_t n,
+                                           size_t dim, float *distances);
 
 // Preprocess the query vector in-place (shift int8 -> uint8 by adding 128)
 // for the batch path. Only the original_dim bytes are shifted; the metadata

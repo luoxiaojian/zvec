@@ -22,14 +22,14 @@ namespace zvec::turbo::avx512_vnni {
 // a single quantized INT8 vector pair.
 // `dim` includes the original vector bytes plus a 24-byte metadata tail
 // (3 floats: scale_a, bias_a, sum_a).
-void cosine_int8_distance(const void *a, const void *b, int dim,
+void cosine_int8_distance(const void *a, const void *b, size_t dim,
                           float *distance);
 
 // Batch version of cosine_int8_distance.
 // The query must have been preprocessed by cosine_int8_query_preprocess
 // (int8 -> uint8 via +128 shift) before calling this function.
 void cosine_int8_batch_distance(const void *const *vectors, const void *query,
-                                int n, int dim, float *distances);
+                                size_t n, size_t dim, float *distances);
 
 // Preprocess the query vector in-place (shift int8 -> uint8 by adding 128)
 // so that the AVX512-VNNI dpbusd instruction can be used for inner product.

@@ -36,7 +36,7 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-void cosine_int8_distance(const void *a, const void *b, int dim,
+void cosine_int8_distance(const void *a, const void *b, size_t dim,
                           float *distance) {
 #if defined(__AVX512VNNI__)
   // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
@@ -78,7 +78,7 @@ void cosine_int8_distance(const void *a, const void *b, int dim,
 }
 
 void cosine_int8_batch_distance(const void *const *vectors, const void *query,
-                                int n, int dim, float *distances) {
+                                size_t n, size_t dim, float *distances) {
 #if defined(__AVX512VNNI__)
   // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
   const int original_dim = dim - 24;
