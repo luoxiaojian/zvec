@@ -23,8 +23,8 @@
 #pragma once
 
 #if defined(__AVX512VNNI__)
-#include <array>
 #include <immintrin.h>
+#include <array>
 
 namespace zvec::turbo::internal {
 
@@ -294,9 +294,8 @@ static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
         prefetch_ptrs[j] = nullptr;
       }
     }
-    ip_int8_batch_avx512_vnni_impl<batch_size>(query, &vectors[i],
-                                               prefetch_ptrs, dim,
-                                               distances + i);
+    ip_int8_batch_avx512_vnni_impl<batch_size>(
+        query, &vectors[i], prefetch_ptrs, dim, distances + i);
   }
   for (; i < n; i++) {
     std::array<const void *, 1> prefetch_ptrs{nullptr};
