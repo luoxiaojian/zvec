@@ -16,8 +16,8 @@
 // so that all AVX512-VNNI intrinsics and the inlined inner product kernels from
 // common.h are compiled with the correct target ISA.
 
-#include "turbo/avx512_vnni/record_quantized_int8/cosine.h"
-#include "turbo/avx512_vnni/record_quantized_int8/common.h"
+#include "avx512_vnni/record_quantized_int8/cosine.h"
+#include "avx512_vnni/record_quantized_int8/common.h"
 #if defined(__AVX512VNNI__)
 #include <immintrin.h>
 #endif

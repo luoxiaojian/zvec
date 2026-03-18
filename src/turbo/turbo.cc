@@ -14,8 +14,8 @@
 
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
-#include "turbo/avx512_vnni/record_quantized_int8/cosine.h"
-#include "turbo/avx512_vnni/record_quantized_int8/squared_euclidean.h"
+#include "avx512_vnni/record_quantized_int8/cosine.h"
+#include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 
 namespace zvec::turbo {
 

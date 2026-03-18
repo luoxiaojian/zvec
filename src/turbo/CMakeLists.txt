@@ -20,5 +20,5 @@ cc_library(
     NAME zvec_turbo STATIC STRICT PACKED
     SRCS ${ALL_SRCS}
     LIBS zvec_ailego
-    INCS ${PROJECT_ROOT_DIR}/src/include/zvec
+    INCS ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_ROOT_DIR}/src/include
 )
