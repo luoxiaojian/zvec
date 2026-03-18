@@ -19,5 +19,6 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 cc_library(
     NAME zvec_turbo STATIC STRICT PACKED
     SRCS ${ALL_SRCS}
+    LIBS zvec_ailego
     INCS ${PROJECT_ROOT_DIR}/src/include/zvec
 )
