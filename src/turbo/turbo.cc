@@ -14,17 +14,25 @@
 
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#include "cosine/avx512_impl.h"
 #include "euclidean/avx512_impl.h"
+#include "mips_euclidean/avx512_impl.h"
 
 namespace zvec::turbo {
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
                                QuantizeType quantize_type) {
-  if (metric_type == MetricType::kSquaredEuclidean) {
-    if (data_type == DataType::kInt8) {
-      if (quantize_type == QuantizeType::kDefault) {
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+  if (data_type == DataType::kInt8) {
+    if (quantize_type == QuantizeType::kDefault) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
           return l2_int8_distance_avx512_vnni;
+        }
+        if (metric_type == MetricType::kCosine) {
+          return cosine_int8_distance_avx512_vnni;
+        }
+        if (metric_type == MetricType::kMipsSquaredEuclidean) {
+          return mips_l2_int8_distance_avx512_vnni;
         }
       }
     }
@@ -35,11 +43,17 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
 BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
                                           DataType data_type,
                                           QuantizeType quantize_type) {
-  if (metric_type == MetricType::kSquaredEuclidean) {
-    if (data_type == DataType::kInt8) {
-      if (quantize_type == QuantizeType::kDefault) {
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+  if (data_type == DataType::kInt8) {
+    if (quantize_type == QuantizeType::kDefault) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
           return l2_int8_batch_distance_avx512_vnni;
+        }
+        if (metric_type == MetricType::kCosine) {
+          return cosine_int8_batch_distance_avx512_vnni;
+        }
+        if (metric_type == MetricType::kMipsSquaredEuclidean) {
+          return mips_l2_int8_batch_distance_avx512_vnni;
         }
       }
     }
@@ -50,11 +64,17 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
                                               DataType data_type,
                                               QuantizeType quantize_type) {
-  if (metric_type == MetricType::kSquaredEuclidean) {
-    if (data_type == DataType::kInt8) {
-      if (quantize_type == QuantizeType::kDefault) {
-        if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+  if (data_type == DataType::kInt8) {
+    if (quantize_type == QuantizeType::kDefault) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
           return l2_int8_query_preprocess_avx512_vnni;
+        }
+        if (metric_type == MetricType::kCosine) {
+          return cosine_int8_query_preprocess_avx512_vnni;
+        }
+        if (metric_type == MetricType::kMipsSquaredEuclidean) {
+          return mips_l2_int8_query_preprocess_avx512_vnni;
         }
       }
     }
