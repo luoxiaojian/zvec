@@ -25,17 +25,14 @@
 // Tail layout for quantized INT8 cosine vectors:
 //
 //   [ original_dim bytes: int8_t elements ]
-//   [ float scale_a  ]  (ma)
-//   [ float bias_a   ]  (mb)
-//   [ float sum_a    ]  (ms)
+//   [ float scale_a       ]  (ma)
+//   [ float bias_a        ]  (mb)
+//   [ float sum_a         ]  (ms)
+//   [ float square_sum_a  ]  (ms2)
 //   [ int  int8_sum  ]  (sum of raw int8 elements, used when query is
 //                        preprocessed to uint8 via +128 shift)
 //
-// The query tail has the same layout (qa, qb, qs) without int8_sum.
-// Total tail size: 3 floats = 12 bytes for query; 3 floats + 1 int = 16 bytes
-// for data vectors (but the dim passed in already accounts for the full
-// encoded size, i.e. original_dim + 24 bytes, matching the +24 offset used in
-// CosineMinusInnerProductDistanceBatchWithScoreUnquantized<int8_t>).
+// The query tail has the same layout (qa, qb, qs, qs2) without int8_sum.
 
 namespace zvec::turbo::avx512_vnni {
 
