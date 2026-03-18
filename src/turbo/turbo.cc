@@ -14,9 +14,8 @@
 
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
-#include "cosine/avx512_impl.h"
-#include "euclidean/avx512_impl.h"
-#include "mips_euclidean/avx512_impl.h"
+#include "turbo/avx512_vnni/record_quantized_int8/cosine.h"
+#include "turbo/avx512_vnni/record_quantized_int8/squared_euclidean.h"
 
 namespace zvec::turbo {
 
@@ -26,13 +25,10 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-          return l2_int8_distance_avx512_vnni;
+          return avx512_vnni::squared_euclidean_int8_distance;
         }
         if (metric_type == MetricType::kCosine) {
-          return cosine_int8_distance_avx512_vnni;
-        }
-        if (metric_type == MetricType::kMipsSquaredEuclidean) {
-          return mips_l2_int8_distance_avx512_vnni;
+          return avx512_vnni::cosine_int8_distance;
         }
       }
     }
@@ -47,13 +43,10 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-          return l2_int8_batch_distance_avx512_vnni;
+          return avx512_vnni::squared_euclidean_int8_batch_distance;
         }
         if (metric_type == MetricType::kCosine) {
-          return cosine_int8_batch_distance_avx512_vnni;
-        }
-        if (metric_type == MetricType::kMipsSquaredEuclidean) {
-          return mips_l2_int8_batch_distance_avx512_vnni;
+          return avx512_vnni::cosine_int8_batch_distance;
         }
       }
     }
@@ -68,13 +61,10 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-          return l2_int8_query_preprocess_avx512_vnni;
+          return avx512_vnni::squared_euclidean_int8_query_preprocess;
         }
         if (metric_type == MetricType::kCosine) {
-          return cosine_int8_query_preprocess_avx512_vnni;
-        }
-        if (metric_type == MetricType::kMipsSquaredEuclidean) {
-          return mips_l2_int8_query_preprocess_avx512_vnni;
+          return avx512_vnni::cosine_int8_query_preprocess;
         }
       }
     }

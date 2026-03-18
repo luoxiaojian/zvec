@@ -14,42 +14,41 @@
 
 // This file is compiled with per-file -march=avx512vnni (set in CMakeLists.txt)
 // so that all AVX512-VNNI intrinsics and the inlined inner product kernels from
-// avx512_inner_product.h are compiled with the correct target ISA.
+// common.h are compiled with the correct target ISA.
 
-#include "turbo/mips_euclidean/avx512_impl.h"
-#include "turbo/inner_product/avx512_inner_product.h"
+#include "turbo/avx512_vnni/record_quantized_int8/cosine.h"
+#include "turbo/avx512_vnni/record_quantized_int8/common.h"
 #if defined(__AVX512VNNI__)
 #include <immintrin.h>
 #endif
 
-// Tail layout for quantized INT8 MIPS squared Euclidean vectors (matches the
-// encoding in MipsSquaredEuclideanDistanceBatchWithScoreUnquantized<int8_t>):
+// Tail layout for quantized INT8 cosine vectors:
 //
 //   [ original_dim bytes: int8_t elements ]
 //   [ float scale_a  ]  (ma)
 //   [ float bias_a   ]  (mb)
 //   [ float sum_a    ]  (ms)
-//   [ float sum2_a   ]  (ms2)
-//   [ int  int8_sum  ]  (sum of raw int8 elements, used for bias correction
-//                        when the query has been shifted to uint8 via +128)
+//   [ int  int8_sum  ]  (sum of raw int8 elements, used when query is
+//                        preprocessed to uint8 via +128 shift)
 //
-// Total tail size: 4 floats + 1 int = 20 bytes, so dim = original_dim + 20.
-//
-// Single-vector path: query remains int8, use sign+maddubs
-// (ip_int8_avx512_vnni). Batch path: query is preprocessed to uint8 (+128
-// shift) so that the
-//   AVX512-VNNI dpbusd instruction (ip_int8_batch_avx512_vnni) can be used.
-//   The bias introduced by the shift is corrected via 128 * int8_sum per
-//   vector.
+// The query tail has the same layout (qa, qb, qs) without int8_sum.
+// Total tail size: 3 floats = 12 bytes for query; 3 floats + 1 int = 16 bytes
+// for data vectors (but the dim passed in already accounts for the full
+// encoded size, i.e. original_dim + 24 bytes, matching the +24 offset used in
+// CosineMinusInnerProductDistanceBatchWithScoreUnquantized<int8_t>).
 
-namespace zvec::turbo {
+namespace zvec::turbo::avx512_vnni {
 
-void mips_l2_int8_distance_avx512_vnni(const void *a, const void *b, int dim,
-                                       float *distance) {
+void cosine_int8_distance(const void *a, const void *b, int dim,
+                          float *distance) {
 #if defined(__AVX512VNNI__)
-  const int original_dim = dim - 20;
+  // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
+  const int original_dim = dim - 24;
 
-  // Single-vector path: both sides are int8, use sign+maddubs kernel.
+  // Compute raw integer inner product over the original_dim bytes.
+  // Note: for the single-vector path there is no query preprocessing, so both
+  // sides are treated as int8_t (same as the non-preprocessed path in
+  // MinusInnerProductDistanceBatchWithScoreUnquantized<int8_t>).
   internal::ip_int8_avx512_vnni(a, b, original_dim, distance);
 
   const float *a_tail = reinterpret_cast<const float *>(
@@ -60,19 +59,16 @@ void mips_l2_int8_distance_avx512_vnni(const void *a, const void *b, int dim,
   float ma = a_tail[0];
   float mb = a_tail[1];
   float ms = a_tail[2];
-  float ms2 = a_tail[3];
 
   float qa = b_tail[0];
   float qb = b_tail[1];
   float qs = b_tail[2];
-  float qs2 = b_tail[3];
 
-  const float sum = qa * qs;
-  const float sum2 = qa * qa * qs2;
-
-  *distance = ma * ma * ms2 + sum2 - 2 * ma * qa * *distance +
-              (mb - qb) * (mb - qb) * static_cast<float>(original_dim) +
-              2 * (mb - qb) * (ms * ma - sum);
+  // Dequantize and compute cosine distance:
+  //   cosine_dist = -(ma * qa * ip + mb * qa * qs + qb * ma * ms
+  //                   + original_dim * qb * mb)
+  *distance = -(ma * qa * *distance + mb * qa * qs + qb * ma * ms +
+                static_cast<float>(original_dim) * qb * mb);
 #else
   (void)a;
   (void)b;
@@ -81,14 +77,14 @@ void mips_l2_int8_distance_avx512_vnni(const void *a, const void *b, int dim,
 #endif
 }
 
-void mips_l2_int8_batch_distance_avx512_vnni(const void *const *vectors,
-                                             const void *query, int n, int dim,
-                                             float *distances) {
+void cosine_int8_batch_distance(const void *const *vectors, const void *query,
+                                int n, int dim, float *distances) {
 #if defined(__AVX512VNNI__)
-  const int original_dim = dim - 20;
+  // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
+  const int original_dim = dim - 24;
 
-  // Batch path: query has been preprocessed to uint8 (+128 shift), so the
-  // AVX512-VNNI dpbusd instruction can be used via ip_int8_batch_avx512_vnni.
+  // Compute raw inner products for all vectors. The query has been preprocessed
+  // (int8 + 128 -> uint8) so dpbusd can be used via ip_int8_batch_avx512_vnni.
   internal::ip_int8_batch_avx512_vnni(vectors, query, n, original_dim,
                                       distances);
 
@@ -97,10 +93,6 @@ void mips_l2_int8_batch_distance_avx512_vnni(const void *const *vectors,
   float qa = q_tail[0];
   float qb = q_tail[1];
   float qs = q_tail[2];
-  float qs2 = q_tail[3];
-
-  const float sum = qa * qs;
-  const float sum2 = qa * qa * qs2;
 
   for (int i = 0; i < n; ++i) {
     const float *m_tail = reinterpret_cast<const float *>(
@@ -108,18 +100,20 @@ void mips_l2_int8_batch_distance_avx512_vnni(const void *const *vectors,
     float ma = m_tail[0];
     float mb = m_tail[1];
     float ms = m_tail[2];
-    float ms2 = m_tail[3];
     // Correct for the +128 shift applied to the query during preprocessing:
     //   dpbusd computes sum(uint8_query[i] * int8_data[i])
     //         = sum((int8_query[i] + 128) * int8_data[i])
     //         = true_ip + 128 * sum(int8_data[i])
-    // int8_sum is stored as the 5th int-sized field after the 4 floats.
+    // int8_sum is stored as the 5th int-sized field after the 3 floats.
     int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
     float &result = distances[i];
     result -= 128.0f * static_cast<float>(int8_sum);
-    result = ma * ma * ms2 + sum2 - 2 * ma * qa * result +
-             (mb - qb) * (mb - qb) * static_cast<float>(original_dim) +
-             2 * (mb - qb) * (ms * ma - sum);
+
+    // Dequantize and compute cosine distance:
+    //   cosine_dist = -(ma * qa * ip + mb * qa * qs + qb * ma * ms
+    //                   + original_dim * qb * mb)
+    result = -(ma * qa * result + mb * qa * qs + qb * ma * ms +
+               static_cast<float>(original_dim) * qb * mb);
   }
 #else
   (void)vectors;
@@ -130,14 +124,14 @@ void mips_l2_int8_batch_distance_avx512_vnni(const void *const *vectors,
 #endif
 }
 
-void mips_l2_int8_query_preprocess_avx512_vnni(void *query, size_t dim) {
+void cosine_int8_query_preprocess(void *query, size_t dim) {
 #if defined(__AVX512VNNI__)
-  // Only shift the original_dim bytes; the metadata tail is left intact.
-  internal::shift_int8_to_uint8_avx512(query, static_cast<int>(dim) - 20);
+  // The original vector occupies dim-24 bytes; only those bytes are shifted.
+  internal::shift_int8_to_uint8_avx512(query, static_cast<int>(dim) - 24);
 #else
   (void)query;
   (void)dim;
 #endif
 }
 
-}  // namespace zvec::turbo
+}  // namespace zvec::turbo::avx512_vnni

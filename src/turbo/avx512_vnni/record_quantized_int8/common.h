@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This header contains the AVX512-VNNI inner product kernels shared by
-// multiple distance implementations (euclidean, cosine, etc.).
+// Shared AVX512-VNNI inner product kernels for record_quantized_int8 distance
+// implementations (cosine, l2, mips_l2, etc.).
 //
 // All functions are marked always_inline so that when this header is included
 // from a per-file-march .cc translation unit, the compiler can fully inline
@@ -26,7 +26,7 @@
 #include <immintrin.h>
 #include <array>
 
-namespace zvec::turbo::internal {
+namespace zvec::turbo::avx512_vnni::internal {
 
 static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
   __m256i x1 = _mm256_hadd_epi32(v, v);
@@ -304,6 +304,6 @@ static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
   }
 }
 
-}  // namespace zvec::turbo::internal
+}  // namespace zvec::turbo::avx512_vnni::internal
 
 #endif  // defined(__AVX512VNNI__)

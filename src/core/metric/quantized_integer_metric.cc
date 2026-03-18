@@ -120,18 +120,11 @@ class QuantizedIntegerMetric : public IndexMetric {
 
       case MetricType::kMipsSquaredEuclidean:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_distance_func(
-              turbo::MetricType::kMipsSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
-          if (turbo_ret) {
-            return turbo_ret;
-          }
           return DistanceMatrixCompute<MipsSquaredEuclidean, int8_t>(m, n);
         }
         if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
           return DistanceMatrixCompute<MipsSquaredEuclidean, uint8_t>(m, n);
         }
-        // TODO: support MipsSquaredEuclidean other injection type
         break;
 
       case MetricType::kNormalizedCosine:
@@ -196,12 +189,6 @@ class QuantizedIntegerMetric : public IndexMetric {
         break;
       case MetricType::kMipsSquaredEuclidean:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_batch_distance_func(
-              turbo::MetricType::kMipsSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kDefault);
-          if (turbo_ret) {
-            return turbo_ret;
-          }
           return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
               BaseDistanceBatchWithScoreUnquantized<
                   MipsSquaredEuclidean, int8_t, 12, 2>::ComputeBatch);
@@ -211,7 +198,6 @@ class QuantizedIntegerMetric : public IndexMetric {
               BaseDistanceBatchWithScoreUnquantized<
                   MipsSquaredEuclidean, uint8_t, 12, 2>::ComputeBatch);
         }
-        // TODO: support MipsSquaredEuclidean other injection type
         break;
       case MetricType::kNormalizedCosine:
         if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
@@ -318,14 +304,6 @@ class QuantizedIntegerMetric : public IndexMetric {
       }
       return SquaredEuclideanDistanceBatchWithScoreUnquantized<
           int8_t, 1, 1>::GetQueryPreprocessFunc();
-    } else if (origin_metric_type_ == MetricType::kMipsSquaredEuclidean &&
-               meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-      auto turbo_ret = turbo::get_query_preprocess_func(
-          turbo::MetricType::kMipsSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kDefault);
-      if (turbo_ret) {
-        return turbo_ret;
-      }
     }
     return nullptr;
   }
