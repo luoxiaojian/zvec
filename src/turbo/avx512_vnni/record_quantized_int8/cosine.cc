@@ -41,6 +41,9 @@ void cosine_int8_distance(const void *a, const void *b, int dim,
 #if defined(__AVX512VNNI__)
   // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
   const int original_dim = dim - 24;
+  if (original_dim <= 0) {
+    return;
+  }
 
   // Compute raw integer inner product over the original_dim bytes.
   // Note: for the single-vector path there is no query preprocessing, so both
@@ -79,6 +82,9 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
 #if defined(__AVX512VNNI__)
   // `dim` is the full encoded size; the original vector occupies dim-24 bytes.
   const int original_dim = dim - 24;
+  if (original_dim <= 0) {
+    return;
+  }
 
   // Compute raw inner products for all vectors. The query has been preprocessed
   // (int8 + 128 -> uint8) so dpbusd can be used via ip_int8_batch_avx512_vnni.
@@ -124,7 +130,11 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
 void cosine_int8_query_preprocess(void *query, size_t dim) {
 #if defined(__AVX512VNNI__)
   // The original vector occupies dim-24 bytes; only those bytes are shifted.
-  internal::shift_int8_to_uint8_avx512(query, static_cast<int>(dim) - 24);
+  const int original_dim = static_cast<int>(dim) - 24;
+  if (original_dim <= 0) {
+    return;
+  }
+  internal::shift_int8_to_uint8_avx512(query, original_dim);
 #else
   (void)query;
   (void)dim;

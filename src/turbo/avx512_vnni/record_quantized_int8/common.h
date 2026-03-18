@@ -206,6 +206,8 @@ static __attribute__((always_inline)) void ip_int8_avx512_vnni(
   *distance = result;
 }
 
+#undef FMA_INT8_GENERAL
+
 // Shift the first `original_dim` bytes of `query` in-place from int8 to uint8
 // by adding 128 to each element. The metadata tail beyond `original_dim` is
 // left untouched. This prepares the query for use with dpbusd (uint8 * int8).

@@ -40,6 +40,9 @@ void squared_euclidean_int8_distance(const void *a, const void *b, int dim,
                                      float *distance) {
 #if defined(__AVX512VNNI__)
   const int original_dim = dim - 20;
+  if (original_dim <= 0) {
+    return;
+  }
   internal::ip_int8_avx512_vnni(a, b, original_dim, distance);
 
   const float *a_tail = reinterpret_cast<const float *>(
@@ -76,6 +79,9 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
                                            float *distances) {
 #if defined(__AVX512VNNI__)
   const int original_dim = dim - 20;
+  if (original_dim <= 0) {
+    return;
+  }
 
   internal::ip_int8_batch_avx512_vnni(vectors, query, n, original_dim,
                                       distances);
@@ -118,7 +124,11 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
 
 void squared_euclidean_int8_query_preprocess(void *query, size_t dim) {
 #if defined(__AVX512VNNI__)
-  internal::shift_int8_to_uint8_avx512(query, static_cast<int>(dim) - 20);
+  const int original_dim = static_cast<int>(dim) - 20;
+  if (original_dim <= 0) {
+    return;
+  }
+  internal::shift_int8_to_uint8_avx512(query, original_dim);
 #else
   (void)query;
   (void)dim;
