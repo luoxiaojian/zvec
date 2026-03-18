@@ -25,6 +25,7 @@
 #if defined(__AVX512VNNI__)
 #include <immintrin.h>
 #include <array>
+#include <cstdint>
 
 namespace zvec::turbo::avx512_vnni::internal {
 
@@ -220,7 +221,7 @@ static __attribute__((always_inline)) void shift_int8_to_uint8_avx512(
   // produces the correct uint8 result.
   const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(128));
 
-  int i = 0;
+  size_t i = 0;
   for (; i + 64 <= original_dim; i += 64) {
     __m512i data =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(input + i));
@@ -235,25 +236,25 @@ static __attribute__((always_inline)) void shift_int8_to_uint8_avx512(
 // Compute raw integer inner products for a batch of int8 vectors against a
 // single query. Uses AVX512-VNNI dpbusd instruction.
 // `query` is treated as uint8 (preprocessed), `vectors[i]` as int8.
-template <int batch_size>
+template <size_t batch_size>
 __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
     const void *query, const void *const *vectors,
     const std::array<const void *, batch_size> &prefetch_ptrs,
     size_t dimensionality, float *distances) {
   __m512i accs[batch_size];
-  for (int i = 0; i < batch_size; ++i) {
+  for (size_t i = 0; i < batch_size; ++i) {
     accs[i] = _mm512_setzero_si512();
   }
-  int dim = 0;
+  size_t dim = 0;
   for (; dim + 64 <= dimensionality; dim += 64) {
     __m512i q = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(
         reinterpret_cast<const int8_t *>(query) + dim));
     __m512i data_regs[batch_size];
-    for (int i = 0; i < batch_size; ++i) {
+    for (size_t i = 0; i < batch_size; ++i) {
       data_regs[i] = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(
           reinterpret_cast<const int8_t *>(vectors[i]) + dim));
     }
-    for (int i = 0; i < batch_size; ++i) {
+    for (size_t i = 0; i < batch_size; ++i) {
       if (prefetch_ptrs[i]) {
         _mm_prefetch(
             reinterpret_cast<const char *>(
@@ -264,18 +265,18 @@ __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
     }
   }
   std::array<int, batch_size> temp_results{};
-  for (int i = 0; i < batch_size; ++i) {
+  for (size_t i = 0; i < batch_size; ++i) {
     temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
   }
   for (; dim < dimensionality; ++dim) {
     int q = static_cast<int>(reinterpret_cast<const uint8_t *>(query)[dim]);
-    for (int i = 0; i < batch_size; ++i) {
+    for (size_t i = 0; i < batch_size; ++i) {
       temp_results[i] +=
           q *
           static_cast<int>(reinterpret_cast<const int8_t *>(vectors[i])[dim]);
     }
   }
-  for (int i = 0; i < batch_size; ++i) {
+  for (size_t i = 0; i < batch_size; ++i) {
     distances[i] = static_cast<float>(temp_results[i]);
   }
 }
@@ -284,12 +285,12 @@ __attribute__((always_inline)) void ip_int8_batch_avx512_vnni_impl(
 static __attribute__((always_inline)) void ip_int8_batch_avx512_vnni(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances) {
-  static constexpr int batch_size = 2;
-  static constexpr int prefetch_step = 2;
-  int i = 0;
+  static constexpr size_t batch_size = 2;
+  static constexpr size_t prefetch_step = 2;
+  size_t i = 0;
   for (; i + batch_size <= n; i += batch_size) {
     std::array<const void *, batch_size> prefetch_ptrs;
-    for (int j = 0; j < batch_size; ++j) {
+    for (size_t j = 0; j < batch_size; ++j) {
       if (i + j + batch_size * prefetch_step < n) {
         prefetch_ptrs[j] = vectors[i + j + batch_size * prefetch_step];
       } else {
