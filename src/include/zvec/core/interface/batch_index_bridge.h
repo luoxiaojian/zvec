@@ -23,7 +23,11 @@
 
 namespace zvec::core_interface {
 
-struct BridgeSearchResultItem;
+/// A single KNN search result entry.
+struct BridgeSearchResultItem {
+  uint32_t doc_id;
+  float distance;
+};
 
 /**
  * @brief BatchIndexBridge - Optimized for batch index building scenarios.

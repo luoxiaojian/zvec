@@ -26,7 +26,6 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_logger.h>
-#include <zvec/core/interface/index_bridge.h>
 #include <zvec/core/interface/index_factory.h>
 
 namespace zvec::core_interface {
