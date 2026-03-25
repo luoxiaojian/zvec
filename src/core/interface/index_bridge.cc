@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <zvec/core/interface/batch_index_bridge.h>
+#include <zvec/core/interface/index_bridge.h>
 
 #include <cstdio>
 #include <cstring>
@@ -34,7 +34,7 @@ namespace zvec::core_interface {
 // Impl
 // ============================================================================
 
-struct BatchIndexBridge::Impl {
+struct IndexBridge::Impl {
   // Target index parameters (e.g., HNSW) - use pointer to avoid slicing
   BaseIndexParam::Pointer target_param;
 
@@ -147,23 +147,23 @@ struct BatchIndexBridge::Impl {
 // Lifecycle
 // ============================================================================
 
-BatchIndexBridge::BatchIndexBridge() : impl_(std::make_unique<Impl>()) {}
+IndexBridge::IndexBridge() : impl_(std::make_unique<Impl>()) {}
 
-BatchIndexBridge::~BatchIndexBridge() = default;
+IndexBridge::~IndexBridge() = default;
 
-BatchIndexBridge::BatchIndexBridge(BatchIndexBridge&&) noexcept = default;
-BatchIndexBridge& BatchIndexBridge::operator=(BatchIndexBridge&&) noexcept =
+IndexBridge::IndexBridge(IndexBridge&&) noexcept = default;
+IndexBridge& IndexBridge::operator=(IndexBridge&&) noexcept =
     default;
 
-BatchIndexBridge::Pointer BatchIndexBridge::Create(
+IndexBridge::Pointer IndexBridge::Create(
     const BaseIndexParam& target_param) {
-  auto bridge = Pointer(new BatchIndexBridge());
+  auto bridge = Pointer(new IndexBridge());
   auto& impl = bridge->impl_;
 
   // Store target parameters (clone to preserve derived type)
   impl->target_param = Impl::CloneParam(target_param);
   if (!impl->target_param) {
-    LOG_ERROR("BatchIndexBridge::Create: failed to clone target param");
+    LOG_ERROR("IndexBridge::Create: failed to clone target param");
     return nullptr;
   }
 
@@ -171,7 +171,7 @@ BatchIndexBridge::Pointer BatchIndexBridge::Create(
   auto flat_param = Impl::CreateFlatParam(target_param);
   impl->collector_index = IndexFactory::CreateAndInitIndex(*flat_param);
   if (!impl->collector_index) {
-    LOG_ERROR("BatchIndexBridge::Create: failed to create collector index");
+    LOG_ERROR("IndexBridge::Create: failed to create collector index");
     return nullptr;
   }
 
@@ -188,7 +188,7 @@ BatchIndexBridge::Pointer BatchIndexBridge::Create(
   int ret =
       impl->collector_index->Open(impl->collector_file_path, storage_options);
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Create: failed to open collector, err=%d",
+    LOG_ERROR("IndexBridge::Create: failed to open collector, err=%d",
               ret);
     impl->Cleanup();
     return nullptr;
@@ -197,28 +197,28 @@ BatchIndexBridge::Pointer BatchIndexBridge::Create(
   return bridge;
 }
 
-BatchIndexBridge::Pointer BatchIndexBridge::Deserialize(
+IndexBridge::Pointer IndexBridge::Deserialize(
     const std::string& param_json, const void* data, size_t size) {
   if (!data || size == 0) {
-    LOG_ERROR("BatchIndexBridge::Deserialize: empty data");
+    LOG_ERROR("IndexBridge::Deserialize: empty data");
     return nullptr;
   }
 
   // Deserialize the index parameters from JSON
   auto param_ptr = IndexFactory::DeserializeIndexParamFromJson(param_json);
   if (!param_ptr) {
-    LOG_ERROR("BatchIndexBridge::Deserialize: failed to parse param JSON");
+    LOG_ERROR("IndexBridge::Deserialize: failed to parse param JSON");
     return nullptr;
   }
 
-  auto bridge = Pointer(new BatchIndexBridge());
+  auto bridge = Pointer(new IndexBridge());
   auto& impl = bridge->impl_;
   impl->target_param = param_ptr;  // Store the shared_ptr directly
 
   // Create the target index directly (already built)
   impl->target_index = IndexFactory::CreateAndInitIndex(*impl->target_param);
   if (!impl->target_index) {
-    LOG_ERROR("BatchIndexBridge::Deserialize: failed to create target index");
+    LOG_ERROR("IndexBridge::Deserialize: failed to create target index");
     return nullptr;
   }
 
@@ -230,14 +230,14 @@ BatchIndexBridge::Pointer BatchIndexBridge::Deserialize(
     std::ofstream ofs(impl->target_file_path,
                       std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
-      LOG_ERROR("BatchIndexBridge::Deserialize: failed to create temp file");
+      LOG_ERROR("IndexBridge::Deserialize: failed to create temp file");
       impl->Cleanup();
       return nullptr;
     }
     ofs.write(reinterpret_cast<const char*>(data),
               static_cast<std::streamsize>(size));
     if (!ofs.good()) {
-      LOG_ERROR("BatchIndexBridge::Deserialize: failed to write temp file");
+      LOG_ERROR("IndexBridge::Deserialize: failed to write temp file");
       impl->Cleanup();
       return nullptr;
     }
@@ -252,7 +252,7 @@ BatchIndexBridge::Pointer BatchIndexBridge::Deserialize(
   int ret =
       impl->target_index->Open(impl->target_file_path, storage_options);
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Deserialize: failed to open target, err=%d",
+    LOG_ERROR("IndexBridge::Deserialize: failed to open target, err=%d",
               ret);
     impl->Cleanup();
     return nullptr;
@@ -268,11 +268,11 @@ BatchIndexBridge::Pointer BatchIndexBridge::Deserialize(
 // Write Operations
 // ============================================================================
 
-int BatchIndexBridge::Add(uint32_t doc_id, const float* vector,
+int IndexBridge::Add(uint32_t doc_id, const float* vector,
                           uint32_t dimension) {
   if (!impl_ || !impl_->collector_index) return -1;
   if (impl_->is_built) {
-    LOG_ERROR("BatchIndexBridge::Add: cannot add after Build()");
+    LOG_ERROR("IndexBridge::Add: cannot add after Build()");
     return -1;
   }
 
@@ -290,14 +290,14 @@ int BatchIndexBridge::Add(uint32_t doc_id, const float* vector,
   return ret;
 }
 
-int BatchIndexBridge::Build(int concurrency) {
+int IndexBridge::Build(int concurrency) {
   if (!impl_) return -1;
   if (impl_->is_built) {
-    LOG_WARN("BatchIndexBridge::Build: already built");
+    LOG_WARN("IndexBridge::Build: already built");
     return 0;
   }
   if (!impl_->collector_index || impl_->doc_count == 0) {
-    LOG_ERROR("BatchIndexBridge::Build: no vectors to build");
+    LOG_ERROR("IndexBridge::Build: no vectors to build");
     return -1;
   }
 
@@ -307,23 +307,23 @@ int BatchIndexBridge::Build(int concurrency) {
   // Flush collector index to ensure all data is persisted
   int ret = impl_->collector_index->Flush();
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Build: failed to flush collector");
+    LOG_ERROR("IndexBridge::Build: failed to flush collector");
     return ret;
   }
 
   // Create target index
-  LOG_INFO("BatchIndexBridge::Build: creating target index");
+  LOG_INFO("IndexBridge::Build: creating target index");
   impl_->target_index = IndexFactory::CreateAndInitIndex(*impl_->target_param);
   if (!impl_->target_index) {
-    LOG_ERROR("BatchIndexBridge::Build: failed to create target index");
+    LOG_ERROR("IndexBridge::Build: failed to create target index");
     return -1;
   }
-  LOG_INFO("BatchIndexBridge::Build: target index created");
+  LOG_INFO("IndexBridge::Build: target index created");
 
   // Create temp directory for target
   impl_->target_temp_dir = Impl::CreateTempDir("target");
   impl_->target_file_path = impl_->target_temp_dir + "/target.dat";
-  LOG_INFO("BatchIndexBridge::Build: target path=%s", impl_->target_file_path.c_str());
+  LOG_INFO("IndexBridge::Build: target path=%s", impl_->target_file_path.c_str());
 
   // Open target index
   StorageOptions storage_options;
@@ -333,13 +333,13 @@ int BatchIndexBridge::Build(int concurrency) {
 
   ret = impl_->target_index->Open(impl_->target_file_path, storage_options);
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Build: failed to open target, err=%d", ret);
+    LOG_ERROR("IndexBridge::Build: failed to open target, err=%d", ret);
     return ret;
   }
-  LOG_INFO("BatchIndexBridge::Build: target index opened");
+  LOG_INFO("IndexBridge::Build: target index opened");
 
   // Use Merge for batch construction (much faster than one-by-one Add)
-  LOG_INFO("BatchIndexBridge::Build: merging %u vectors", impl_->doc_count);
+  LOG_INFO("IndexBridge::Build: merging %u vectors", impl_->doc_count);
   
   MergeOptions merge_options;
   merge_options.write_concurrency = write_concurrency;
@@ -349,21 +349,21 @@ int BatchIndexBridge::Build(int concurrency) {
   
   ret = impl_->target_index->Merge(source_indexes, no_filter, merge_options);
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Build: Merge failed, err=%d", ret);
+    LOG_ERROR("IndexBridge::Build: Merge failed, err=%d", ret);
     // Fallback to one-by-one Add if Merge fails
-    LOG_INFO("BatchIndexBridge::Build: falling back to one-by-one Add");
+    LOG_INFO("IndexBridge::Build: falling back to one-by-one Add");
     
     for (uint32_t doc_id = 0; doc_id < impl_->doc_count; ++doc_id) {
       VectorDataBuffer buffer;
       ret = impl_->collector_index->Fetch(doc_id, &buffer);
       if (ret != 0) {
-        LOG_ERROR("BatchIndexBridge::Build: failed to fetch doc_id=%u, ret=%d", 
+        LOG_ERROR("IndexBridge::Build: failed to fetch doc_id=%u, ret=%d", 
                   doc_id, ret);
         continue;
       }
 
       if (!std::holds_alternative<DenseVectorBuffer>(buffer.vector_buffer)) {
-        LOG_ERROR("BatchIndexBridge::Build: unexpected vector type for doc_id=%u",
+        LOG_ERROR("IndexBridge::Build: unexpected vector type for doc_id=%u",
                   doc_id);
         continue;
       }
@@ -377,18 +377,18 @@ int BatchIndexBridge::Build(int concurrency) {
       
       ret = impl_->target_index->Add(vector_data, doc_id);
       if (ret != 0) {
-        LOG_ERROR("BatchIndexBridge::Build: failed to add doc_id=%u, ret=%d", 
+        LOG_ERROR("IndexBridge::Build: failed to add doc_id=%u, ret=%d", 
                   doc_id, ret);
       }
     }
   } else {
-    LOG_INFO("BatchIndexBridge::Build: Merge succeeded");
+    LOG_INFO("IndexBridge::Build: Merge succeeded");
   }
 
   // Flush target index
   ret = impl_->target_index->Flush();
   if (ret != 0) {
-    LOG_ERROR("BatchIndexBridge::Build: failed to flush target");
+    LOG_ERROR("IndexBridge::Build: failed to flush target");
     return ret;
   }
 
@@ -408,7 +408,7 @@ int BatchIndexBridge::Build(int concurrency) {
 // Query Operations
 // ============================================================================
 
-int BatchIndexBridge::Search(const float* query, uint32_t dimension,
+int IndexBridge::Search(const float* query, uint32_t dimension,
                              uint32_t topk,
                              const BaseIndexQueryParam* query_param,
                              std::vector<BridgeSearchResultItem>* results) {
@@ -479,11 +479,11 @@ int BatchIndexBridge::Search(const float* query, uint32_t dimension,
 // Serialization
 // ============================================================================
 
-int BatchIndexBridge::Serialize(std::string* output) {
+int IndexBridge::Serialize(std::string* output) {
   if (!impl_ || !output) return -1;
 
   if (!impl_->is_built) {
-    LOG_ERROR("BatchIndexBridge::Serialize: must Build() first");
+    LOG_ERROR("IndexBridge::Serialize: must Build() first");
     return -1;
   }
 
@@ -494,7 +494,7 @@ int BatchIndexBridge::Serialize(std::string* output) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     int ret = impl_->target_index->Flush();
     if (ret != 0) {
-      LOG_ERROR("BatchIndexBridge::Serialize: flush failed, err=%d", ret);
+      LOG_ERROR("IndexBridge::Serialize: flush failed, err=%d", ret);
       return ret;
     }
   }
@@ -502,13 +502,13 @@ int BatchIndexBridge::Serialize(std::string* output) {
   // Read target index file
   std::ifstream ifs(impl_->target_file_path, std::ios::binary | std::ios::ate);
   if (!ifs.is_open()) {
-    LOG_ERROR("BatchIndexBridge::Serialize: failed to open target file");
+    LOG_ERROR("IndexBridge::Serialize: failed to open target file");
     return -1;
   }
 
   auto file_size = ifs.tellg();
   if (file_size <= 0) {
-    LOG_ERROR("BatchIndexBridge::Serialize: target file is empty");
+    LOG_ERROR("IndexBridge::Serialize: target file is empty");
     return -1;
   }
 
@@ -517,14 +517,14 @@ int BatchIndexBridge::Serialize(std::string* output) {
   ifs.read(output->data(), file_size);
 
   if (!ifs.good()) {
-    LOG_ERROR("BatchIndexBridge::Serialize: failed to read target file");
+    LOG_ERROR("IndexBridge::Serialize: failed to read target file");
     return -1;
   }
 
   return 0;
 }
 
-std::string BatchIndexBridge::GetParamJson() const {
+std::string IndexBridge::GetParamJson() const {
   if (!impl_ || !impl_->target_param) return "{}";
   return impl_->target_param->SerializeToJson();
 }
@@ -533,32 +533,32 @@ std::string BatchIndexBridge::GetParamJson() const {
 // Metadata
 // ============================================================================
 
-uint32_t BatchIndexBridge::DocCount() const {
+uint32_t IndexBridge::DocCount() const {
   if (!impl_) return 0;
   return impl_->doc_count;
 }
 
-IndexType BatchIndexBridge::GetIndexType() const {
+IndexType IndexBridge::GetIndexType() const {
   if (!impl_ || !impl_->target_param) return IndexType::kNone;
   return impl_->target_param->index_type;
 }
 
-MetricType BatchIndexBridge::GetMetricType() const {
+MetricType IndexBridge::GetMetricType() const {
   if (!impl_ || !impl_->target_param) return MetricType::kNone;
   return impl_->target_param->metric_type;
 }
 
-uint32_t BatchIndexBridge::GetDimension() const {
+uint32_t IndexBridge::GetDimension() const {
   if (!impl_ || !impl_->target_param) return 0;
   return static_cast<uint32_t>(impl_->target_param->dimension);
 }
 
-bool BatchIndexBridge::IsBuilt() const {
+bool IndexBridge::IsBuilt() const {
   if (!impl_) return false;
   return impl_->is_built;
 }
 
-int BatchIndexBridge::Flush() {
+int IndexBridge::Flush() {
   if (!impl_) return -1;
   std::lock_guard<std::mutex> lock(impl_->mutex);
 

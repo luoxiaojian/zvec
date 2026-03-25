@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef ZVEC_CORE_INTERFACE_BATCH_INDEX_BRIDGE_H_
-#define ZVEC_CORE_INTERFACE_BATCH_INDEX_BRIDGE_H_
+#ifndef ZVEC_CORE_INTERFACE_INDEX_BRIDGE_H_
+#define ZVEC_CORE_INTERFACE_INDEX_BRIDGE_H_
 
 #include <memory>
 #include <string>
@@ -30,40 +30,40 @@ struct BridgeSearchResultItem {
 };
 
 /**
- * @brief BatchIndexBridge - Optimized for batch index building scenarios.
+ * @brief IndexBridge - Optimized for batch index building scenarios.
  *
  * Unlike IndexBridge which adds vectors directly to the target index (e.g., HNSW),
- * BatchIndexBridge uses a two-phase approach:
+ * IndexBridge uses a two-phase approach:
  *   1. Collection phase: Vectors are added to a Flat index (O(1) per vector)
  *   2. Build phase: Batch-builds the target index using Merge (much faster)
  *
  * This is ~100-500x faster than IndexBridge for bulk loading scenarios like
- * zvec1's build_index command.
+ * vec0's build_index command.
  *
  * Usage:
- *   auto bridge = BatchIndexBridge::Create(hnswParam);
+ *   auto bridge = IndexBridge::Create(hnswParam);
  *   for (auto& vec : vectors) {
  *     bridge->Add(doc_id++, vec.data(), dim);
  *   }
  *   bridge->Build();  // Batch-build HNSW from collected vectors
  *   bridge->Serialize(&output);
  */
-class BatchIndexBridge {
+class IndexBridge {
  public:
-  using Pointer = std::shared_ptr<BatchIndexBridge>;
+  using Pointer = std::shared_ptr<IndexBridge>;
 
-  ~BatchIndexBridge();
+  ~IndexBridge();
 
   // Non-copyable
-  BatchIndexBridge(const BatchIndexBridge&) = delete;
-  BatchIndexBridge& operator=(const BatchIndexBridge&) = delete;
+  IndexBridge(const IndexBridge&) = delete;
+  IndexBridge& operator=(const IndexBridge&) = delete;
 
   // Movable
-  BatchIndexBridge(BatchIndexBridge&&) noexcept;
-  BatchIndexBridge& operator=(BatchIndexBridge&&) noexcept;
+  IndexBridge(IndexBridge&&) noexcept;
+  IndexBridge& operator=(IndexBridge&&) noexcept;
 
   /**
-   * @brief Create a new BatchIndexBridge for batch index building.
+   * @brief Create a new IndexBridge for batch index building.
    * @param target_param Parameters for the target index (e.g., HNSW, IVF).
    *                     Vectors will be collected first, then batch-built.
    * @return Pointer to the bridge, or nullptr on failure.
@@ -138,7 +138,7 @@ class BatchIndexBridge {
   int Flush();
 
  private:
-  BatchIndexBridge();
+  IndexBridge();
 
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -146,4 +146,4 @@ class BatchIndexBridge {
 
 }  // namespace zvec::core_interface
 
-#endif  // ZVEC_CORE_INTERFACE_BATCH_INDEX_BRIDGE_H_
+#endif  // ZVEC_CORE_INTERFACE_INDEX_BRIDGE_H_
