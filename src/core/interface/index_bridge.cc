@@ -38,11 +38,6 @@ struct IndexBridge::Impl {
   // Target index parameters (e.g., HNSW) - use pointer to avoid slicing
   BaseIndexParam::Pointer target_param;
 
-  // Collection phase: Flat index for fast O(1) vector collection
-  Index::Pointer collector_index;
-  std::string collector_temp_dir;
-  std::string collector_file_path;
-
   // Build phase: Target index (e.g., HNSW)
   Index::Pointer target_index;
   std::string target_temp_dir;
@@ -50,22 +45,13 @@ struct IndexBridge::Impl {
 
   std::mutex mutex;
   uint32_t doc_count = 0;
-  bool is_built = false;
 
   ~Impl() { Cleanup(); }
 
   void Cleanup() {
-    if (collector_index) {
-      collector_index->Close();
-      collector_index.reset();
-    }
     if (target_index) {
       target_index->Close();
       target_index.reset();
-    }
-    if (!collector_temp_dir.empty()) {
-      ailego::File::RemoveDirectory(collector_temp_dir);
-      collector_temp_dir.clear();
     }
     if (!target_temp_dir.empty()) {
       ailego::File::RemoveDirectory(target_temp_dir);
@@ -93,17 +79,6 @@ struct IndexBridge::Impl {
     return dir_path;
   }
 
-  // Create Flat index parameters for collection phase
-  static std::unique_ptr<FlatIndexParam> CreateFlatParam(
-      const BaseIndexParam& target) {
-    auto flat_param = std::make_unique<FlatIndexParam>();
-    flat_param->index_type = IndexType::kFlat;
-    flat_param->metric_type = target.metric_type;
-    flat_param->dimension = target.dimension;
-    flat_param->data_type = target.data_type;
-    return flat_param;
-  }
-  
   // Clone the target parameter to preserve derived type
   static BaseIndexParam::Pointer CloneParam(const BaseIndexParam& param) {
     switch (param.index_type) {
@@ -167,30 +142,23 @@ IndexBridge::Pointer IndexBridge::Create(
     return nullptr;
   }
 
-  // Create Flat index for collection phase
-  auto flat_param = Impl::CreateFlatParam(target_param);
-  impl->collector_index = IndexFactory::CreateAndInitIndex(*flat_param);
-  if (!impl->collector_index) {
-    LOG_ERROR("IndexBridge::Create: failed to create collector index");
+  impl->target_index = IndexFactory::CreateAndInitIndex(*impl->target_param);
+  if (!impl->target_index) {
+    LOG_ERROR("IndexBridge::Build: failed to create target index");
     return nullptr;
   }
 
-  // Create temp directory for collector
-  impl->collector_temp_dir = Impl::CreateTempDir("collector");
-  impl->collector_file_path = impl->collector_temp_dir + "/collector.dat";
+  impl->target_temp_dir = Impl::CreateTempDir("target");
+  impl->target_file_path = impl->target_temp_dir + "/target.dat";
 
-  // Open collector index
   StorageOptions storage_options;
   storage_options.type = StorageOptions::StorageType::kMMAP;
   storage_options.create_new = true;
   storage_options.read_only = false;
 
-  int ret =
-      impl->collector_index->Open(impl->collector_file_path, storage_options);
+  int ret = impl->target_index->Open(impl->target_file_path, storage_options);
   if (ret != 0) {
-    LOG_ERROR("IndexBridge::Create: failed to open collector, err=%d",
-              ret);
-    impl->Cleanup();
+    LOG_ERROR("IndexBridge::Build: failed to open target, err=%d", ret);
     return nullptr;
   }
 
@@ -259,7 +227,6 @@ IndexBridge::Pointer IndexBridge::Deserialize(
   }
 
   impl->doc_count = impl->target_index->GetDocCount();
-  impl->is_built = true;
 
   return bridge;
 }
@@ -270,11 +237,7 @@ IndexBridge::Pointer IndexBridge::Deserialize(
 
 int IndexBridge::Add(uint32_t doc_id, const float* vector,
                           uint32_t dimension) {
-  if (!impl_ || !impl_->collector_index) return -1;
-  if (impl_->is_built) {
-    LOG_ERROR("IndexBridge::Add: cannot add after Build()");
-    return -1;
-  }
+  if (!impl_ || !impl_->target_index) return -1;
 
   DenseVector dense_vec;
   dense_vec.data = vector;
@@ -283,7 +246,7 @@ int IndexBridge::Add(uint32_t doc_id, const float* vector,
   vector_data.vector = dense_vec;
 
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  int ret = impl_->collector_index->Add(vector_data, doc_id);
+  int ret = impl_->target_index->Add(vector_data, doc_id);
   if (ret == 0) {
     impl_->doc_count++;
   }
@@ -292,98 +255,18 @@ int IndexBridge::Add(uint32_t doc_id, const float* vector,
 
 int IndexBridge::Build(int concurrency) {
   if (!impl_) return -1;
-  if (impl_->is_built) {
-    LOG_WARN("IndexBridge::Build: already built");
-    return 0;
-  }
-  if (!impl_->collector_index || impl_->doc_count == 0) {
-    LOG_ERROR("IndexBridge::Build: no vectors to build");
-    return -1;
-  }
-
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  int write_concurrency = (concurrency > 0) ? concurrency : 4;
-
-  // Flush collector index to ensure all data is persisted
-  int ret = impl_->collector_index->Flush();
-  if (ret != 0) {
-    LOG_ERROR("IndexBridge::Build: failed to flush collector");
-    return ret;
-  }
-
-  // Create target index
-  LOG_INFO("IndexBridge::Build: creating target index");
-  impl_->target_index = IndexFactory::CreateAndInitIndex(*impl_->target_param);
   if (!impl_->target_index) {
     LOG_ERROR("IndexBridge::Build: failed to create target index");
     return -1;
   }
   LOG_INFO("IndexBridge::Build: target index created");
-
-  // Create temp directory for target
-  impl_->target_temp_dir = Impl::CreateTempDir("target");
-  impl_->target_file_path = impl_->target_temp_dir + "/target.dat";
-  LOG_INFO("IndexBridge::Build: target path=%s", impl_->target_file_path.c_str());
-
-  // Open target index
-  StorageOptions storage_options;
-  storage_options.type = StorageOptions::StorageType::kMMAP;
-  storage_options.create_new = true;
-  storage_options.read_only = false;
-
-  ret = impl_->target_index->Open(impl_->target_file_path, storage_options);
+  
+  int ret = impl_->target_index->Train();
   if (ret != 0) {
-    LOG_ERROR("IndexBridge::Build: failed to open target, err=%d", ret);
+    LOG_ERROR("IndexBridge::Build: Train failed, err=%d", ret);
     return ret;
   }
-  LOG_INFO("IndexBridge::Build: target index opened");
-
-  // Use Merge for batch construction (much faster than one-by-one Add)
-  LOG_INFO("IndexBridge::Build: merging %u vectors", impl_->doc_count);
-  
-  MergeOptions merge_options;
-  merge_options.write_concurrency = write_concurrency;
-  
-  std::vector<Index::Pointer> source_indexes = {impl_->collector_index};
-  core::IndexFilter no_filter;  // No filtering
-  
-  ret = impl_->target_index->Merge(source_indexes, no_filter, merge_options);
-  if (ret != 0) {
-    LOG_ERROR("IndexBridge::Build: Merge failed, err=%d", ret);
-    // Fallback to one-by-one Add if Merge fails
-    LOG_INFO("IndexBridge::Build: falling back to one-by-one Add");
-    
-    for (uint32_t doc_id = 0; doc_id < impl_->doc_count; ++doc_id) {
-      VectorDataBuffer buffer;
-      ret = impl_->collector_index->Fetch(doc_id, &buffer);
-      if (ret != 0) {
-        LOG_ERROR("IndexBridge::Build: failed to fetch doc_id=%u, ret=%d", 
-                  doc_id, ret);
-        continue;
-      }
-
-      if (!std::holds_alternative<DenseVectorBuffer>(buffer.vector_buffer)) {
-        LOG_ERROR("IndexBridge::Build: unexpected vector type for doc_id=%u",
-                  doc_id);
-        continue;
-      }
-      const auto& dense_buffer = std::get<DenseVectorBuffer>(buffer.vector_buffer);
-
-      DenseVector dense_vec;
-      dense_vec.data = dense_buffer.data.data();
-
-      VectorData vector_data;
-      vector_data.vector = dense_vec;
-      
-      ret = impl_->target_index->Add(vector_data, doc_id);
-      if (ret != 0) {
-        LOG_ERROR("IndexBridge::Build: failed to add doc_id=%u, ret=%d", 
-                  doc_id, ret);
-      }
-    }
-  } else {
-    LOG_INFO("IndexBridge::Build: Merge succeeded");
-  }
+  LOG_INFO("IndexBridge::Build: Train succeeded");
 
   // Flush target index
   ret = impl_->target_index->Flush();
@@ -392,15 +275,6 @@ int IndexBridge::Build(int concurrency) {
     return ret;
   }
 
-  // Clean up collector (no longer needed)
-  impl_->collector_index->Close();
-  impl_->collector_index.reset();
-  if (!impl_->collector_temp_dir.empty()) {
-    ailego::File::RemoveDirectory(impl_->collector_temp_dir);
-    impl_->collector_temp_dir.clear();
-  }
-
-  impl_->is_built = true;
   return 0;
 }
 
@@ -416,9 +290,7 @@ int IndexBridge::Search(const float* query, uint32_t dimension,
   
   if (!impl_ || !results) return -1;
 
-  // If not built yet, search in collector (Flat)
-  Index::Pointer& index =
-      impl_->is_built ? impl_->target_index : impl_->collector_index;
+  Index::Pointer& index = impl_->target_index;
   if (!index) return -1;
 
   results->clear();
@@ -434,23 +306,19 @@ int IndexBridge::Search(const float* query, uint32_t dimension,
   if (query_param) {
     search_param = query_param->Clone();
   } else {
-    if (impl_->is_built) {
-      switch (impl_->target_param->index_type) {
-        case IndexType::kFlat:
-          search_param = std::make_shared<FlatQueryParam>();
-          break;
-        case IndexType::kHNSW:
-          search_param = std::make_shared<HNSWQueryParam>();
-          break;
-        case IndexType::kIVF:
-          search_param = std::make_shared<IVFQueryParam>();
-          break;
-        default:
-          search_param = std::make_shared<FlatQueryParam>();
-          break;
-      }
-    } else {
-      search_param = std::make_shared<FlatQueryParam>();
+    switch (impl_->target_param->index_type) {
+      case IndexType::kFlat:
+        search_param = std::make_shared<FlatQueryParam>();
+        break;
+      case IndexType::kHNSW:
+        search_param = std::make_shared<HNSWQueryParam>();
+        break;
+      case IndexType::kIVF:
+        search_param = std::make_shared<IVFQueryParam>();
+        break;
+      default:
+        search_param = std::make_shared<FlatQueryParam>();
+        break;
     }
   }
   search_param->topk = topk;
@@ -481,11 +349,6 @@ int IndexBridge::Search(const float* query, uint32_t dimension,
 
 int IndexBridge::Serialize(std::string* output) {
   if (!impl_ || !output) return -1;
-
-  if (!impl_->is_built) {
-    LOG_ERROR("IndexBridge::Serialize: must Build() first");
-    return -1;
-  }
 
   if (!impl_->target_index) return -1;
 
@@ -555,17 +418,16 @@ uint32_t IndexBridge::GetDimension() const {
 
 bool IndexBridge::IsBuilt() const {
   if (!impl_) return false;
-  return impl_->is_built;
+  if (!impl_->target_index) return false;
+  return true;
 }
 
 int IndexBridge::Flush() {
   if (!impl_) return -1;
   std::lock_guard<std::mutex> lock(impl_->mutex);
 
-  if (impl_->is_built && impl_->target_index) {
+  if (impl_->target_index) {
     return impl_->target_index->Flush();
-  } else if (impl_->collector_index) {
-    return impl_->collector_index->Flush();
   }
   return 0;
 }
