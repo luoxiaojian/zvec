@@ -306,20 +306,7 @@ int IndexBridge::Search(const float* query, uint32_t dimension,
   if (query_param) {
     search_param = query_param->Clone();
   } else {
-    switch (impl_->target_param->index_type) {
-      case IndexType::kFlat:
-        search_param = std::make_shared<FlatQueryParam>();
-        break;
-      case IndexType::kHNSW:
-        search_param = std::make_shared<HNSWQueryParam>();
-        break;
-      case IndexType::kIVF:
-        search_param = std::make_shared<IVFQueryParam>();
-        break;
-      default:
-        search_param = std::make_shared<FlatQueryParam>();
-        break;
-    }
+    search_param = std::make_shared<HNSWQueryParam>();
   }
   search_param->topk = topk;
 
