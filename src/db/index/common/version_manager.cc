@@ -26,8 +26,8 @@
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/db/status.h>
 #include "db/common/file_helper.h"
-#include "db/index/common/manifest_serializer.h"
 #include "db/common/typedef.h"
+#include "db/index/common/manifest_serializer.h"
 
 namespace zvec {
 
