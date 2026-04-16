@@ -49,13 +49,12 @@ class ManifestSerializer {
   static constexpr size_t HEADER_SIZE = 16;  // magic + version + length + crc
 
   // Serialize a manifest to binary data
-  static Status Serialize(const CollectionSchema &schema, bool enable_mmap,
-                          uint32_t id_map_path_suffix,
-                          uint32_t delete_snapshot_path_suffix,
-                          uint32_t next_segment_id,
-                          const std::vector<SegmentMeta::Ptr> &persisted_segments,
-                          const SegmentMeta::Ptr &writing_segment,
-                          std::vector<uint8_t> *output);
+  static Status Serialize(
+      const CollectionSchema &schema, bool enable_mmap,
+      uint32_t id_map_path_suffix, uint32_t delete_snapshot_path_suffix,
+      uint32_t next_segment_id,
+      const std::vector<SegmentMeta::Ptr> &persisted_segments,
+      const SegmentMeta::Ptr &writing_segment, std::vector<uint8_t> *output);
 
   // Deserialize binary data to manifest fields
   static Status Deserialize(const uint8_t *data, size_t size,
@@ -68,13 +67,11 @@ class ManifestSerializer {
 
  private:
   // IndexParams serialization
-  static void WriteIndexParams(BinaryWriter *writer,
-                               const IndexParams *params);
+  static void WriteIndexParams(BinaryWriter *writer, const IndexParams *params);
   static IndexParams::Ptr ReadIndexParams(BinaryReader *reader, bool *ok);
 
   // FieldSchema serialization
-  static void WriteFieldSchema(BinaryWriter *writer,
-                               const FieldSchema &field);
+  static void WriteFieldSchema(BinaryWriter *writer, const FieldSchema &field);
   static FieldSchema::Ptr ReadFieldSchema(BinaryReader *reader, bool *ok);
 
   // CollectionSchema serialization

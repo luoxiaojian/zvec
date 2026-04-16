@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
 #include "db/common/manifest_serializer.h"
+#include <gtest/gtest.h>
 
 using namespace zvec;
 
@@ -24,8 +24,8 @@ class ManifestSerializerTest : public ::testing::Test {
     schema.set_name("test_collection");
     schema.set_max_doc_count_per_segment(5000000);
 
-    auto scalar_field = std::make_shared<FieldSchema>(
-        "name", DataType::STRING, false, nullptr);
+    auto scalar_field =
+        std::make_shared<FieldSchema>("name", DataType::STRING, false, nullptr);
     schema.add_field(scalar_field);
 
     auto vector_field = std::make_shared<FieldSchema>(
@@ -67,8 +67,8 @@ TEST_F(ManifestSerializerTest, EmptyManifestRoundTrip) {
   schema.set_name("empty");
 
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 0, 0, 0, {}, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 0, 0, 0, {},
+                                              nullptr, &buffer);
   ASSERT_TRUE(status.ok());
   EXPECT_GT(buffer.size(), ManifestSerializer::HEADER_SIZE);
 
@@ -217,14 +217,14 @@ TEST_F(ManifestSerializerTest, AllIndexTypesRoundTrip) {
   schema.add_field(ivf_field);
 
   // INVERT
-  auto invert_field = std::make_shared<FieldSchema>(
-      "scalar_idx", DataType::STRING, false,
-      std::make_shared<InvertIndexParams>(false));
+  auto invert_field =
+      std::make_shared<FieldSchema>("scalar_idx", DataType::STRING, false,
+                                    std::make_shared<InvertIndexParams>(false));
   schema.add_field(invert_field);
 
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 0, 0, 0, {}, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 0, 0, 0, {},
+                                              nullptr, &buffer);
   ASSERT_TRUE(status.ok());
 
   CollectionSchema out_schema;
@@ -284,10 +284,10 @@ TEST_F(ManifestSerializerTest, AllIndexTypesRoundTrip) {
 }
 
 TEST_F(ManifestSerializerTest, InvalidMagicNumber) {
-  std::vector<uint8_t> bad_data = {0x00, 0x00, 0x00, 0x00,  // wrong magic
-                                   0x01, 0x00, 0x00, 0x00,  // version
-                                   0x00, 0x00, 0x00, 0x00,  // length
-                                   0x00, 0x00, 0x00, 0x00}; // crc
+  std::vector<uint8_t> bad_data = {0x00, 0x00, 0x00, 0x00,   // wrong magic
+                                   0x01, 0x00, 0x00, 0x00,   // version
+                                   0x00, 0x00, 0x00, 0x00,   // length
+                                   0x00, 0x00, 0x00, 0x00};  // crc
 
   CollectionSchema schema;
   bool mmap;
@@ -295,9 +295,9 @@ TEST_F(ManifestSerializerTest, InvalidMagicNumber) {
   std::vector<SegmentMeta::Ptr> segs;
   SegmentMeta::Ptr writing;
 
-  auto status = ManifestSerializer::Deserialize(
-      bad_data.data(), bad_data.size(), &schema, &mmap, &id, &del, &next,
-      &segs, &writing);
+  auto status =
+      ManifestSerializer::Deserialize(bad_data.data(), bad_data.size(), &schema,
+                                      &mmap, &id, &del, &next, &segs, &writing);
   EXPECT_FALSE(status.ok());
 }
 
@@ -319,8 +319,8 @@ TEST_F(ManifestSerializerTest, TruncatedData) {
 TEST_F(ManifestSerializerTest, CorruptedCRC) {
   auto schema = MakeTestSchema();
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 0, 0, 0, {}, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 0, 0, 0, {},
+                                              nullptr, &buffer);
   ASSERT_TRUE(status.ok());
 
   // Corrupt a byte in the payload
@@ -334,9 +334,9 @@ TEST_F(ManifestSerializerTest, CorruptedCRC) {
   std::vector<SegmentMeta::Ptr> segs;
   SegmentMeta::Ptr writing;
 
-  status = ManifestSerializer::Deserialize(
-      buffer.data(), buffer.size(), &out_schema, &mmap, &id, &del, &next,
-      &segs, &writing);
+  status =
+      ManifestSerializer::Deserialize(buffer.data(), buffer.size(), &out_schema,
+                                      &mmap, &id, &del, &next, &segs, &writing);
   EXPECT_FALSE(status.ok());
 }
 
@@ -348,8 +348,8 @@ TEST_F(ManifestSerializerTest, NoWritingSegment) {
   std::vector<SegmentMeta::Ptr> persisted = {segment};
 
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 10, 20, 2, persisted, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 10, 20, 2,
+                                              persisted, nullptr, &buffer);
   ASSERT_TRUE(status.ok());
 
   CollectionSchema out_schema;
@@ -375,13 +375,13 @@ TEST_F(ManifestSerializerTest, FieldWithNoIndex) {
   CollectionSchema schema;
   schema.set_name("no_index");
 
-  auto field = std::make_shared<FieldSchema>(
-      "plain_field", DataType::DOUBLE, false, nullptr);
+  auto field = std::make_shared<FieldSchema>("plain_field", DataType::DOUBLE,
+                                             false, nullptr);
   schema.add_field(field);
 
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 0, 0, 0, {}, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 0, 0, 0, {},
+                                              nullptr, &buffer);
   ASSERT_TRUE(status.ok());
 
   CollectionSchema out_schema;
@@ -390,9 +390,9 @@ TEST_F(ManifestSerializerTest, FieldWithNoIndex) {
   std::vector<SegmentMeta::Ptr> segs;
   SegmentMeta::Ptr writing;
 
-  status = ManifestSerializer::Deserialize(
-      buffer.data(), buffer.size(), &out_schema, &mmap, &id, &del, &next,
-      &segs, &writing);
+  status =
+      ManifestSerializer::Deserialize(buffer.data(), buffer.size(), &out_schema,
+                                      &mmap, &id, &del, &next, &segs, &writing);
   ASSERT_TRUE(status.ok());
 
   ASSERT_EQ(out_schema.fields().size(), 1u);
@@ -427,8 +427,8 @@ TEST_F(ManifestSerializerTest, MultipleBlockTypes) {
   segment->add_persisted_block(vec_quant);
 
   std::vector<uint8_t> buffer;
-  auto status = ManifestSerializer::Serialize(
-      schema, false, 0, 0, 0, {segment}, nullptr, &buffer);
+  auto status = ManifestSerializer::Serialize(schema, false, 0, 0, 0, {segment},
+                                              nullptr, &buffer);
   ASSERT_TRUE(status.ok());
 
   CollectionSchema out_schema;
@@ -437,9 +437,9 @@ TEST_F(ManifestSerializerTest, MultipleBlockTypes) {
   std::vector<SegmentMeta::Ptr> out_segs;
   SegmentMeta::Ptr writing;
 
-  status = ManifestSerializer::Deserialize(
-      buffer.data(), buffer.size(), &out_schema, &mmap, &id, &del, &next,
-      &out_segs, &writing);
+  status = ManifestSerializer::Deserialize(buffer.data(), buffer.size(),
+                                           &out_schema, &mmap, &id, &del, &next,
+                                           &out_segs, &writing);
   ASSERT_TRUE(status.ok());
 
   ASSERT_EQ(out_segs.size(), 1u);

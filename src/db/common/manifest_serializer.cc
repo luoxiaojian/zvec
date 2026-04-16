@@ -394,8 +394,7 @@ Status ManifestSerializer::Serialize(
   WriteCollectionSchema(&payload_writer, schema);
 
   // Persisted segments
-  payload_writer.PutUint32(
-      static_cast<uint32_t>(persisted_segments.size()));
+  payload_writer.PutUint32(static_cast<uint32_t>(persisted_segments.size()));
   for (const auto &seg : persisted_segments) {
     WriteSegmentMeta(&payload_writer, *seg);
   }
@@ -408,8 +407,7 @@ Status ManifestSerializer::Serialize(
   }
 
   // Build final output: header + payload
-  uint32_t payload_length =
-      static_cast<uint32_t>(payload_writer.size());
+  uint32_t payload_length = static_cast<uint32_t>(payload_writer.size());
   uint32_t payload_crc =
       CRC32::Compute(payload_writer.data(), payload_writer.size());
 
@@ -469,8 +467,7 @@ Status ManifestSerializer::Deserialize(
   BinaryReader reader(payload_data, payload_length);
 
   // Scalar fields
-  if (!reader.GetBool(enable_mmap) ||
-      !reader.GetUint32(id_map_path_suffix) ||
+  if (!reader.GetBool(enable_mmap) || !reader.GetUint32(id_map_path_suffix) ||
       !reader.GetUint32(delete_snapshot_path_suffix) ||
       !reader.GetUint32(next_segment_id)) {
     return Status::InternalError("Failed to read manifest scalar fields");

@@ -98,7 +98,8 @@ Status Version::Save(const std::string &path, const Version &version) {
     return Status::InternalError("Failed to open file: %s", path.c_str());
   }
 
-  if (!ofs.write(reinterpret_cast<const char *>(buffer.data()), buffer.size())) {
+  if (!ofs.write(reinterpret_cast<const char *>(buffer.data()),
+                 buffer.size())) {
     LOG_ERROR("Failed to write manifest to file: %s", path.c_str());
     return Status::InternalError("Failed to write manifest to file");
   }
@@ -108,7 +109,8 @@ Status Version::Save(const std::string &path, const Version &version) {
 
 std::string Version::to_string() const {
   std::ostringstream oss;
-  oss << "Version{" << "schema:" << (schema_ ? schema_->to_string() : "null")
+  oss << "Version{"
+      << "schema:" << (schema_ ? schema_->to_string() : "null")
       << ",persisted_segment_metas:[";
 
   size_t i = 0;
