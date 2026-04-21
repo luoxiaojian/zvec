@@ -174,6 +174,33 @@ ailego::JsonObject HNSWRabitqIndexParam::SerializeToJsonObject(
   return json_obj;
 }
 
+ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
+  json_obj.set("max_degree", ailego::JsonValue(max_degree));
+  json_obj.set("search_list_size", ailego::JsonValue(search_list_size));
+  json_obj.set("alpha", ailego::JsonValue(alpha));
+  return json_obj;
+}
+
+bool VamanaIndexParam::DeserializeFromJsonObject(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::DeserializeFromJsonObject(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kVamana) {
+    LOG_ERROR("index_type is not kVamana");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, max_degree);
+  DESERIALIZE_VALUE_FIELD(json_obj, search_list_size);
+  DESERIALIZE_VALUE_FIELD(json_obj, alpha);
+
+  return true;
+}
+
 ailego::JsonObject QuantizerParam::SerializeToJsonObject(
     bool omit_empty_value) const {
   ailego::JsonObject json_obj;

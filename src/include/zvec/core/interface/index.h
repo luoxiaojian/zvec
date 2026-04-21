@@ -299,6 +299,23 @@ class HNSWIndex : public Index {
   HNSWIndexParam param_{};
 };
 
+class VamanaIndex : public Index {
+ public:
+  VamanaIndex() = default;
+
+ protected:
+  virtual int CreateAndInitStreamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+  int _get_coarse_search_topk(
+      const BaseIndexQueryParam::Pointer &search_param) override;
+
+ private:
+  VamanaIndexParam param_{};
+};
+
 class HNSWRabitqIndex : public Index {
  public:
   HNSWRabitqIndex() = default;
