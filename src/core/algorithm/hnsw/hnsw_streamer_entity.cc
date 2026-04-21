@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "hnsw_streamer_entity.h"
+#include <sys/mman.h>
 #include <ailego/utility/memory_helper.h>
 
 // #define DEBUG_PRINT
@@ -697,6 +698,147 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
     LOG_ERROR("HnswStreamerEntity new failed");
   }
   return HnswEntity::Pointer(entity);
+}
+
+// ============================================================================
+// HnswContiguousStreamerEntity implementation
+// ============================================================================
+
+char *HnswContiguousStreamerEntity::allocate_contiguous(size_t size) {
+  if (size == 0) {
+    return nullptr;
+  }
+#if defined(__linux__)
+  // Use mmap with MAP_ANONYMOUS for contiguous memory
+  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED) {
+    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  // Request transparent huge pages
+  ::madvise(ptr, size, MADV_HUGEPAGE);
+  return static_cast<char *>(ptr);
+#elif defined(__APPLE__)
+  // macOS: use mmap with MAP_ANONYMOUS
+  void *ptr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (ptr == MAP_FAILED) {
+    LOG_ERROR("mmap failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  return static_cast<char *>(ptr);
+#else
+  // Fallback: aligned allocation
+  void *ptr = std::aligned_alloc(ailego::MemoryHelper::PageSize(), size);
+  if (!ptr) {
+    LOG_ERROR("aligned_alloc failed for contiguous memory, size=%zu", size);
+    return nullptr;
+  }
+  return static_cast<char *>(ptr);
+#endif
+}
+
+void HnswContiguousStreamerEntity::release_contiguous_memory() {
+  if (node_base_) {
+#if defined(__linux__) || defined(__APPLE__)
+    ::munmap(node_base_, node_memory_size_);
+#else
+    std::free(node_base_);
+#endif
+    node_base_ = nullptr;
+    node_memory_size_ = 0;
+  }
+  if (upper_neighbor_base_) {
+#if defined(__linux__) || defined(__APPLE__)
+    ::munmap(upper_neighbor_base_, upper_neighbor_memory_size_);
+#else
+    std::free(upper_neighbor_base_);
+#endif
+    upper_neighbor_base_ = nullptr;
+    upper_neighbor_memory_size_ = 0;
+  }
+  upper_chunk_offsets_.clear();
+}
+
+int HnswContiguousStreamerEntity::build_contiguous_memory() {
+  release_contiguous_memory();
+
+  const uint32_t total_docs = doc_cnt();
+  if (total_docs == 0) {
+    return 0;
+  }
+
+  // --- Build contiguous node memory ---
+  const size_t per_node = node_size();
+  const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
+  node_memory_size_ = AlignHugePageSize(total_node_data);
+  node_base_ = allocate_contiguous(node_memory_size_);
+  if (!node_base_) {
+    return IndexError_Runtime;
+  }
+
+  // Copy node data from chunks into contiguous memory
+  // Each chunk holds node_cnt_per_chunk nodes, laid out at offset
+  // (id & mask) * node_size within the chunk.
+  const auto &chunks = node_chunks();
+  const uint32_t nodes_per_chunk = 1U << node_index_mask_bits();
+  for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
+    const void *chunk_data = nullptr;
+    size_t data_size = chunks[chunk_idx]->data_size();
+    chunks[chunk_idx]->read(0, &chunk_data, data_size);
+
+    // Number of nodes in this chunk
+    uint32_t base_id = chunk_idx * nodes_per_chunk;
+    uint32_t count_in_chunk =
+        std::min(nodes_per_chunk, total_docs - base_id);
+
+    // Copy each node's data
+    const char *src = static_cast<const char *>(chunk_data);
+    char *dst = node_base_ + static_cast<size_t>(base_id) * per_node;
+    std::memcpy(dst, src, static_cast<size_t>(count_in_chunk) * per_node);
+  }
+
+  // --- Build contiguous upper neighbor memory ---
+  const auto &upper_chunks = upper_neighbor_chunks();
+  if (upper_chunks.empty()) {
+    return 0;
+  }
+
+  // Sync all upper neighbor chunks
+  sync_upper_neighbor_chunks(upper_chunks.size() - 1);
+
+  // Calculate cumulative offsets and total size
+  upper_chunk_offsets_.resize(upper_chunks.size());
+  size_t total_upper_size = 0;
+  for (size_t i = 0; i < upper_chunks.size(); ++i) {
+    upper_chunk_offsets_[i] = total_upper_size;
+    total_upper_size += upper_chunks[i]->data_size();
+  }
+
+  upper_neighbor_memory_size_ = AlignHugePageSize(total_upper_size);
+  upper_neighbor_base_ = allocate_contiguous(upper_neighbor_memory_size_);
+  if (!upper_neighbor_base_) {
+    release_contiguous_memory();
+    return IndexError_Runtime;
+  }
+
+  // Copy upper neighbor data from chunks into contiguous memory
+  for (size_t i = 0; i < upper_chunks.size(); ++i) {
+    const void *chunk_data = nullptr;
+    size_t data_size = upper_chunks[i]->data_size();
+    upper_chunks[i]->read(0, &chunk_data, data_size);
+    std::memcpy(upper_neighbor_base_ + upper_chunk_offsets_[i],
+                chunk_data, data_size);
+  }
+
+  LOG_INFO(
+      "Built contiguous memory: node_size=%zu upper_neighbor_size=%zu "
+      "total_docs=%u node_chunks=%zu upper_chunks=%zu",
+      node_memory_size_, upper_neighbor_memory_size_, total_docs,
+      chunks.size(), upper_chunks.size());
+
+  return 0;
 }
 
 }  // namespace core
