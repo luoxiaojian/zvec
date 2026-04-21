@@ -173,6 +173,11 @@ class BufferStorage : public IndexStorage {
     this->cleanup();
   }
 
+  //! Retrieve the memory block type of this storage
+  MemoryBlock::MemoryBlockType memory_block_type(void) const override {
+    return MemoryBlock::MBT_BUFFERPOOL;
+  }
+
   //! Initialize storage
   int init(const ailego::Params &params) override {
     params.get(BUFFER_STORAGE_MEMORY_SIZE, &buffer_size_);
