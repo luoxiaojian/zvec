@@ -144,6 +144,23 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
     node_chunk = p.second;
     chunk_offset = 0UL;
     node_chunks_.emplace_back(node_chunk);
+
+    // Synchronously allocate corresponding dist chunk if dist storage is active
+    if (dist_loaded_ && dist_entry_size_ > 0) {
+      uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
+      uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
+      auto dp = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
+                                     chunk_index, dist_chunk_size);
+      if (ailego_unlikely(dp.first != 0)) {
+        LOG_ERROR("Alloc dist chunk %u failed", chunk_index);
+      } else {
+        dp.second->resize(dist_chunk_data_size);
+        while (dist_chunks_.size() <= chunk_index) {
+          dist_chunks_.emplace_back(nullptr);
+        }
+        dist_chunks_[chunk_index] = std::move(dp.second);
+      }
+    }
   } else {
     node_chunk = node_chunks_[chunk_index];
     chunk_offset = node_chunk->data_size();
@@ -205,6 +222,23 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
       }
       node_chunk = p.second;
       node_chunks_.emplace_back(node_chunk);
+
+      // Synchronously allocate corresponding dist chunk if dist storage is active
+      if (dist_loaded_ && dist_entry_size_ > 0) {
+        uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
+        uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
+        auto dp = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
+                                       chunk_idx, dist_chunk_size);
+        if (ailego_unlikely(dp.first != 0)) {
+          LOG_ERROR("Alloc dist chunk %u failed", chunk_idx);
+        } else {
+          dp.second->resize(dist_chunk_data_size);
+          while (dist_chunks_.size() <= chunk_idx) {
+            dist_chunks_.emplace_back(nullptr);
+          }
+          dist_chunks_[chunk_idx] = std::move(dp.second);
+        }
+      }
     }
     node_chunk = node_chunks_[chunk_idx];
     chunk_offset = (node_id & node_index_mask_) * node_size();
@@ -667,21 +701,11 @@ void VamanaStreamerEntity::update_neighbor_dists(
   if (!dist_loaded_) return;
 
   auto loc = get_dist_chunk_loc(id);
-  if (ailego_unlikely(loc.first >= dist_chunks_.size())) {
-    // Need to allocate a new dist chunk
-    uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
-    uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
-    auto p = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
-                                  loc.first, dist_chunk_size);
-    if (ailego_unlikely(p.first != 0)) {
-      LOG_ERROR("Alloc dist chunk %u failed", loc.first);
-      return;
-    }
-    p.second->resize(dist_chunk_data_size);
-    while (dist_chunks_.size() <= loc.first) {
-      dist_chunks_.emplace_back(nullptr);
-    }
-    dist_chunks_[loc.first] = std::move(p.second);
+  // Dist chunk must have been pre-allocated by add_vector or ensure_dist_storage
+  if (ailego_unlikely(loc.first >= dist_chunks_.size() ||
+                      dist_chunks_[loc.first] == nullptr)) {
+    LOG_ERROR("Dist chunk %u not allocated for node %u", loc.first, id);
+    return;
   }
 
   // Write distances: fill max_degree slots, zero-pad unused slots
