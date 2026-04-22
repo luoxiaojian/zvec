@@ -244,7 +244,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
     }
 
     // do prefetch
-    static constexpr node_id_t BATCH_SIZE = 12;
+    static constexpr node_id_t BATCH_SIZE = 2;
     static constexpr node_id_t PREFETCH_STEP = 2;
     for (uint32_t i = 0; i < std::min(BATCH_SIZE * PREFETCH_STEP, size); ++i) {
       ailego_prefetch(neighbor_vec_blocks[i].data());
