@@ -305,7 +305,7 @@ class VamanaStreamerEntity : public VamanaEntity {
     return 0;
   }
 
- private:
+ protected:
   IndexStreamer::Stats &stats_;
   std::mutex mutex_{};
   size_t max_index_size_{0UL};
@@ -320,14 +320,14 @@ class VamanaStreamerEntity : public VamanaEntity {
   mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_;
   HashMapPointer<key_t, node_id_t> keys_map_;
 
-  mutable std::vector<Chunk::Pointer> dist_chunks_{};
-
-  bool dist_loaded_{false};
-  uint32_t dist_entry_size_{0};  // max_degree * sizeof(dist_t)
   ChunkBroker::Pointer broker_;
 
- protected:
   mutable std::vector<Chunk::Pointer> node_chunks_{};
+
+ private:
+  mutable std::vector<Chunk::Pointer> dist_chunks_{};
+  bool dist_loaded_{false};
+  uint32_t dist_entry_size_{0};  // max_degree * sizeof(dist_t)
 };
 
 // --- Template specializations for typed MemoryBlock access ---

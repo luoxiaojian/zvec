@@ -554,9 +554,8 @@ class HnswStreamerEntity : public HnswEntity {
   HnswStreamerEntity &operator=(const HnswStreamerEntity &) = delete;
   static constexpr uint64_t kUpperHashMemoryInflateRatio = 2.0f;
 
- private:
+ protected:
   IndexStreamer::Stats &stats_;
-  HNSWHeader header_{};
   std::mutex mutex_{};
   size_t max_index_size_{0UL};
   uint32_t chunk_size_{kDefaultChunkSize};
@@ -581,7 +580,6 @@ class HnswStreamerEntity : public HnswEntity {
 
   ChunkBroker::Pointer broker_{};  // chunk broker
 
- protected:
   //! the chunks will be changed in searcher, so need mutable
   //! data chunk include: vector, key, level 0 neighbors
   mutable std::vector<Chunk::Pointer> node_chunks_{};
