@@ -71,6 +71,8 @@ static const std::string PARAM_VAMANA_STREAMER_MAX_SCAN_LIMIT(
     "proxima.vamana.streamer.max_scan_limit");
 static const std::string PARAM_VAMANA_STREAMER_MIN_SCAN_LIMIT(
     "proxima.vamana.streamer.min_scan_limit");
+static const std::string PARAM_VAMANA_STREAMER_SATURATE_GRAPH(
+    "proxima.vamana.streamer.saturate_graph");
 
 }  // namespace core
 }  // namespace zvec

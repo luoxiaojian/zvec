@@ -52,6 +52,7 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
              &force_padding_topk_enabled_);
   params.get(PARAM_VAMANA_STREAMER_USE_ID_MAP, &use_id_map_);
   params.get(PARAM_VAMANA_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
+  params.get(PARAM_VAMANA_STREAMER_SATURATE_GRAPH, &saturate_graph_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -152,6 +153,7 @@ int VamanaStreamer::setup_entity() {
   entity_->set_search_list_size(search_list_size_);
   entity_->set_max_occlusion_size(max_occlusion_size_);
   entity_->set_alpha(alpha_);
+  entity_->set_saturate_graph(saturate_graph_);
 
   int ret = entity_->init(docs_hard_limit_);
   if (ret != 0) {

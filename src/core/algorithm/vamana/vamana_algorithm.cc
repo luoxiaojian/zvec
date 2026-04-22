@@ -338,9 +338,12 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
     cur_alpha *= 1.2f;
   }
 
-  // Saturate graph: if alpha > 1, fill remaining slots with any un-selected
-  // candidates (DiskANN's _saturate_graph behavior)
-  if (alpha > 1.0f) {
+  // Saturate graph: if enabled and alpha > 1, fill remaining slots with any
+  // un-selected candidates. This improves graph connectivity (better recall)
+  // at the cost of slightly more distance computations during search.
+  // Configurable via proxima.vamana.streamer.saturate_graph (default: false,
+  // matching DiskANN's default behavior).
+  if (entity_.saturate_graph() && alpha > 1.0f) {
     for (size_t i = 0; i < n && result.size() < max_degree; ++i) {
       if (candidates[i].first == id) continue;
       bool already_selected = false;

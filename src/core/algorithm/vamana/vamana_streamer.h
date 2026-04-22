@@ -178,6 +178,7 @@ class VamanaStreamer : public IndexStreamer {
   bool get_vector_enabled_{false};
   bool force_padding_topk_enabled_{false};
   bool use_id_map_{true};
+  bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
 
   ailego::SharedMutex shared_mutex_{};
 };

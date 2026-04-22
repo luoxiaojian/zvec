@@ -93,11 +93,15 @@ class VamanaEntity {
 
   typedef std::shared_ptr<VamanaEntity> Pointer;
 
+  // Options bit flags (stored in VamanaGraphHeader::options)
+  static constexpr uint32_t kOptionSaturateGraph = 1U << 0;
+
   // Default constants
   static constexpr uint32_t kDefaultMaxDegree = 64;
   static constexpr uint32_t kDefaultSearchListSize = 100;
   static constexpr uint32_t kDefaultMaxOcclusionSize = 750;
   static constexpr float kDefaultAlpha = 1.2f;
+  static constexpr bool kDefaultSaturateGraph = false;
   static constexpr uint32_t kDefaultEf = 200;
   static constexpr float kDefaultScanRatio = 0.1f;
   static constexpr uint32_t kDefaultBruteForceThreshold = 1000U;
@@ -134,6 +138,17 @@ class VamanaEntity {
     header_.graph.max_occlusion_size = val;
   }
   void set_alpha(float val) { header_.graph.alpha = val; }
+
+  inline bool saturate_graph() const {
+    return (header_.graph.options & kOptionSaturateGraph) != 0;
+  }
+  void set_saturate_graph(bool val) {
+    if (val) {
+      header_.graph.options |= kOptionSaturateGraph;
+    } else {
+      header_.graph.options &= ~kOptionSaturateGraph;
+    }
+  }
 
   // Neighbor size: NeighborsHeader + max_degree * sizeof(node_id_t)
   inline size_t neighbors_size() const {
