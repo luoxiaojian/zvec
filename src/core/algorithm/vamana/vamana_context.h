@@ -133,6 +133,9 @@ class VamanaContext : public IndexContext {
   inline std::vector<uint8_t> &prune_active() {
     return prune_active_;
   }
+  inline std::vector<float> &prune_occlude_factor() {
+    return prune_occlude_factor_;
+  }
   inline std::vector<std::pair<node_id_t, dist_t>> &prune_result() {
     return prune_result_;
   }
@@ -298,6 +301,7 @@ class VamanaContext : public IndexContext {
   // Pre-allocated buffers for robust_prune optimization
   std::vector<const void *> prune_vec_cache_;
   std::vector<uint8_t> prune_active_;
+  std::vector<float> prune_occlude_factor_;
   std::vector<std::pair<node_id_t, dist_t>> prune_result_;
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;

@@ -195,15 +195,17 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
 
     // Update candidates and topk
+    // DiskANN inserts ALL unvisited neighbors into the priority queue
+    // unconditionally (the queue auto-maintains its size limit L).
+    // We must do the same: insert into candidates unconditionally,
+    // and only filter for topk_heap (which tracks the final results).
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t node_dist = dists[i];
 
-      if (!topk_heap.full() || node_dist < topk_heap[0].second) {
-        candidates.emplace(node, node_dist);
-        if (!filter(node)) {
-          topk_heap.emplace(node, node_dist);
-        }
+      candidates.emplace(node, node_dist);
+      if (!filter(node)) {
+        topk_heap.emplace(node, node_dist);
       }
     }
   }
@@ -212,13 +214,17 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 // ============================================================================
 // robust_prune: Select up to max_degree diverse neighbors from candidates.
 //
-// Algorithm (Vamana / DiskANN RobustPrune):
+// Faithfully follows DiskANN's occlude_list algorithm:
 //   1. Sort candidates by distance (ascending)
-//   2. Greedily select: for each candidate c (closest first),
-//      add c to result if for all already-selected neighbors p:
-//        alpha * dist(c, p) > dist(query, c)
-//      This ensures angular diversity — neighbors are spread out.
-//   3. If result is still under max_degree, fill with remaining candidates.
+//   2. Truncate to max_occlusion_size (DiskANN's maxc parameter)
+//   3. Multi-round alpha sweep: cur_alpha starts at 1.0, increments by *1.2
+//      each round until reaching alpha. This progressively relaxes the
+//      occlusion criterion.
+//   4. For each candidate, compute occlude_factor as:
+//        max over all selected neighbors p of: dist(query, candidate) / dist(p, candidate)
+//      If occlude_factor > cur_alpha, the candidate is occluded in this round.
+//   5. After all rounds, if _saturate_graph and alpha > 1, fill remaining
+//      slots with any un-selected candidates.
 // ============================================================================
 template <typename EntityType>
 void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
@@ -236,18 +242,23 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
   VamanaDistCalculator &dc = ctx->dist_calculator();
   size_t n = candidates.size();
 
-  // Pre-cache all candidate vectors at once.
-  // This eliminates O(n^2) virtual get_vector() calls in the nested loop
-  // by reducing to O(n) calls.
+  // Truncate to max_occlusion_size (DiskANN's maxc parameter)
+  size_t maxc = entity_.max_occlusion_size();
+  if (maxc > 0 && n > maxc) {
+    n = maxc;
+  }
+
+  // Pre-cache all candidate vectors at once
   auto &vec_cache = ctx->prune_vec_cache();
   vec_cache.resize(n);
   for (size_t i = 0; i < n; ++i) {
     vec_cache[i] = entity_.get_vector(candidates[i].first);
   }
 
-  // Active flags using pre-allocated buffer (avoids heap alloc per call)
-  auto &active = ctx->prune_active();
-  active.assign(n, 1);
+  // occlude_factor: tracks the maximum occlusion ratio for each candidate
+  // (DiskANN: occlude_factor[t] = max over selected p of dist_to_query/dist_to_p)
+  auto &occlude_factor = ctx->prune_occlude_factor();
+  occlude_factor.assign(n, 0.0f);
 
   // Pre-allocated buffers for batch distance computation
   auto &batch_vecs = ctx->batch_vecs_buf();
@@ -257,42 +268,77 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
   batch_dists.resize(n);
   batch_indices.resize(n);
 
-  for (size_t i = 0; i < n && result.size() < max_degree; ++i) {
-    if (!active[i]) continue;
-    if (candidates[i].first == id) continue;  // skip self
+  // Multi-round alpha sweep (DiskANN: cur_alpha starts at 1, increments *1.2)
+  float cur_alpha = 1.0f;
+  while (cur_alpha <= alpha + 1e-6f && result.size() < max_degree) {
+    for (size_t i = 0; i < n && result.size() < max_degree; ++i) {
+      if (occlude_factor[i] > cur_alpha) {
+        continue;
+      }
 
-    node_id_t candidate_id = candidates[i].first;
-    dist_t candidate_dist = candidates[i].second;
+      // Mark as consumed so it won't be reconsidered
+      occlude_factor[i] = std::numeric_limits<float>::max();
 
-    const void *selected_vec = vec_cache[i];
-    if (ailego_unlikely(selected_vec == nullptr)) continue;
+      // Skip self-loops
+      if (candidates[i].first == id) continue;
 
-    // Add this candidate as a neighbor
-    result.emplace_back(candidate_id, candidate_dist);
+      const void *selected_vec = vec_cache[i];
+      if (ailego_unlikely(selected_vec == nullptr)) continue;
 
-    // Collect remaining active candidates for batch distance computation
-    uint32_t batch_count = 0;
-    for (size_t j = i + 1; j < n; ++j) {
-      if (!active[j]) continue;
-      if (ailego_unlikely(vec_cache[j] == nullptr)) continue;
-      batch_vecs[batch_count] = vec_cache[j];
-      batch_indices[batch_count] = static_cast<uint32_t>(j);
-      batch_count++;
-    }
+      // Add this candidate as a neighbor
+      node_id_t candidate_id = candidates[i].first;
+      dist_t candidate_dist = candidates[i].second;
+      result.emplace_back(candidate_id, candidate_dist);
 
-    if (batch_count > 0) {
-      // Batch compute distances from selected candidate to all remaining
-      // active candidates using SIMD-optimized batch distance
-      dc.batch_dist_pair(selected_vec, batch_vecs.data(), batch_count,
-                         batch_dists.data());
+      // Update occlude_factor for remaining candidates
+      // Collect candidates that haven't been consumed yet
+      uint32_t batch_count = 0;
+      for (size_t j = i + 1; j < n; ++j) {
+        if (occlude_factor[j] > alpha) continue;  // already fully occluded
+        if (ailego_unlikely(vec_cache[j] == nullptr)) continue;
+        batch_vecs[batch_count] = vec_cache[j];
+        batch_indices[batch_count] = static_cast<uint32_t>(j);
+        batch_count++;
+      }
 
-      // Alpha-based occlusion check: if alpha * dist(selected, other) <=
-      // dist(query, other), then `other` is occluded by `selected`.
-      for (uint32_t k = 0; k < batch_count; ++k) {
-        uint32_t j = batch_indices[k];
-        if (alpha * batch_dists[k] <= candidates[j].second) {
-          active[j] = false;
+      if (batch_count > 0) {
+        // Batch compute distances from selected candidate to remaining
+        dc.batch_dist_pair(selected_vec, batch_vecs.data(), batch_count,
+                           batch_dists.data());
+
+        // DiskANN (L2/Cosine):
+        //   occlude_factor[t] = max(occlude_factor[t], dist_to_query / dist_between)
+        // where dist_to_query = candidates[j].second (distance from query to j)
+        //       dist_between = batch_dists[k] (distance from selected to j)
+        for (uint32_t k = 0; k < batch_count; ++k) {
+          uint32_t j = batch_indices[k];
+          float djk = batch_dists[k];
+          if (djk == 0.0f) {
+            occlude_factor[j] = std::numeric_limits<float>::max();
+          } else {
+            occlude_factor[j] =
+                std::max(occlude_factor[j], candidates[j].second / djk);
+          }
         }
+      }
+    }
+    cur_alpha *= 1.2f;
+  }
+
+  // Saturate graph: if alpha > 1, fill remaining slots with any un-selected
+  // candidates (DiskANN's _saturate_graph behavior)
+  if (alpha > 1.0f) {
+    for (size_t i = 0; i < n && result.size() < max_degree; ++i) {
+      if (candidates[i].first == id) continue;
+      bool already_selected = false;
+      for (const auto &r : result) {
+        if (r.first == candidates[i].first) {
+          already_selected = true;
+          break;
+        }
+      }
+      if (!already_selected) {
+        result.emplace_back(candidates[i].first, candidates[i].second);
       }
     }
   }
