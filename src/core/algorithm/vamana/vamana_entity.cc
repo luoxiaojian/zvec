@@ -27,6 +27,8 @@ const std::string VamanaEntity::kGraphOffsetsSegmentId =
     "vamana.graph.offsets";
 const std::string VamanaEntity::kGraphMappingSegmentId =
     "vamana.graph.mapping";
+const std::string VamanaEntity::kGraphNeighborDistsSegmentId =
+    "vamana.graph.neighbor_dists";
 
 int VamanaEntity::CalcAndAddPadding(const IndexDumper::Pointer &dumper,
                                     size_t data_size, size_t *padding_size) {
@@ -121,6 +123,32 @@ int64_t VamanaEntity::dump_neighbors(
                       total_size);
 }
 
+int64_t VamanaEntity::dump_neighbor_dists(
+    const IndexDumper::Pointer &dumper,
+    const std::vector<node_id_t> &reorder_mapping) const {
+  if (!dist_storage_loaded()) {
+    // No distance data to dump — this is fine for read-only indices
+    return 0;
+  }
+
+  uint32_t max_deg = static_cast<uint32_t>(max_degree());
+  size_t dist_entry = max_deg * sizeof(dist_t);
+  size_t total_size = doc_cnt() * dist_entry;
+  std::vector<uint8_t> buffer(total_size, 0);
+
+  for (node_id_t i = 0; i < doc_cnt(); ++i) {
+    node_id_t old_id = reorder_mapping[i];
+    const dist_t *dists = get_neighbor_dists(old_id);
+    if (dists != nullptr) {
+      memcpy(buffer.data() + static_cast<size_t>(i) * dist_entry, dists,
+             dist_entry);
+    }
+  }
+
+  return dump_segment(dumper, kGraphNeighborDistsSegmentId, buffer.data(),
+                      total_size);
+}
+
 int64_t VamanaEntity::dump_mapping_segment(const IndexDumper::Pointer &dumper,
                                            const key_t *keys) const {
   size_t total_size = doc_cnt() * sizeof(key_t);
@@ -167,7 +195,10 @@ int64_t VamanaEntity::dump_segments(const IndexDumper::Pointer &dumper,
   int64_t map_size = dump_mapping_segment(dumper, keys);
   if (map_size < 0) return map_size;
 
-  return hd_size + vec_size + nbr_size + map_size;
+  int64_t dist_size = dump_neighbor_dists(dumper, n2o_mapping);
+  if (dist_size < 0) return dist_size;
+
+  return hd_size + vec_size + nbr_size + map_size + dist_size;
 }
 
 }  // namespace core

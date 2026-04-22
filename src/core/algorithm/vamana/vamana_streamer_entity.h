@@ -60,6 +60,15 @@ class VamanaStreamerEntity : public VamanaEntity {
   virtual int dump(const IndexDumper::Pointer &dumper) override;
   virtual void update_entry_point(node_id_t ep) override;
 
+  // --- Neighbor distance storage ---
+  int ensure_dist_storage() override;
+  bool dist_storage_loaded() const override { return dist_loaded_; }
+  const dist_t *get_neighbor_dists(node_id_t id) const override;
+  void update_neighbor_dists(
+      node_id_t id,
+      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
+  void set_neighbor_dist(node_id_t id, uint32_t idx, dist_t dist) override;
+
   virtual VamanaStorageMode storage_mode() const {
     return VamanaStorageMode::kMmap;
   }
@@ -204,6 +213,21 @@ class VamanaStreamerEntity : public VamanaEntity {
     return std::make_pair(node_chunks_[chunk_idx].get(), offset);
   }
 
+  // Get chunk location for neighbor distance data.
+  // Uses the same chunk indexing as node chunks but with dist_entry_size_.
+  inline std::pair<uint32_t, uint32_t> get_dist_chunk_loc(
+      node_id_t id) const {
+    uint32_t chunk_idx = id >> node_index_mask_bits_;
+    uint32_t offset = (id & node_index_mask_) * dist_entry_size_;
+    return std::make_pair(chunk_idx, offset);
+  }
+
+  void sync_dist_chunks(size_t idx) const {
+    sync_chunks(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST, idx, &dist_chunks_);
+  }
+
+  int alloc_dist_chunks_for_existing_nodes();
+
   size_t estimate_doc_capacity() const {
     return node_chunks_.capacity() * node_cnt_per_chunk_;
   }
@@ -274,6 +298,9 @@ class VamanaStreamerEntity : public VamanaEntity {
   HashMapPointer<key_t, node_id_t> keys_map_;
 
   mutable std::vector<Chunk::Pointer> node_chunks_{};
+  mutable std::vector<Chunk::Pointer> dist_chunks_{};
+  bool dist_loaded_{false};
+  uint32_t dist_entry_size_{0};  // max_degree * sizeof(dist_t)
   ChunkBroker::Pointer broker_;
 };
 

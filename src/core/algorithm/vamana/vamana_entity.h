@@ -179,6 +179,32 @@ class VamanaEntity {
   virtual void add_neighbor(node_id_t id, uint32_t size,
                             node_id_t neighbor_id) {}
 
+  // --- Neighbor distance storage (CSR-like, lazy-loaded) ---
+  // Each node has max_degree dist_t slots, the i-th slot stores the distance
+  // from this node to its i-th neighbor. Only allocated/loaded when needed
+  // (first write operation). Search-only paths never touch this data.
+
+  // Ensure distance storage is allocated/loaded. Must be called before
+  // any get/set neighbor dist operations. Thread-safe (idempotent).
+  virtual int ensure_dist_storage() { return 0; }
+
+  // Whether distance storage is currently loaded
+  virtual bool dist_storage_loaded() const { return false; }
+
+  // Get pointer to the distance array for node `id`.
+  // Returns nullptr if dist storage is not loaded.
+  virtual const dist_t *get_neighbor_dists(node_id_t id) const {
+    return nullptr;
+  }
+
+  // Update all neighbor distances for node `id` from a prune result.
+  virtual void update_neighbor_dists(
+      node_id_t id,
+      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {}
+
+  // Set the distance for the `idx`-th neighbor of node `id`.
+  virtual void set_neighbor_dist(node_id_t id, uint32_t idx, dist_t dist) {}
+
   virtual int dump(const IndexDumper::Pointer &dumper) {
     return IndexError_NotImplemented;
   }
@@ -219,6 +245,10 @@ class VamanaEntity {
       const std::vector<node_id_t> &reorder_mapping,
       const std::vector<node_id_t> &neighbor_mapping) const;
 
+  int64_t dump_neighbor_dists(
+      const IndexDumper::Pointer &dumper,
+      const std::vector<node_id_t> &reorder_mapping) const;
+
   int64_t dump_mapping_segment(const IndexDumper::Pointer &dumper,
                                const key_t *keys) const;
 
@@ -247,6 +277,7 @@ class VamanaEntity {
   const static std::string kGraphNeighborsSegmentId;
   const static std::string kGraphOffsetsSegmentId;
   const static std::string kGraphMappingSegmentId;
+  const static std::string kGraphNeighborDistsSegmentId;
 
   static constexpr uint32_t kRevision = 0U;
 

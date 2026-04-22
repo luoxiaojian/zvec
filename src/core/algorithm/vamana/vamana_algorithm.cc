@@ -29,6 +29,9 @@ namespace core {
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
+  // Lazily initialize distance storage on first insert
+  entity_.ensure_dist_storage();
+
   spin_lock_.lock();
   auto entry_point = entity_.entry_point();
 
@@ -61,8 +64,9 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   // Copy result before reverse updates (which also call robust_prune)
   auto pruned_neighbors = ctx->prune_result();
 
-  // Step 3: Update the new node's neighbor list
+  // Step 3: Update the new node's neighbor list and distances
   entity_.update_neighbors(id, pruned_neighbors);
+  entity_.update_neighbor_dists(id, pruned_neighbors);
 
   // Step 4: Reverse-link updates
   update_neighbors_and_reverse_links(id, pruned_neighbors, ctx);
@@ -386,28 +390,38 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
   }
 
   if (current_size < max_deg) {
-    // Simply append
+    // Simply append and record distance
     entity_.add_neighbor(neighbor_id, current_size, id);
+    entity_.set_neighbor_dist(neighbor_id, current_size, dist);
     return;
   }
 
   // Need to prune: collect current neighbors + new node into candidates
   VamanaDistCalculator &dc = ctx->dist_calculator();
-  const void *neighbor_vec = entity_.get_vector(neighbor_id);
-  if (ailego_unlikely(neighbor_vec == nullptr)) return;
 
   // Reuse update_heap from context instead of creating a new TopkHeap each time
   TopkHeap &prune_candidates = ctx->update_heap();
   prune_candidates.clear();
   prune_candidates.limit(max_deg + 1);
 
-  // Add existing neighbors
-  for (uint32_t i = 0; i < current_size; ++i) {
-    node_id_t nbr = current_neighbors[i];
-    const void *nbr_vec = entity_.get_vector(nbr);
-    if (ailego_unlikely(nbr_vec == nullptr)) continue;
-    dist_t nbr_dist = dc.dist(neighbor_vec, nbr_vec);
-    prune_candidates.emplace(nbr, nbr_dist);
+  // Add existing neighbors — use cached distances when available
+  const dist_t *cached_dists = entity_.get_neighbor_dists(neighbor_id);
+  if (cached_dists != nullptr) {
+    // Fast path: read distances from storage, no recomputation needed
+    for (uint32_t i = 0; i < current_size; ++i) {
+      prune_candidates.emplace(current_neighbors[i], cached_dists[i]);
+    }
+  } else {
+    // Fallback: compute distances (first time or dist storage not loaded)
+    const void *neighbor_vec = entity_.get_vector(neighbor_id);
+    if (ailego_unlikely(neighbor_vec == nullptr)) return;
+    for (uint32_t i = 0; i < current_size; ++i) {
+      node_id_t nbr = current_neighbors[i];
+      const void *nbr_vec = entity_.get_vector(nbr);
+      if (ailego_unlikely(nbr_vec == nullptr)) continue;
+      dist_t nbr_dist = dc.dist(neighbor_vec, nbr_vec);
+      prune_candidates.emplace(nbr, nbr_dist);
+    }
   }
 
   // Add the new reverse link
@@ -416,8 +430,10 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
   // RobustPrune from neighbor_id's perspective
   robust_prune(neighbor_id, prune_candidates, entity_.alpha(), max_deg, ctx);
 
-  // Update neighbor_id's neighbor list
-  entity_.update_neighbors(neighbor_id, ctx->prune_result());
+  // Update neighbor_id's neighbor list and distances
+  const auto &prune_result = ctx->prune_result();
+  entity_.update_neighbors(neighbor_id, prune_result);
+  entity_.update_neighbor_dists(neighbor_id, prune_result);
 }
 
 // Explicit template instantiation for all entity types
