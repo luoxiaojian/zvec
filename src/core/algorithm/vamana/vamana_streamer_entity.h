@@ -548,28 +548,58 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
+  // Degrade to mmap mode by releasing contiguous memory.
+  // Called on first insert. After this, typed methods fall back to the
+  // parent MmapStreamerEntity implementation via chunk base pointers.
+  void degrade_to_mmap() {
+    release_contiguous_memory();
+    LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
+  }
+
+  bool is_contiguous() const { return node_base_ != nullptr; }
+
+  int add_vector(key_t key, const void *vec, node_id_t *id) override {
+    if (ailego_unlikely(is_contiguous())) degrade_to_mmap();
+    return VamanaMmapStreamerEntity::add_vector(key, vec, id);
+  }
+
+  int add_vector_with_id(node_id_t id, const void *vec) override {
+    if (ailego_unlikely(is_contiguous())) degrade_to_mmap();
+    return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
+  }
+
   inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
-                      vector_size() + sizeof(key_t);
-    MmapMemoryBlock block(const_cast<char *>(ptr));
-    return TypedNeighbors(std::move(block));
+    if (ailego_likely(node_base_ != nullptr)) {
+      const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
+                        vector_size() + sizeof(key_t);
+      MmapMemoryBlock block(const_cast<char *>(ptr));
+      return TypedNeighbors(std::move(block));
+    }
+    return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
 
   inline int get_vector_typed(const node_id_t *ids, uint32_t count,
                               std::vector<MmapMemoryBlock> &vec_blocks) const {
-    vec_blocks.resize(count);
-    for (auto i = 0U; i < count; ++i) {
-      const char *ptr = node_base_ + static_cast<size_t>(ids[i]) * node_size();
-      vec_blocks[i].reset(const_cast<char *>(ptr));
+    if (ailego_likely(node_base_ != nullptr)) {
+      vec_blocks.resize(count);
+      for (auto i = 0U; i < count; ++i) {
+        const char *ptr =
+            node_base_ + static_cast<size_t>(ids[i]) * node_size();
+        vec_blocks[i].reset(const_cast<char *>(ptr));
+      }
+      return 0;
     }
-    return 0;
+    return VamanaMmapStreamerEntity::get_vector_typed(ids, count, vec_blocks);
   }
 
   inline key_t get_key_typed(node_id_t id) const {
-    if (!use_key_info_map()) return id;
-    const char *ptr =
-        node_base_ + static_cast<size_t>(id) * node_size() + vector_size();
-    return *reinterpret_cast<const key_t *>(ptr);
+    if (ailego_likely(node_base_ != nullptr)) {
+      if (!use_key_info_map()) return id;
+      const char *ptr =
+          node_base_ + static_cast<size_t>(id) * node_size() + vector_size();
+      return *reinterpret_cast<const key_t *>(ptr);
+    }
+    return VamanaMmapStreamerEntity::get_key_typed(id);
   }
 
  private:
