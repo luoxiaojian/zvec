@@ -127,8 +127,13 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   candidates.clear();
   visit.clear();
 
-  // Initialize with entry point using single distance (consistent with HNSW).
-  dist_t entry_dist = dc.dist(entry_point);
+  // Initialize with entry point using batch_dist (single-element batch).
+  // We must NOT use dc.dist(entry_point) here because dist() calls
+  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
+  // expects two raw int8 inputs), but query_ has been preprocessed by
+  // reset_query (+128 shift to uint8). batch_dist() correctly calls
+  // batch_distance_() which expects the preprocessed uint8 query.
+  dist_t entry_dist = dc.batch_dist(entry_point);
   if (ailego_unlikely(dc.error())) {
     return;
   }

@@ -42,7 +42,12 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
 
   level_t cur_level = cur_max_level;
-  dist_t dist = ctx->dist_calculator()(entry_point);
+  // Use batch_dist instead of dist() for entry point distance.
+  // dist() calls distance_() (sign/abs trick, expects two raw int8 inputs),
+  // but query_ has been preprocessed by reset_query (+128 shift to uint8).
+  // batch_dist() correctly calls batch_distance_() which handles the
+  // preprocessed uint8 query with proper +128 compensation.
+  dist_t dist = ctx->dist_calculator().batch_dist(entry_point);
   for (; cur_level > level; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
@@ -97,9 +102,10 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::select_entry_point(
-    level_t level, node_id_t *entry_point, dist_t *dist,
-    HnswContext *ctx) const {
+void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
+                                                   node_id_t *entry_point,
+                                                   dist_t *dist,
+                                                   HnswContext *ctx) const {
   const auto &entity = entity_;
   HnswDistCalculator &dc = ctx->dist_calculator();
   while (true) {
@@ -113,8 +119,7 @@ void HnswAlgorithm<EntityType>::select_entry_point(
     }
 
     std::vector<MemBlockType> neighbor_vec_blocks;
-    int ret =
-        entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
+    int ret = entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -152,8 +157,8 @@ void HnswAlgorithm<EntityType>::select_entry_point(
 
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
-                                               TopkHeap &topk_heap,
-                                               HnswContext *ctx) {
+                                              TopkHeap &topk_heap,
+                                              HnswContext *ctx) {
   if (ailego_unlikely(topk_heap.size() == 0)) {
     return;
   }
@@ -172,9 +177,10 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::search_neighbors(
-    level_t level, node_id_t *entry_point, dist_t *dist, TopkHeap &topk,
-    HnswContext *ctx) const {
+void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
+                                                 node_id_t *entry_point,
+                                                 dist_t *dist, TopkHeap &topk,
+                                                 HnswContext *ctx) const {
   const auto &entity = entity_;
   HnswDistCalculator &dc = ctx->dist_calculator();
   VisitFilter &visit = ctx->visit_filter();
@@ -228,8 +234,8 @@ void HnswAlgorithm<EntityType>::search_neighbors(
     }
 
     std::vector<MemBlockType> neighbor_vec_blocks;
-    int ret = entity.get_vector_typed(neighbor_ids.data(), size,
-                                      neighbor_vec_blocks);
+    int ret =
+        entity.get_vector_typed(neighbor_ids.data(), size, neighbor_vec_blocks);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -364,14 +370,20 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
         break;
       }
 
-      static constexpr node_id_t PREFETCH_STEP = 2;
+      // static constexpr node_id_t PREFETCH_STEP = 2;
+      // Batch distance computation (consistent with search_neighbors).
+      // Uses batch_distance_() which correctly handles the preprocessed
+      // uint8 query, unlike distance_() which expects two raw int8 inputs.
+      std::vector<float> dists(size);
+      std::vector<const void *> neighbor_vecs(size);
+      for (uint32_t i = 0; i < size; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
+      dc.batch_dist(neighbor_vecs.data(), size, dists.data());
+
       for (uint32_t i = 0; i < size; ++i) {
         node_id_t node = neighbor_ids[i];
-        node_id_t prefetch_id = i + PREFETCH_STEP;
-        if (prefetch_id < size) {
-          ailego_prefetch(neighbor_vec_blocks[prefetch_id].data());
-        }
-        dist_t cur_dist = dc.dist(neighbor_vec_blocks[i].data());
+        dist_t cur_dist = dists[i];
 
         if (!filter(node)) {
           std::string group_id = group_by(node);
@@ -395,8 +407,8 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
 template <typename EntityType>
 void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
-                                                  node_id_t id, level_t level,
-                                                  TopkHeap &topk_heap) {
+                                                 node_id_t id, level_t level,
+                                                 TopkHeap &topk_heap) {
   topk_heap.sort();
 
   uint32_t max_neighbor_cnt = entity_.neighbor_cnt(level);
