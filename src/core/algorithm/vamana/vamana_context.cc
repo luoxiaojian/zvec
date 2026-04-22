@@ -19,40 +19,79 @@ namespace zvec {
 namespace core {
 
 VamanaContext::VamanaContext(size_t dimension,
-                            const IndexMetric::Pointer &metric,
-                            const VamanaEntity::Pointer &entity)
+                             const IndexMetric::Pointer &metric,
+                             const VamanaEntity::Pointer &entity)
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric, dimension),
       metric_(metric) {}
 
 VamanaContext::VamanaContext(const IndexMetric::Pointer &metric,
-                            const VamanaEntity::Pointer &entity)
+                             const VamanaEntity::Pointer &entity)
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric),
       metric_(metric) {}
 
-VamanaContext::~VamanaContext() {}
+VamanaContext::~VamanaContext() {
+  visit_filter_.destroy();
+}
 
 int VamanaContext::init(ContextType type) {
+  int ret;
+  uint32_t doc_cnt;
+
   type_ = type;
   results_.resize(1);
   topk_heap_.limit(std::max(topk_, ef_));
   update_heap_.limit(entity_->max_degree());
 
-  uint32_t max_scan_cnt = compute_max_scan_num(reserve_max_doc_cnt_);
-  max_scan_num_ = max_scan_cnt;
-  visit_filter_.reset(reserve_max_doc_cnt_, max_scan_cnt);
-  candidates_.limit(max_scan_num_);
+  switch (type) {
+    case kBuilderContext:
+      ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
+                               max_scan_num_, filter_negative_prob_);
+      if (ret != 0) {
+        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
+        return ret;
+      }
+      candidates_.limit(max_scan_num_);
+      break;
+
+    case kSearcherContext:
+      ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(), max_scan_num_,
+                               filter_negative_prob_);
+      if (ret != 0) {
+        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
+        return ret;
+      }
+      candidates_.limit(max_scan_num_);
+      break;
+
+    case kStreamerContext:
+      doc_cnt = entity_->doc_cnt();
+      max_scan_num_ = compute_max_scan_num(doc_cnt);
+      reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
+      ret = visit_filter_.init(filter_mode_, reserve_max_doc_cnt_,
+                               max_scan_num_, filter_negative_prob_);
+      if (ret != 0) {
+        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
+        return ret;
+      }
+      candidates_.limit(max_scan_num_);
+      check_need_adjuct_ctx();
+      break;
+
+    default:
+      break;
+  }
 
   return 0;
 }
 
 int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
-                                 const IndexMetric::Pointer &metric,
-                                 const VamanaEntity::Pointer &entity,
-                                 uint32_t magic_num) {
+                                  const IndexMetric::Pointer &metric,
+                                  const VamanaEntity::Pointer &entity,
+                                  uint32_t magic_num) {
   if (magic_ == magic_num) {
     return 0;
   }

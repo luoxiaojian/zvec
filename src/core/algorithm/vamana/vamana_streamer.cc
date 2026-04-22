@@ -595,8 +595,7 @@ int VamanaStreamer::search_bf_impl(const void *query,
 }
 
 int VamanaStreamer::search_bf_impl(const void *query,
-                                   const IndexQueryMeta &qmeta,
-                                   uint32_t count,
+                                   const IndexQueryMeta &qmeta, uint32_t count,
                                    Context::Pointer &context) const {
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
@@ -624,7 +623,7 @@ int VamanaStreamer::search_bf_impl(const void *query,
     for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
       if (entity_->get_key(id) == kInvalidKey) continue;
       if (!filter.is_valid() || !filter(entity_->get_key(id))) {
-        dist_t dist = ctx->dist_calculator().dist(id);
+        dist_t dist = ctx->dist_calculator().batch_dist(id);
         topk.emplace(id, dist);
       }
     }
@@ -666,7 +665,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
       for (auto key : keys) {
         node_id_t id = entity_->get_id(key);
         if (id == kInvalidNodeId) continue;
-        dist_t dist = ctx->dist_calculator().dist(id);
+        dist_t dist = ctx->dist_calculator().batch_dist(id);
         topk.emplace(id, dist);
       }
     }

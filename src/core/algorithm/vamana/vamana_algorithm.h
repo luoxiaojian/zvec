@@ -45,8 +45,8 @@ class VamanaAlgorithmBase {
 };
 
 // Vamana graph algorithm, templated on EntityType for hot-path optimization.
-// EntityType should be VamanaMmapStreamerEntity, VamanaBufferPoolStreamerEntity,
-// or VamanaContiguousStreamerEntity.
+// EntityType should be VamanaMmapStreamerEntity,
+// VamanaBufferPoolStreamerEntity, or VamanaContiguousStreamerEntity.
 //
 // Core operations:
 //   - GreedySearch: beam search from entry point, expanding best candidates
@@ -62,9 +62,13 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
 
   ~VamanaAlgorithm() override = default;
 
-  int cleanup() override { return 0; }
+  int cleanup() override {
+    return 0;
+  }
 
-  int init() override { return 0; }
+  int init() override {
+    return 0;
+  }
 
   // Insert node `id` into the graph. Its vector must already be in the entity.
   int add_node(node_id_t id, VamanaContext *ctx) override;
@@ -76,15 +80,13 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
   // is reached. Results accumulate in topk_heap.
-  void greedy_search(node_id_t entry_point, uint32_t search_list_size,
-                     VamanaContext *ctx) const;
+  void greedy_search(node_id_t entry_point, VamanaContext *ctx) const;
 
   // RobustPrune: given a candidate set (topk_heap), select up to max_degree
   // diverse neighbors using alpha-based distance comparison.
-  // Returns the pruned neighbor list.
-  std::vector<std::pair<node_id_t, dist_t>> robust_prune(
-      node_id_t id, TopkHeap &candidates, float alpha,
-      uint32_t max_degree, VamanaContext *ctx) const;
+  // Result is stored in ctx->prune_result().
+  void robust_prune(node_id_t id, TopkHeap &candidates, float alpha,
+                    uint32_t max_degree, VamanaContext *ctx) const;
 
   // Update node's neighbors and handle reverse links.
   void update_neighbors_and_reverse_links(
@@ -94,8 +96,8 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
 
   // Check if adding `id` as a reverse neighbor of `neighbor_id` requires
   // pruning, and if so, prune neighbor_id's neighbor list.
-  void reverse_update_neighbor(node_id_t id, node_id_t neighbor_id,
-                               dist_t dist, VamanaContext *ctx);
+  void reverse_update_neighbor(node_id_t id, node_id_t neighbor_id, dist_t dist,
+                               VamanaContext *ctx);
 
  private:
   VamanaAlgorithm(const VamanaAlgorithm &) = delete;

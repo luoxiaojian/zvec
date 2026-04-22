@@ -28,6 +28,8 @@
 namespace zvec {
 namespace core {
 
+#define HNSW_USE_CONTIGUOUS_MEMORY
+
 //! Storage mode for HnswStreamerEntity
 enum class HnswStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 
@@ -88,7 +90,9 @@ class HnswStreamerEntity : public HnswEntity {
   virtual void update_ep_and_level(node_id_t ep, level_t level) override;
 
   //! Get the storage mode of this entity
-  virtual HnswStorageMode storage_mode() const { return HnswStorageMode::kMmap; }
+  virtual HnswStorageMode storage_mode() const {
+    return HnswStorageMode::kMmap;
+  }
 
   void set_use_key_info_map(bool use_id_map) {
     use_key_info_map_ = use_id_map;
@@ -193,9 +197,8 @@ class HnswStreamerEntity : public HnswEntity {
 
   //! Typed batch get_vector: fills vector<MemBlock> without runtime branching
   template <typename MemBlock>
-  inline int get_vector_typed(
-      const node_id_t *ids, uint32_t count,
-      std::vector<MemBlock> &vec_blocks) const;
+  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
+                              std::vector<MemBlock> &vec_blocks) const;
 
   //! Typed get_key: reads key using typed MemBlock
   template <typename MemBlock>
@@ -497,15 +500,27 @@ class HnswStreamerEntity : public HnswEntity {
 
  protected:
   //! Accessors for subclass hot-path optimization
-  inline uint32_t node_index_mask_bits() const { return node_index_mask_bits_; }
-  inline uint32_t node_index_mask() const { return node_index_mask_; }
-  inline uint32_t neighbor_size() const { return neighbor_size_; }
-  inline uint32_t upper_neighbor_size() const { return upper_neighbor_size_; }
+  inline uint32_t node_index_mask_bits() const {
+    return node_index_mask_bits_;
+  }
+  inline uint32_t node_index_mask() const {
+    return node_index_mask_;
+  }
+  inline uint32_t neighbor_size() const {
+    return neighbor_size_;
+  }
+  inline uint32_t upper_neighbor_size() const {
+    return upper_neighbor_size_;
+  }
   inline uint32_t upper_neighbor_mask_bits() const {
     return upper_neighbor_mask_bits_;
   }
-  inline uint32_t upper_neighbor_mask() const { return upper_neighbor_mask_; }
-  inline bool use_key_info_map() const { return use_key_info_map_; }
+  inline uint32_t upper_neighbor_mask() const {
+    return upper_neighbor_mask_;
+  }
+  inline bool use_key_info_map() const {
+    return use_key_info_map_;
+  }
 
   inline const auto &upper_neighbor_index() const {
     return upper_neighbor_index_;
@@ -576,7 +591,7 @@ class HnswStreamerEntity : public HnswEntity {
 template <>
 inline NeighborsT<MmapMemoryBlock>
 HnswStreamerEntity::get_neighbors_typed<MmapMemoryBlock>(level_t level,
-                                                        node_id_t id) const {
+                                                         node_id_t id) const {
   Chunk *chunk = nullptr;
   size_t offset = 0UL;
   size_t nbr_size = neighbor_size_;
@@ -633,8 +648,7 @@ HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
     return NeighborsT<BufferPoolMemoryBlock>();
   }
   BufferPoolMemoryBlock block(mem_block.buffer_pool_handle_,
-                              mem_block.buffer_block_id_,
-                              mem_block.data_);
+                              mem_block.buffer_block_id_, mem_block.data_);
   mem_block.buffer_pool_handle_ = nullptr;
   return NeighborsT<BufferPoolMemoryBlock>(std::move(block));
 }
@@ -683,9 +697,9 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
                 loc.second, read_size, ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                          mem_block.buffer_block_id_,
-                                          mem_block.data_);
+    vec_blocks[i] =
+        BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
+                              mem_block.buffer_block_id_, mem_block.data_);
     mem_block.buffer_pool_handle_ = nullptr;
   }
   return 0;
@@ -693,8 +707,8 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
 
 //! MmapMemoryBlock specialization for get_key
 template <>
-inline key_t
-HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(node_id_t id) const {
+inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
+    node_id_t id) const {
   if (!use_key_info_map_) {
     return id;
   }
@@ -713,8 +727,8 @@ HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(node_id_t id) const {
 
 //! BufferPoolMemoryBlock specialization for get_key
 template <>
-inline key_t
-HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(node_id_t id) const {
+inline key_t HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
+    node_id_t id) const {
   if (!use_key_info_map_) {
     return id;
   }
@@ -747,12 +761,11 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     return HnswStorageMode::kMmap;
   }
 
-  inline TypedNeighbors get_neighbors_typed(level_t level,
-                                            node_id_t id) const {
+  inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     if (level == 0UL) {
       uint32_t chunk_idx = id >> node_index_mask_bits();
-      uint32_t offset = (id & node_index_mask()) * node_size() +
-                        vector_size() + sizeof(key_t);
+      uint32_t offset = (id & node_index_mask()) * node_size() + vector_size() +
+                        sizeof(key_t);
       const char *base = get_node_chunk_base(chunk_idx);
       MmapMemoryBlock block(const_cast<char *>(base + offset));
       return TypedNeighbors(std::move(block));
@@ -847,10 +860,9 @@ class HnswBufferPoolStreamerEntity : public HnswStreamerEntity {
     return HnswStorageMode::kBufferPool;
   }
 
-  inline TypedNeighbors get_neighbors_typed(level_t level,
-                                            node_id_t id) const {
+  inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     return HnswStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(level,
-                                                                        id);
+                                                                          id);
   }
 
   inline int get_vector_typed(
@@ -885,12 +897,10 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   //! Must be called after the entity is fully opened and all chunks are loaded.
   int build_contiguous_memory();
 
-  inline TypedNeighbors get_neighbors_typed(level_t level,
-                                            node_id_t id) const {
+  inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     if (level == 0UL) {
-      const char *ptr =
-          node_base_ + static_cast<size_t>(id) * node_size() +
-          vector_size() + sizeof(key_t);
+      const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
+                        vector_size() + sizeof(key_t);
       MmapMemoryBlock block(const_cast<char *>(ptr));
       return TypedNeighbors(std::move(block));
     }
@@ -901,9 +911,9 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     auto meta = reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
     uint32_t chunk_idx = (meta->index) >> upper_neighbor_mask_bits();
     uint32_t local_idx = (meta->index) & upper_neighbor_mask();
-    size_t global_offset = upper_chunk_offsets_[chunk_idx] +
-                           static_cast<size_t>(local_idx + level - 1) *
-                               upper_neighbor_size();
+    size_t global_offset =
+        upper_chunk_offsets_[chunk_idx] +
+        static_cast<size_t>(local_idx + level - 1) * upper_neighbor_size();
     const char *ptr = upper_neighbor_base_ + global_offset;
     MmapMemoryBlock block(const_cast<char *>(ptr));
     return TypedNeighbors(std::move(block));
@@ -913,8 +923,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
                               std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
-      const char *ptr =
-          node_base_ + static_cast<size_t>(ids[i]) * node_size();
+      const char *ptr = node_base_ + static_cast<size_t>(ids[i]) * node_size();
       vec_blocks[i].reset(const_cast<char *>(ptr));
     }
     return 0;

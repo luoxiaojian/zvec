@@ -39,6 +39,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx.c
             ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/math/*_fp16.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/math/*_fp16.c
         )
 
         file(GLOB_RECURSE MATH_FILES_AVX512

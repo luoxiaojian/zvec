@@ -121,19 +121,64 @@ class VamanaDistCalculator {
     batch_distance_(vecs, query_, count, dim_, dists);
   }
 
-  dist_t operator()(const void *vec) { return dist(vec); }
-  dist_t operator()(node_id_t i) { return dist(i); }
-  dist_t operator()(node_id_t lhs, node_id_t rhs) { return dist(lhs, rhs); }
+  // Single-node batch distance: compute distance between query and a stored
+  // node using batch_distance_. Consistent with HnswDistCalculator::batch_dist.
+  inline dist_t batch_dist(node_id_t id) {
+    compare_cnt_++;
+    const void *feat = entity_->get_vector(id);
+    if (ailego_unlikely(feat == nullptr)) {
+      LOG_ERROR("Get nullptr vector, id=%u", id);
+      error_ = true;
+      return 0.0f;
+    }
+    dist_t score = 0;
+    batch_distance_(&feat, query_, 1, dim_, &score);
+    return score;
+  }
+
+  // Batch distance computation between a base vector and multiple target
+  // vectors. Does NOT use query_ and does NOT increment compare_cnt. Used for
+  // inter-candidate distance computation in robust_prune.
+  //
+  // Uses the single distance function (distance_) in a loop rather than
+  // batch_distance_, because batch_distance_ (turbo AVX512-VNNI) expects
+  // the second argument to be a preprocessed uint8 query (+128 shift),
+  // while base_vec here is a raw int8 stored vector. The single distance
+  // function (AVX2 sign/abs trick) correctly handles two raw int8 inputs.
+  inline void batch_dist_pair(const void *base_vec, const void **vecs,
+                              uint32_t count, float *dists) {
+    for (uint32_t i = 0; i < count; ++i) {
+      distance_(base_vec, vecs[i], dim_, &dists[i]);
+    }
+  }
+
+  dist_t operator()(const void *vec) {
+    return dist(vec);
+  }
+  dist_t operator()(node_id_t i) {
+    return dist(i);
+  }
+  dist_t operator()(node_id_t lhs, node_id_t rhs) {
+    return dist(lhs, rhs);
+  }
 
   inline void clear() {
     compare_cnt_ = 0;
     error_ = false;
   }
 
-  inline void clear_compare_cnt() { compare_cnt_ = 0; }
-  inline bool error() const { return error_; }
-  inline uint32_t compare_cnt() const { return compare_cnt_; }
-  inline uint32_t dimension() const { return dim_; }
+  inline void clear_compare_cnt() {
+    compare_cnt_ = 0;
+  }
+  inline bool error() const {
+    return error_;
+  }
+  inline uint32_t compare_cnt() const {
+    return compare_cnt_;
+  }
+  inline uint32_t dimension() const {
+    return dim_;
+  }
 
  private:
   VamanaDistCalculator(const VamanaDistCalculator &) = delete;

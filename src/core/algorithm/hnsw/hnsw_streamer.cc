@@ -243,16 +243,21 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
 
   // Create entity based on storage type
   switch (stg->memory_block_type()) {
-    case IndexStorage::MemoryBlock::MBT_BUFFERPOOL:
+    case IndexStorage::MemoryBlock::MBT_BUFFERPOOL: {
+      std::cout << "Using HnswBufferPoolStreamerEntity" << std::endl;
       entity_ = std::make_unique<HnswBufferPoolStreamerEntity>(stats_);
       break;
-    default:
+    }
+    default: {
 #ifdef HNSW_USE_CONTIGUOUS_MEMORY
+      std::cout << "Using HnswContiguousStreamerEntity" << std::endl;
       entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
 #else
+      std::cout << "Using HnswMmapStreamerEntity" << std::endl;
       entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
 #endif
       break;
+    }
   }
   int ret = setup_entity();
   if (ret != 0) {
@@ -342,8 +347,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
       break;
     }
     default:
-      alg_ = HnswAlgorithmBase::UPointer(
-          new HnswAlgorithm<HnswMmapStreamerEntity>(
+      alg_ =
+          HnswAlgorithmBase::UPointer(new HnswAlgorithm<HnswMmapStreamerEntity>(
               static_cast<HnswMmapStreamerEntity &>(*entity_)));
       break;
   }

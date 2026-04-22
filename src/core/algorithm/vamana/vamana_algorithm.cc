@@ -53,12 +53,13 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   }
   ctx->reset_query(query_vec);
 
-  greedy_search(entry_point, search_list_size, ctx);
+  greedy_search(entry_point, ctx);
 
   // Step 2: RobustPrune to select diverse neighbors
   auto &topk_heap = ctx->topk_heap();
-  auto pruned_neighbors = robust_prune(
-      id, topk_heap, entity_.alpha(), entity_.max_degree(), ctx);
+  robust_prune(id, topk_heap, entity_.alpha(), entity_.max_degree(), ctx);
+  // Copy result before reverse updates (which also call robust_prune)
+  auto pruned_neighbors = ctx->prune_result();
 
   // Step 3: Update the new node's neighbor list
   entity_.update_neighbors(id, pruned_neighbors);
@@ -85,10 +86,13 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
 
-  uint32_t search_list_size = std::max(static_cast<size_t>(ctx->topk()), entity_.search_list_size());
-  topk_heap.limit(search_list_size);
+  // Use ef (query-time parameter) instead of entity.search_list_size()
+  // (build-time L parameter). search_list_size controls construction;
+  // ef controls search quality and is user-configurable at query time.
+  uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
+  topk_heap.limit(ef_search);
 
-  greedy_search(entry_point, search_list_size, ctx);
+  greedy_search(entry_point, ctx);
 
   return 0;
 }
@@ -103,9 +107,8 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // when the scan limit is reached.
 // ============================================================================
 template <typename EntityType>
-void VamanaAlgorithm<EntityType>::greedy_search(
-    node_id_t entry_point, uint32_t search_list_size,
-    VamanaContext *ctx) const {
+void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
+                                                VamanaContext *ctx) const {
   const auto &entity = entity_;
   VamanaDistCalculator &dc = ctx->dist_calculator();
   VisitFilter &visit = ctx->visit_filter();
@@ -124,13 +127,25 @@ void VamanaAlgorithm<EntityType>::greedy_search(
   candidates.clear();
   visit.clear();
 
-  // Initialize with entry point
+  // Initialize with entry point using single distance (consistent with HNSW).
   dist_t entry_dist = dc.dist(entry_point);
+  if (ailego_unlikely(dc.error())) {
+    return;
+  }
   visit.set_visited(entry_point);
   if (!filter(entry_point)) {
     topk_heap.emplace(entry_point, entry_dist);
   }
   candidates.emplace(entry_point, entry_dist);
+
+  // Pre-allocate temporary vectors outside the hot loop to avoid
+  // per-iteration heap allocations
+  const uint32_t max_degree = entity.max_degree();
+  std::vector<node_id_t> neighbor_ids(max_degree);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(max_degree);
+  std::vector<float> dists(max_degree);
+  std::vector<const void *> neighbor_vecs(max_degree);
 
   while (!candidates.empty() && !ctx->reach_scan_limit()) {
     auto top = candidates.begin();
@@ -149,8 +164,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(
     const auto neighbors = entity.get_neighbors_typed(current_node);
     ailego_prefetch(neighbors.data);
 
-    // Collect unvisited neighbors
-    std::vector<node_id_t> neighbor_ids(neighbors.size());
+    // Collect unvisited neighbors (reuse pre-allocated buffer)
     uint32_t unvisited_count = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
@@ -160,8 +174,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(
     }
     if (unvisited_count == 0) continue;
 
-    // Batch fetch vectors using typed access
-    std::vector<MemBlockType> neighbor_vec_blocks;
+    // Batch fetch vectors using typed access (reuse pre-allocated buffer)
+    neighbor_vec_blocks.clear();
     int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
                                       neighbor_vec_blocks);
     if (ailego_unlikely(ret != 0)) break;
@@ -174,9 +188,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(
       ailego_prefetch(neighbor_vec_blocks[i].data());
     }
 
-    // Batch distance computation
-    std::vector<float> dists(unvisited_count);
-    std::vector<const void *> neighbor_vecs(unvisited_count);
+    // Batch distance computation (reuse pre-allocated buffers)
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
@@ -209,66 +221,81 @@ void VamanaAlgorithm<EntityType>::greedy_search(
 //   3. If result is still under max_degree, fill with remaining candidates.
 // ============================================================================
 template <typename EntityType>
-std::vector<std::pair<node_id_t, dist_t>>
-VamanaAlgorithm<EntityType>::robust_prune(
-    node_id_t id, TopkHeap &candidates, float alpha, uint32_t max_degree,
-    VamanaContext *ctx) const {
-  std::vector<std::pair<node_id_t, dist_t>> result;
-  result.reserve(max_degree);
+void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
+                                               TopkHeap &candidates,
+                                               float alpha, uint32_t max_degree,
+                                               VamanaContext *ctx) const {
+  auto &result = ctx->prune_result();
+  result.clear();
 
-  if (candidates.size() == 0) return result;
+  if (candidates.size() == 0) return;
 
   // Sort candidates by distance (ascending — closest first)
   candidates.sort();
 
-  // Build sorted candidate list, excluding self
-  std::vector<std::pair<node_id_t, dist_t>> sorted_candidates;
-  sorted_candidates.reserve(candidates.size());
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    if (candidates[i].first != id) {
-      sorted_candidates.emplace_back(candidates[i].first,
-                                     candidates[i].second);
-    }
+  VamanaDistCalculator &dc = ctx->dist_calculator();
+  size_t n = candidates.size();
+
+  // Pre-cache all candidate vectors at once.
+  // This eliminates O(n^2) virtual get_vector() calls in the nested loop
+  // by reducing to O(n) calls.
+  auto &vec_cache = ctx->prune_vec_cache();
+  vec_cache.resize(n);
+  for (size_t i = 0; i < n; ++i) {
+    vec_cache[i] = entity_.get_vector(candidates[i].first);
   }
 
-  // Track which candidates are still active (not pruned)
-  std::vector<bool> active(sorted_candidates.size(), true);
+  // Active flags using pre-allocated buffer (avoids heap alloc per call)
+  auto &active = ctx->prune_active();
+  active.assign(n, 1);
 
-  VamanaDistCalculator &dc = ctx->dist_calculator();
+  // Pre-allocated buffers for batch distance computation
+  auto &batch_vecs = ctx->batch_vecs_buf();
+  auto &batch_dists = ctx->batch_dists_buf();
+  auto &batch_indices = ctx->batch_indices_buf();
+  batch_vecs.resize(n);
+  batch_dists.resize(n);
+  batch_indices.resize(n);
 
-  for (size_t i = 0; i < sorted_candidates.size() &&
-                     result.size() < max_degree;
-       ++i) {
+  for (size_t i = 0; i < n && result.size() < max_degree; ++i) {
     if (!active[i]) continue;
+    if (candidates[i].first == id) continue;  // skip self
 
-    node_id_t candidate_id = sorted_candidates[i].first;
-    dist_t candidate_dist = sorted_candidates[i].second;
+    node_id_t candidate_id = candidates[i].first;
+    dist_t candidate_dist = candidates[i].second;
+
+    const void *selected_vec = vec_cache[i];
+    if (ailego_unlikely(selected_vec == nullptr)) continue;
 
     // Add this candidate as a neighbor
     result.emplace_back(candidate_id, candidate_dist);
 
-    // Prune remaining candidates that are too close to the selected one
-    // (alpha-based occlusion check)
-    const void *selected_vec = entity_.get_vector(candidate_id);
-    if (ailego_unlikely(selected_vec == nullptr)) continue;
-
-    for (size_t j = i + 1; j < sorted_candidates.size(); ++j) {
+    // Collect remaining active candidates for batch distance computation
+    uint32_t batch_count = 0;
+    for (size_t j = i + 1; j < n; ++j) {
       if (!active[j]) continue;
+      if (ailego_unlikely(vec_cache[j] == nullptr)) continue;
+      batch_vecs[batch_count] = vec_cache[j];
+      batch_indices[batch_count] = static_cast<uint32_t>(j);
+      batch_count++;
+    }
 
-      const void *other_vec = entity_.get_vector(sorted_candidates[j].first);
-      if (ailego_unlikely(other_vec == nullptr)) continue;
+    if (batch_count > 0) {
+      // Batch compute distances from selected candidate to all remaining
+      // active candidates using SIMD-optimized batch distance
+      dc.batch_dist_pair(selected_vec, batch_vecs.data(), batch_count,
+                         batch_dists.data());
 
-      dist_t inter_dist = dc.dist(selected_vec, other_vec);
-
-      // If alpha * dist(selected, other) <= dist(query, other),
-      // then `other` is occluded by `selected` — prune it.
-      if (alpha * inter_dist <= sorted_candidates[j].second) {
-        active[j] = false;
+      // Alpha-based occlusion check: if alpha * dist(selected, other) <=
+      // dist(query, other), then `other` is occluded by `selected`.
+      for (uint32_t k = 0; k < batch_count; ++k) {
+        uint32_t j = batch_indices[k];
+        if (alpha * batch_dists[k] <= candidates[j].second) {
+          active[j] = false;
+        }
       }
     }
   }
-
-  return result;
 }
 
 // ============================================================================
@@ -292,8 +319,10 @@ void VamanaAlgorithm<EntityType>::update_neighbors_and_reverse_links(
 // + the new one into a candidate set and RobustPrune.
 // ============================================================================
 template <typename EntityType>
-void VamanaAlgorithm<EntityType>::reverse_update_neighbor(
-    node_id_t id, node_id_t neighbor_id, dist_t dist, VamanaContext *ctx) {
+void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
+                                                          node_id_t neighbor_id,
+                                                          dist_t dist,
+                                                          VamanaContext *ctx) {
   std::lock_guard<std::mutex> lock(lock_pool_[neighbor_id & kLockMask]);
 
   const Neighbors current_neighbors = entity_.get_neighbors(neighbor_id);
@@ -316,7 +345,9 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(
   const void *neighbor_vec = entity_.get_vector(neighbor_id);
   if (ailego_unlikely(neighbor_vec == nullptr)) return;
 
-  TopkHeap prune_candidates;
+  // Reuse update_heap from context instead of creating a new TopkHeap each time
+  TopkHeap &prune_candidates = ctx->update_heap();
+  prune_candidates.clear();
   prune_candidates.limit(max_deg + 1);
 
   // Add existing neighbors
@@ -332,15 +363,10 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(
   prune_candidates.emplace(id, dist);
 
   // RobustPrune from neighbor_id's perspective
-  // Temporarily set query to neighbor_vec for distance calculations
-  const void *saved_query = nullptr;
-  // We use dc.dist(vec_a, vec_b) directly in robust_prune, so no need
-  // to change query. Just call robust_prune with neighbor_id.
-  auto pruned = robust_prune(neighbor_id, prune_candidates, entity_.alpha(),
-                             max_deg, ctx);
+  robust_prune(neighbor_id, prune_candidates, entity_.alpha(), max_deg, ctx);
 
   // Update neighbor_id's neighbor list
-  entity_.update_neighbors(neighbor_id, pruned);
+  entity_.update_neighbors(neighbor_id, ctx->prune_result());
 }
 
 // Explicit template instantiation for all entity types
