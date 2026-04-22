@@ -14,6 +14,7 @@
 #pragma once
 
 #include <iostream>
+#include <mutex>
 #include <ailego/parallel/lock.h>
 #include <sparsehash/dense_hash_map>
 #include <zvec/ailego/container/heap.h>
@@ -26,7 +27,6 @@
 namespace zvec {
 namespace core {
 
-#define VAMANA_USE_CONTIGUOUS_MEMORY
 
 // Storage mode for VamanaStreamerEntity
 enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
@@ -548,12 +548,14 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
-  // Degrade to mmap mode by releasing contiguous memory.
-  // Called on first insert. After this, typed methods fall back to the
-  // parent MmapStreamerEntity implementation via chunk base pointers.
+  // Degrade to mmap mode by releasing contiguous memory and falling back
+  // to chunk-based access. Thread-safe: call_once ensures only one thread
+  // performs the release when multiple insert threads race.
   void degrade_to_mmap() {
-    release_contiguous_memory();
-    LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
+    std::call_once(degrade_flag_, [this]() {
+      release_contiguous_memory();
+      LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
+    });
   }
 
   bool is_contiguous() const { return node_base_ != nullptr; }
@@ -608,6 +610,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
   char *node_base_{nullptr};
   size_t node_memory_size_{0};
+  std::once_flag degrade_flag_;
 };
 
 }  // namespace core

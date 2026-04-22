@@ -53,6 +53,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_USE_ID_MAP, &use_id_map_);
   params.get(PARAM_VAMANA_STREAMER_DOCS_HARD_LIMIT, &docs_hard_limit_);
   params.get(PARAM_VAMANA_STREAMER_SATURATE_GRAPH, &saturate_graph_);
+  params.get(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
+             &use_contiguous_memory_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -172,16 +174,23 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
 
   // Create entity based on storage type
   switch (stg->memory_block_type()) {
-    case IndexStorage::MemoryBlock::MBT_BUFFERPOOL:
+    case IndexStorage::MemoryBlock::MBT_BUFFERPOOL: {
+      std::cout << "Using buffer pool memory for VamanaStreamerEntity"
+                << std::endl;
       entity_ = std::make_unique<VamanaBufferPoolStreamerEntity>(stats_);
       break;
-    default:
-#ifdef VAMANA_USE_CONTIGUOUS_MEMORY
-      entity_ = std::make_unique<VamanaContiguousStreamerEntity>(stats_);
-#else
-      entity_ = std::make_unique<VamanaMmapStreamerEntity>(stats_);
-#endif
+    }
+    default: {
+      if (use_contiguous_memory_) {
+        std::cout << "Using contiguous memory for VamanaStreamerEntity"
+                  << std::endl;
+        entity_ = std::make_unique<VamanaContiguousStreamerEntity>(stats_);
+      } else {
+        std::cout << "Using mmap memory for VamanaStreamerEntity" << std::endl;
+        entity_ = std::make_unique<VamanaMmapStreamerEntity>(stats_);
+      }
       break;
+    }
   }
 
   int ret = setup_entity();

@@ -249,13 +249,13 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
       break;
     }
     default: {
-#ifdef HNSW_USE_CONTIGUOUS_MEMORY
-      std::cout << "Using HnswContiguousStreamerEntity" << std::endl;
-      entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
-#else
-      std::cout << "Using HnswMmapStreamerEntity" << std::endl;
-      entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
-#endif
+      if (use_contiguous_memory_) {
+        LOG_INFO("Using HnswContiguousStreamerEntity");
+        entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
+      } else {
+        LOG_INFO("Using HnswMmapStreamerEntity");
+        entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
+      }
       break;
     }
   }

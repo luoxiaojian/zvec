@@ -15,6 +15,7 @@
 #pragma once
 
 #include <iostream>
+#include <mutex>
 #include <ailego/parallel/lock.h>
 #include <sparsehash/dense_hash_map>
 #include <sparsehash/dense_hash_set>
@@ -28,7 +29,6 @@
 namespace zvec {
 namespace core {
 
-#define HNSW_USE_CONTIGUOUS_MEMORY
 
 //! Storage mode for HnswStreamerEntity
 enum class HnswStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
@@ -897,12 +897,14 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   //! Must be called after the entity is fully opened and all chunks are loaded.
   int build_contiguous_memory();
 
-  //! Degrade to mmap mode by releasing contiguous memory.
-  //! Called on first insert. After this, typed methods fall back to the
-  //! parent HnswMmapStreamerEntity implementation via chunk base pointers.
+  //! Degrade to mmap mode by releasing contiguous memory and falling back
+  //! to chunk-based access. Thread-safe: call_once ensures only one thread
+  //! performs the release when multiple insert threads race.
   void degrade_to_mmap() {
-    release_contiguous_memory();
-    LOG_INFO("HNSW contiguous entity degraded to mmap mode for insertion");
+    std::call_once(degrade_flag_, [this]() {
+      release_contiguous_memory();
+      LOG_INFO("HNSW contiguous entity degraded to mmap mode for insertion");
+    });
   }
 
   bool is_contiguous() const { return node_base_ != nullptr; }
@@ -986,6 +988,8 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 
   //! Cumulative offsets for each upper neighbor chunk in contiguous memory
   std::vector<size_t> upper_chunk_offsets_{};
+
+  std::once_flag degrade_flag_;
 };
 
 }  // namespace core

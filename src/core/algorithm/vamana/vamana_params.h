@@ -73,6 +73,8 @@ static const std::string PARAM_VAMANA_STREAMER_MIN_SCAN_LIMIT(
     "proxima.vamana.streamer.min_scan_limit");
 static const std::string PARAM_VAMANA_STREAMER_SATURATE_GRAPH(
     "proxima.vamana.streamer.saturate_graph");
+static const std::string PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY(
+    "proxima.vamana.streamer.use_contiguous_memory");
 
 }  // namespace core
 }  // namespace zvec
