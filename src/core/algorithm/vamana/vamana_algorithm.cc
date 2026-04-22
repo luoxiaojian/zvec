@@ -211,10 +211,11 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t node_dist = dists[i];
-
-      candidates.emplace(node, node_dist);
-      if (!filter(node)) {
-        topk_heap.emplace(node, node_dist);
+      if ((!topk_heap.full()) || node_dist < topk_heap[0].second) {
+        candidates.emplace(node, node_dist);
+        if (!filter(node)) {
+          topk_heap.emplace(node, node_dist);
+        }
       }
     }
   }
@@ -230,7 +231,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 //      each round until reaching alpha. This progressively relaxes the
 //      occlusion criterion.
 //   4. For each candidate, compute occlude_factor as:
-//        max over all selected neighbors p of: dist(query, candidate) / dist(p, candidate)
+//        max over all selected neighbors p of: dist(query, candidate) / dist(p,
+//        candidate)
 //      If occlude_factor > cur_alpha, the candidate is occluded in this round.
 //   5. After all rounds, if _saturate_graph and alpha > 1, fill remaining
 //      slots with any un-selected candidates.
@@ -265,7 +267,8 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
   }
 
   // occlude_factor: tracks the maximum occlusion ratio for each candidate
-  // (DiskANN: occlude_factor[t] = max over selected p of dist_to_query/dist_to_p)
+  // (DiskANN: occlude_factor[t] = max over selected p of
+  // dist_to_query/dist_to_p)
   auto &occlude_factor = ctx->prune_occlude_factor();
   occlude_factor.assign(n, 0.0f);
 
@@ -316,7 +319,8 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
                            batch_dists.data());
 
         // DiskANN (L2/Cosine):
-        //   occlude_factor[t] = max(occlude_factor[t], dist_to_query / dist_between)
+        //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /
+        //   dist_between)
         // where dist_to_query = candidates[j].second (distance from query to j)
         //       dist_between = batch_dists[k] (distance from selected to j)
         for (uint32_t k = 0; k < batch_count; ++k) {

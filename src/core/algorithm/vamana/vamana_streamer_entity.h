@@ -26,6 +26,8 @@
 namespace zvec {
 namespace core {
 
+#define VAMANA_USE_CONTIGUOUS_MEMORY
+
 // Storage mode for VamanaStreamerEntity
 enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 
@@ -33,7 +35,8 @@ enum class VamanaStorageMode { kMmap = 0, kBufferPool = 1, kContiguous = 2 };
 // for a single-layer Vamana graph in streaming (incremental) mode.
 // Unlike HNSW, Vamana has no upper-level neighbors — only a single
 // neighbor list per node. Node layout in chunk:
-//   [vector_data (vector_size) | key (sizeof(key_t)) | NeighborsHeader + neighbors (neighbors_size)]
+//   [vector_data (vector_size) | key (sizeof(key_t)) | NeighborsHeader +
+//   neighbors (neighbors_size)]
 class VamanaStreamerEntity : public VamanaEntity {
  public:
   // Virtual interface implementation
@@ -62,7 +65,9 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
-  bool dist_storage_loaded() const override { return dist_loaded_; }
+  bool dist_storage_loaded() const override {
+    return dist_loaded_;
+  }
   const dist_t *get_neighbor_dists(node_id_t id) const override;
   void update_neighbor_dists(
       node_id_t id,
@@ -73,7 +78,9 @@ class VamanaStreamerEntity : public VamanaEntity {
     return VamanaStorageMode::kMmap;
   }
 
-  void set_use_key_info_map(bool use_id_map) { use_key_info_map_ = use_id_map; }
+  void set_use_key_info_map(bool use_id_map) {
+    use_key_info_map_ = use_id_map;
+  }
 
  public:
   VamanaStreamerEntity(IndexStreamer::Stats &stats);
@@ -95,8 +102,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   int init(size_t max_doc_cnt);
   int flush(uint64_t checkpoint);
-  int open(IndexStorage::Pointer stg, uint64_t max_index_size,
-           bool check_crc);
+  int open(IndexStorage::Pointer stg, uint64_t max_index_size, bool check_crc);
   int close();
 
   int set_index_meta(const IndexMeta &meta) const {
@@ -107,8 +113,12 @@ class VamanaStreamerEntity : public VamanaEntity {
     return IndexHelper::DeserializeFromStorage(broker_->storage().get(), meta);
   }
 
-  inline void set_chunk_size(size_t val) { chunk_size_ = val; }
-  inline void set_get_vector(bool val) { get_vector_enabled_ = val; }
+  inline void set_chunk_size(size_t val) {
+    chunk_size_ = val;
+  }
+  inline void set_get_vector(bool val) {
+    get_vector_enabled_ = val;
+  }
 
   inline node_id_t get_id(key_t key) const {
     if (use_key_info_map_) {
@@ -134,10 +144,18 @@ class VamanaStreamerEntity : public VamanaEntity {
   inline key_t get_key_typed(node_id_t id) const;
 
  protected:
-  inline uint32_t node_index_mask_bits() const { return node_index_mask_bits_; }
-  inline uint32_t node_index_mask() const { return node_index_mask_; }
-  inline uint32_t neighbor_size() const { return neighbor_size_; }
-  inline bool use_key_info_map() const { return use_key_info_map_; }
+  inline uint32_t node_index_mask_bits() const {
+    return node_index_mask_bits_;
+  }
+  inline uint32_t node_index_mask() const {
+    return node_index_mask_;
+  }
+  inline uint32_t neighbor_size() const {
+    return neighbor_size_;
+  }
+  inline bool use_key_info_map() const {
+    return use_key_info_map_;
+  }
 
   inline const std::vector<Chunk::Pointer> &node_chunks() const {
     return node_chunks_;
@@ -155,12 +173,12 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   // Private clone constructor
   VamanaStreamerEntity(IndexStreamer::Stats &stats, const VamanaHeader &hd,
-                      size_t chunk_size, uint32_t node_index_mask_bits,
-                      bool get_vector_enabled, bool use_key_info_map,
-                      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-                      const HashMapPointer<key_t, node_id_t> &keys_map,
-                      std::vector<Chunk::Pointer> &&node_chunks,
-                      const ChunkBroker::Pointer &broker)
+                       size_t chunk_size, uint32_t node_index_mask_bits,
+                       bool get_vector_enabled, bool use_key_info_map,
+                       std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
+                       const HashMapPointer<key_t, node_id_t> &keys_map,
+                       std::vector<Chunk::Pointer> &&node_chunks,
+                       const ChunkBroker::Pointer &broker)
       : stats_(stats),
         chunk_size_(chunk_size),
         node_index_mask_bits_(node_index_mask_bits),
@@ -203,8 +221,7 @@ class VamanaStreamerEntity : public VamanaEntity {
     return std::make_pair(chunk_idx, offset);
   }
 
-  inline std::pair<Chunk *, size_t> get_neighbor_chunk_loc(
-      node_id_t id) const {
+  inline std::pair<Chunk *, size_t> get_neighbor_chunk_loc(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset =
         (id & node_index_mask_) * node_size() + vector_size() + sizeof(key_t);
@@ -215,8 +232,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   // Get chunk location for neighbor distance data.
   // Uses the same chunk indexing as node chunks but with dist_entry_size_.
-  inline std::pair<uint32_t, uint32_t> get_dist_chunk_loc(
-      node_id_t id) const {
+  inline std::pair<uint32_t, uint32_t> get_dist_chunk_loc(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * dist_entry_size_;
     return std::make_pair(chunk_idx, offset);
@@ -249,8 +265,8 @@ class VamanaStreamerEntity : public VamanaEntity {
       max_index_size_ = max_index_size;
     }
 
-    size_t max_node_chunk_cnt = std::ceil(
-        static_cast<double>(max_index_size_) / chunk_size_);
+    size_t max_node_chunk_cnt =
+        std::ceil(static_cast<double>(max_index_size_) / chunk_size_);
     node_chunks_.reserve(max_node_chunk_cnt);
 
     LOG_DEBUG(
@@ -308,8 +324,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
 template <>
 inline NeighborsT<MmapMemoryBlock>
-VamanaStreamerEntity::get_neighbors_typed<MmapMemoryBlock>(
-    node_id_t id) const {
+VamanaStreamerEntity::get_neighbors_typed<MmapMemoryBlock>(node_id_t id) const {
   uint32_t chunk_idx = id >> node_index_mask_bits_;
   uint32_t offset =
       (id & node_index_mask_) * node_size() + vector_size() + sizeof(key_t);
@@ -337,8 +352,7 @@ VamanaStreamerEntity::get_neighbors_typed<BufferPoolMemoryBlock>(
   sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx, &node_chunks_);
   ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock mem_block;
-  size_t ret =
-      node_chunks_[chunk_idx]->read(offset, mem_block, neighbor_size_);
+  size_t ret = node_chunks_[chunk_idx]->read(offset, mem_block, neighbor_size_);
   if (ailego_unlikely(ret != neighbor_size_)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<BufferPoolMemoryBlock>();
@@ -358,8 +372,7 @@ inline int VamanaStreamerEntity::get_vector_typed<MmapMemoryBlock>(
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
     const void *ptr = nullptr;
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, &ptr, vector_size());
+    size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, vector_size());
     if (ailego_unlikely(ret != vector_size())) {
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
@@ -384,9 +397,9 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i] = BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
-                                          mem_block.buffer_block_id_,
-                                          mem_block.data_);
+    vec_blocks[i] =
+        BufferPoolMemoryBlock(mem_block.buffer_pool_handle_,
+                              mem_block.buffer_block_id_, mem_block.data_);
     mem_block.buffer_pool_handle_ = nullptr;
   }
   return 0;
@@ -440,8 +453,8 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
 
   inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits();
-    uint32_t offset = (id & node_index_mask()) * node_size() +
-                      vector_size() + sizeof(key_t);
+    uint32_t offset =
+        (id & node_index_mask()) * node_size() + vector_size() + sizeof(key_t);
     const char *base = get_node_chunk_base(chunk_idx);
     MmapMemoryBlock block(const_cast<char *>(base + offset));
     return TypedNeighbors(std::move(block));
@@ -528,15 +541,16 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaStorageMode::kContiguous;
   }
 
-  ~VamanaContiguousStreamerEntity() { release_contiguous_memory(); }
+  ~VamanaContiguousStreamerEntity() {
+    release_contiguous_memory();
+  }
 
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
   inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    const char *ptr =
-        node_base_ + static_cast<size_t>(id) * node_size() +
-        vector_size() + sizeof(key_t);
+    const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
+                      vector_size() + sizeof(key_t);
     MmapMemoryBlock block(const_cast<char *>(ptr));
     return TypedNeighbors(std::move(block));
   }
@@ -545,8 +559,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
                               std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
-      const char *ptr =
-          node_base_ + static_cast<size_t>(ids[i]) * node_size();
+      const char *ptr = node_base_ + static_cast<size_t>(ids[i]) * node_size();
       vec_blocks[i].reset(const_cast<char *>(ptr));
     }
     return 0;
