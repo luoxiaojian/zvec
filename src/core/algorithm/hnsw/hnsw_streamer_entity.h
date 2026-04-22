@@ -579,14 +579,15 @@ class HnswStreamerEntity : public HnswEntity {
   mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
   HashMapPointer<key_t, node_id_t> keys_map_{};
 
+  ChunkBroker::Pointer broker_{};  // chunk broker
+
+ protected:
   //! the chunks will be changed in searcher, so need mutable
   //! data chunk include: vector, key, level 0 neighbors
   mutable std::vector<Chunk::Pointer> node_chunks_{};
 
   //! upper neighbor chunk inlude: UpperNeighborHeader + (1~level) neighbors
   mutable std::vector<Chunk::Pointer> upper_neighbor_chunks_{};
-
-  ChunkBroker::Pointer broker_{};  // chunk broker
 };
 
 // --- Template specializations for typed MemoryBlock access ---
@@ -983,10 +984,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswMmapStreamerEntity::get_key_typed(id);
   }
 
- private:
-  //! Allocate contiguous memory with hugepage/THP support
-  static char *allocate_contiguous(size_t size);
-
+ protected:
   //! Custom deleter for contiguous memory (munmap or free)
   //! Used by shared_ptr to properly release mmap'd memory.
   struct ContiguousDeleter {
@@ -1011,6 +1009,10 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 
   //! Cumulative offsets for each upper neighbor chunk in contiguous memory
   std::vector<size_t> upper_chunk_offsets_{};
+
+ private:
+  //! Allocate contiguous memory with hugepage/THP support
+  static char *allocate_contiguous(size_t size);
 };
 
 }  // namespace core
