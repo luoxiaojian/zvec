@@ -230,7 +230,7 @@ class HnswStreamerEntity : public HnswEntity {
     uint32_t data;
   };
 
- private:
+ protected:
   template <class Key, class T>
   using HashMap = google::dense_hash_map<Key, T, std::hash<Key>>;
   template <class Key, class T>
@@ -245,7 +245,7 @@ class HnswStreamerEntity : public HnswEntity {
   using NIHashMap = HnswIndexHashMap<node_id_t, uint32_t>;
   using NIHashMapPointer = std::shared_ptr<NIHashMap>;
 
-  //! Private construct, only be called by clone method
+  //! Clone construct, used by clone method in subclasses
   HnswStreamerEntity(IndexStreamer::Stats &stats, const HNSWHeader &hd,
                      size_t chunk_size, uint32_t node_index_mask_bits,
                      uint32_t upper_neighbor_mask_bits, bool filter_same_key,

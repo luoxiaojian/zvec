@@ -169,13 +169,13 @@ class VamanaStreamerEntity : public VamanaEntity {
     sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, idx, &node_chunks_);
   }
 
- private:
+ protected:
   template <class Key, class T>
   using HashMap = google::dense_hash_map<Key, T, std::hash<Key>>;
   template <class Key, class T>
   using HashMapPointer = std::shared_ptr<HashMap<Key, T>>;
 
-  // Private clone constructor
+  //! Clone constructor, used by clone method in subclasses
   VamanaStreamerEntity(IndexStreamer::Stats &stats, const VamanaHeader &hd,
                        size_t chunk_size, uint32_t node_index_mask_bits,
                        bool get_vector_enabled, bool use_key_info_map,
