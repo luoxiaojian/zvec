@@ -68,6 +68,8 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_FORCE_PADDING_RESULT_ENABLE,
              &force_padding_topk_enabled_);
   params.get(PARAM_HNSW_STREAMER_USE_ID_MAP, &use_id_map_);
+  params.get(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
+             &use_contiguous_memory_);
 
   params.get(PARAM_HNSW_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit_);
   if (docs_soft_limit_ > 0 && docs_soft_limit_ > docs_hard_limit_) {

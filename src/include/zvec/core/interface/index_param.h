@@ -310,6 +310,7 @@ struct HNSWIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;
+  bool use_contiguous_memory = false;
 
   // Constructors with delegation
   HNSWIndexParam() : BaseIndexParam(IndexType::kHNSW) {}
@@ -335,6 +336,7 @@ struct VamanaIndexParam : public BaseIndexParam {
   int max_degree = kDefaultVamanaMaxDegree;
   int search_list_size = kDefaultVamanaSearchListSize;
   float alpha = kDefaultVamanaAlpha;
+  bool use_contiguous_memory = false;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 

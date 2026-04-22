@@ -57,6 +57,9 @@ int HNSWIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                               kDefaultHnswEfSearch);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_ID_MAP,
                               param_.use_id_map);
+    proxima_index_params_.set(
+        core::PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
+        param_.use_contiguous_memory);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
   }
 

@@ -83,6 +83,10 @@ ailego::JsonObject HNSWIndexParam::SerializeToJsonObject(
   auto json_obj = BaseIndexParam::SerializeToJsonObject(omit_empty_value);
   json_obj.set("m", ailego::JsonValue(m));
   json_obj.set("ef_construction", ailego::JsonValue(ef_construction));
+  if (!omit_empty_value || use_contiguous_memory) {
+    json_obj.set("use_contiguous_memory",
+                 ailego::JsonValue(use_contiguous_memory));
+  }
   return json_obj;
 }
 
@@ -137,6 +141,7 @@ bool HNSWIndexParam::DeserializeFromJsonObject(
 
   DESERIALIZE_VALUE_FIELD(json_obj, m);
   DESERIALIZE_VALUE_FIELD(json_obj, ef_construction);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
 
   return true;
 }
@@ -180,6 +185,10 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
   json_obj.set("max_degree", ailego::JsonValue(max_degree));
   json_obj.set("search_list_size", ailego::JsonValue(search_list_size));
   json_obj.set("alpha", ailego::JsonValue(alpha));
+  if (!omit_empty_value || use_contiguous_memory) {
+    json_obj.set("use_contiguous_memory",
+                 ailego::JsonValue(use_contiguous_memory));
+  }
   return json_obj;
 }
 
@@ -197,6 +206,7 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, max_degree);
   DESERIALIZE_VALUE_FIELD(json_obj, search_list_size);
   DESERIALIZE_VALUE_FIELD(json_obj, alpha);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
 
   return true;
 }
