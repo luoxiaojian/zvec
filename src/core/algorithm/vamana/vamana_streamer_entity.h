@@ -13,9 +13,12 @@
 // limitations under the License.
 #pragma once
 
-#include <atomic>
 #include <iostream>
+#include <memory>
 #include <mutex>
+#if defined(__linux__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
 #include <ailego/parallel/lock.h>
 #include <sparsehash/dense_hash_map>
 #include <zvec/ailego/container/heap.h>
