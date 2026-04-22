@@ -113,7 +113,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 template <typename EntityType>
 void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                                 VamanaContext *ctx) const {
-  const auto &entity = entity_;
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   VamanaDistCalculator &dc = ctx->dist_calculator();
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();

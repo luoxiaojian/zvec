@@ -700,6 +700,79 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
   return HnswEntity::Pointer(entity);
 }
 
+const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswMmapStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswMmapStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) HnswMmapStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
+      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswMmapStreamerEntity new failed");
+  }
+  return HnswEntity::Pointer(entity);
+}
+
+const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> node_chunks;
+  node_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0UL; i < node_chunks_.size(); ++i) {
+    node_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!node_chunks[i])) {
+      LOG_ERROR("HnswContiguousStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  std::vector<Chunk::Pointer> upper_neighbor_chunks;
+  upper_neighbor_chunks.reserve(upper_neighbor_chunks_.size());
+  for (size_t i = 0UL; i < upper_neighbor_chunks_.size(); ++i) {
+    upper_neighbor_chunks.emplace_back(upper_neighbor_chunks_[i]->clone());
+    if (ailego_unlikely(!upper_neighbor_chunks[i])) {
+      LOG_ERROR("HnswContiguousStreamerEntity get chunk failed in clone");
+      return HnswEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) HnswContiguousStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
+      upper_neighbor_index_, keys_map_lock_, keys_map_, use_key_info_map_,
+      std::move(node_chunks), std::move(upper_neighbor_chunks), broker_);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("HnswContiguousStreamerEntity new failed");
+    return HnswEntity::Pointer();
+  }
+
+  // Share contiguous memory with the clone (zero-copy)
+  entity->node_memory_ = node_memory_;
+  entity->node_base_ = node_base_;
+  entity->upper_neighbor_memory_ = upper_neighbor_memory_;
+  entity->upper_neighbor_base_ = upper_neighbor_base_;
+  entity->upper_chunk_offsets_ = upper_chunk_offsets_;
+
+  return HnswEntity::Pointer(entity);
+}
+
 // ============================================================================
 // HnswContiguousStreamerEntity implementation
 // ============================================================================
@@ -739,30 +812,12 @@ char *HnswContiguousStreamerEntity::allocate_contiguous(size_t size) {
 #endif
 }
 
-void HnswContiguousStreamerEntity::release_contiguous_memory() {
-  if (node_base_) {
-#if defined(__linux__) || defined(__APPLE__)
-    ::munmap(node_base_, node_memory_size_);
-#else
-    std::free(node_base_);
-#endif
-    node_base_ = nullptr;
-    node_memory_size_ = 0;
-  }
-  if (upper_neighbor_base_) {
-#if defined(__linux__) || defined(__APPLE__)
-    ::munmap(upper_neighbor_base_, upper_neighbor_memory_size_);
-#else
-    std::free(upper_neighbor_base_);
-#endif
-    upper_neighbor_base_ = nullptr;
-    upper_neighbor_memory_size_ = 0;
-  }
-  upper_chunk_offsets_.clear();
-}
-
 int HnswContiguousStreamerEntity::build_contiguous_memory() {
-  release_contiguous_memory();
+  node_memory_.reset();
+  node_base_ = nullptr;
+  upper_neighbor_memory_.reset();
+  upper_neighbor_base_ = nullptr;
+  upper_chunk_offsets_.clear();
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) {
@@ -772,11 +827,13 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
   // --- Build contiguous node memory ---
   const size_t per_node = node_size();
   const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
-  node_memory_size_ = AlignHugePageSize(total_node_data);
-  node_base_ = allocate_contiguous(node_memory_size_);
-  if (!node_base_) {
+  size_t node_memory_size = AlignHugePageSize(total_node_data);
+  char *raw_node = allocate_contiguous(node_memory_size);
+  if (!raw_node) {
     return IndexError_Runtime;
   }
+  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
+  node_base_ = raw_node;
 
   // Copy node data from chunks into contiguous memory
   // Each chunk holds node_cnt_per_chunk nodes, laid out at offset
@@ -816,12 +873,15 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
     total_upper_size += upper_chunks[i]->data_size();
   }
 
-  upper_neighbor_memory_size_ = AlignHugePageSize(total_upper_size);
-  upper_neighbor_base_ = allocate_contiguous(upper_neighbor_memory_size_);
-  if (!upper_neighbor_base_) {
-    release_contiguous_memory();
+  size_t upper_memory_size = AlignHugePageSize(total_upper_size);
+  char *raw_upper = allocate_contiguous(upper_memory_size);
+  if (!raw_upper) {
+    node_memory_.reset();
+    node_base_ = nullptr;
     return IndexError_Runtime;
   }
+  upper_neighbor_memory_.reset(raw_upper, ContiguousDeleter{upper_memory_size});
+  upper_neighbor_base_ = raw_upper;
 
   // Copy upper neighbor data from chunks into contiguous memory
   for (size_t i = 0; i < upper_chunks.size(); ++i) {
@@ -835,7 +895,7 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
   LOG_INFO(
       "Built contiguous memory: node_size=%zu upper_neighbor_size=%zu "
       "total_docs=%u node_chunks=%zu upper_chunks=%zu",
-      node_memory_size_, upper_neighbor_memory_size_, total_docs,
+      node_memory_size, upper_memory_size, total_docs,
       chunks.size(), upper_chunks.size());
 
   return 0;

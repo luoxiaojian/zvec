@@ -106,7 +106,7 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
                                                    node_id_t *entry_point,
                                                    dist_t *dist,
                                                    HnswContext *ctx) const {
-  const auto &entity = entity_;
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
   while (true) {
     const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
@@ -181,7 +181,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
                                                  node_id_t *entry_point,
                                                  dist_t *dist, TopkHeap &topk,
                                                  HnswContext *ctx) const {
-  const auto &entity = entity_;
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
@@ -288,7 +288,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
     return;
   }
 
-  const auto &entity = entity_;
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
     return ctx->group_by()(entity.get_key_typed(id));
   };

@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <iostream>
 #include <mutex>
 #include <ailego/parallel/lock.h>
@@ -194,6 +195,9 @@ class VamanaStreamerEntity : public VamanaEntity {
     neighbor_size_ = neighbors_size();
   }
 
+  //! Lazy chunk synchronization: fetches chunks from broker when needed.
+  //! Each clone entity has its own node_chunks_ vector, so concurrent
+  //! search threads do not race with the writer's emplace_back.
   void sync_chunks(ChunkBroker::CHUNK_TYPE type, size_t idx,
                    std::vector<Chunk::Pointer> *chunks) const {
     if (ailego_likely(idx < chunks->size())) {
@@ -315,6 +319,7 @@ class VamanaStreamerEntity : public VamanaEntity {
 
   mutable std::vector<Chunk::Pointer> node_chunks_{};
   mutable std::vector<Chunk::Pointer> dist_chunks_{};
+
   bool dist_loaded_{false};
   uint32_t dist_entry_size_{0};  // max_degree * sizeof(dist_t)
   ChunkBroker::Pointer broker_;
@@ -451,6 +456,10 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return VamanaStorageMode::kMmap;
   }
 
+  //! Override clone to return correct subclass type, so that
+  //! static_cast<const VamanaMmapStreamerEntity&> in the algorithm is safe.
+  const VamanaEntity::Pointer clone() const override;
+
   inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits();
     uint32_t offset =
@@ -541,21 +550,21 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaStorageMode::kContiguous;
   }
 
-  ~VamanaContiguousStreamerEntity() {
-    release_contiguous_memory();
-  }
+  //! Override clone to return correct subclass type.
+  //! Cloned entity shares contiguous memory via shared_ptr.
+  const VamanaEntity::Pointer clone() const override;
+
+  ~VamanaContiguousStreamerEntity() = default;
 
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
-  // Degrade to mmap mode by releasing contiguous memory and falling back
-  // to chunk-based access. Thread-safe: call_once ensures only one thread
-  // performs the release when multiple insert threads race.
+  //! Degrade to mmap mode by releasing contiguous memory and falling back
+  //! to chunk-based access.
   void degrade_to_mmap() {
-    std::call_once(degrade_flag_, [this]() {
-      release_contiguous_memory();
-      LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
-    });
+    node_memory_.reset();
+    node_base_ = nullptr;
+    LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
   }
 
   bool is_contiguous() const { return node_base_ != nullptr; }
@@ -606,11 +615,25 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
  private:
   static char *allocate_contiguous(size_t size);
-  void release_contiguous_memory();
 
+  //! Custom deleter for contiguous memory (munmap or free)
+  struct ContiguousDeleter {
+    size_t size;
+    void operator()(char *ptr) const {
+      if (!ptr) return;
+#if defined(__linux__) || defined(__APPLE__)
+      ::munmap(ptr, size);
+#else
+      std::free(ptr);
+#endif
+    }
+  };
+
+  //! Shared ownership of contiguous memory (enables zero-copy clone)
+  std::shared_ptr<char> node_memory_{};
+
+  //! Raw pointer for hot-path access (derived from shared_ptr)
   char *node_base_{nullptr};
-  size_t node_memory_size_{0};
-  std::once_flag degrade_flag_;
 };
 
 }  // namespace core

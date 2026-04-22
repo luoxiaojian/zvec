@@ -463,7 +463,6 @@ int VamanaStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
     }
     node_chunks_.emplace_back(std::move(chunk));
   }
-
   return 0;
 }
 
@@ -520,6 +519,54 @@ const VamanaEntity::Pointer VamanaStreamerEntity::clone() const {
   return VamanaEntity::Pointer(entity);
 }
 
+const VamanaEntity::Pointer VamanaMmapStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> cloned_chunks;
+  cloned_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0; i < node_chunks_.size(); ++i) {
+    cloned_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!cloned_chunks[i])) {
+      LOG_ERROR("VamanaMmapStreamerEntity get chunk failed in clone");
+      return VamanaEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) VamanaMmapStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      get_vector_enabled_, use_key_info_map_, keys_map_lock_, keys_map_,
+      std::move(cloned_chunks), broker_);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("VamanaMmapStreamerEntity new failed");
+  }
+  return VamanaEntity::Pointer(entity);
+}
+
+const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
+  std::vector<Chunk::Pointer> cloned_chunks;
+  cloned_chunks.reserve(node_chunks_.size());
+  for (size_t i = 0; i < node_chunks_.size(); ++i) {
+    cloned_chunks.emplace_back(node_chunks_[i]->clone());
+    if (ailego_unlikely(!cloned_chunks[i])) {
+      LOG_ERROR("VamanaContiguousStreamerEntity get chunk failed in clone");
+      return VamanaEntity::Pointer();
+    }
+  }
+
+  auto *entity = new (std::nothrow) VamanaContiguousStreamerEntity(
+      stats_, header(), chunk_size_, node_index_mask_bits_,
+      get_vector_enabled_, use_key_info_map_, keys_map_lock_, keys_map_,
+      std::move(cloned_chunks), broker_);
+  if (ailego_unlikely(!entity)) {
+    LOG_ERROR("VamanaContiguousStreamerEntity new failed");
+    return VamanaEntity::Pointer();
+  }
+
+  // Share contiguous memory with the clone (zero-copy)
+  entity->node_memory_ = node_memory_;
+  entity->node_base_ = node_base_;
+
+  return VamanaEntity::Pointer(entity);
+}
+
 // ============================================================================
 // VamanaContiguousStreamerEntity implementation
 // ============================================================================
@@ -553,29 +600,20 @@ char *VamanaContiguousStreamerEntity::allocate_contiguous(size_t size) {
 #endif
 }
 
-void VamanaContiguousStreamerEntity::release_contiguous_memory() {
-  if (node_base_) {
-#if defined(__linux__) || defined(__APPLE__)
-    ::munmap(node_base_, node_memory_size_);
-#else
-    std::free(node_base_);
-#endif
-    node_base_ = nullptr;
-    node_memory_size_ = 0;
-  }
-}
-
 int VamanaContiguousStreamerEntity::build_contiguous_memory() {
-  release_contiguous_memory();
+  node_memory_.reset();
+  node_base_ = nullptr;
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
 
   const size_t per_node = node_size();
   const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
-  node_memory_size_ = AlignHugePageSize(total_node_data);
-  node_base_ = allocate_contiguous(node_memory_size_);
-  if (!node_base_) return IndexError_Runtime;
+  size_t node_memory_size = AlignHugePageSize(total_node_data);
+  char *raw_node = allocate_contiguous(node_memory_size);
+  if (!raw_node) return IndexError_Runtime;
+  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
+  node_base_ = raw_node;
 
   // Copy node data from chunks into contiguous memory
   const auto &chunks = node_chunks();
@@ -597,7 +635,7 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   LOG_INFO(
       "Built Vamana contiguous memory: node_size=%zu total_docs=%u "
       "node_chunks=%zu",
-      node_memory_size_, total_docs, chunks.size());
+      node_memory_size, total_docs, chunks.size());
 
   return 0;
 }
@@ -672,7 +710,6 @@ int VamanaStreamerEntity::alloc_dist_chunks_for_existing_nodes() {
     p.second->resize(data_size);
     dist_chunks_.emplace_back(std::move(p.second));
   }
-
   broker_->mark_dirty();
   LOG_INFO("Allocated %u dist chunks for %u existing nodes",
            num_chunks_needed, total_docs);

@@ -761,6 +761,10 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     return HnswStorageMode::kMmap;
   }
 
+  //! Override clone to return correct subclass type, so that
+  //! static_cast<const HnswMmapStreamerEntity&> in the algorithm is safe.
+  const HnswEntity::Pointer clone() const override;
+
   inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
     if (level == 0UL) {
       uint32_t chunk_idx = id >> node_index_mask_bits();
@@ -889,22 +893,25 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswStorageMode::kContiguous;
   }
 
-  ~HnswContiguousStreamerEntity() {
-    release_contiguous_memory();
-  }
+  //! Override clone to return correct subclass type.
+  //! Cloned entity shares contiguous memory via shared_ptr.
+  const HnswEntity::Pointer clone() const override;
+
+  ~HnswContiguousStreamerEntity() = default;
 
   //! Build contiguous memory from chunks after open.
   //! Must be called after the entity is fully opened and all chunks are loaded.
   int build_contiguous_memory();
 
   //! Degrade to mmap mode by releasing contiguous memory and falling back
-  //! to chunk-based access. Thread-safe: call_once ensures only one thread
-  //! performs the release when multiple insert threads race.
+  //! to chunk-based access.
   void degrade_to_mmap() {
-    std::call_once(degrade_flag_, [this]() {
-      release_contiguous_memory();
-      LOG_INFO("HNSW contiguous entity degraded to mmap mode for insertion");
-    });
+    node_memory_.reset();
+    node_base_ = nullptr;
+    upper_neighbor_memory_.reset();
+    upper_neighbor_base_ = nullptr;
+    upper_chunk_offsets_.clear();
+    LOG_INFO("HNSW contiguous entity degraded to mmap mode for insertion");
   }
 
   bool is_contiguous() const { return node_base_ != nullptr; }
@@ -933,8 +940,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
       auto it = upper_neighbor_index()->find(id);
       ailego_assert_abort(it != upper_neighbor_index()->end(),
                           "Get upper neighbor header failed");
-      auto meta =
-          reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
+      auto meta = reinterpret_cast<const UpperNeighborIndexMeta *>(&it->second);
       uint32_t chunk_idx = (meta->index) >> upper_neighbor_mask_bits();
       uint32_t local_idx = (meta->index) & upper_neighbor_mask();
       size_t global_offset =
@@ -977,19 +983,30 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
   //! Allocate contiguous memory with hugepage/THP support
   static char *allocate_contiguous(size_t size);
 
-  //! Release contiguous memory
-  void release_contiguous_memory();
+  //! Custom deleter for contiguous memory (munmap or free)
+  //! Used by shared_ptr to properly release mmap'd memory.
+  struct ContiguousDeleter {
+    size_t size;
+    void operator()(char *ptr) const {
+      if (!ptr) return;
+#if defined(__linux__) || defined(__APPLE__)
+      ::munmap(ptr, size);
+#else
+      std::free(ptr);
+#endif
+    }
+  };
 
+  //! Shared ownership of contiguous memory (enables zero-copy clone)
+  std::shared_ptr<char> node_memory_{};
+  std::shared_ptr<char> upper_neighbor_memory_{};
+
+  //! Raw pointers for hot-path access (derived from shared_ptr)
   char *node_base_{nullptr};
-  size_t node_memory_size_{0};
-
   char *upper_neighbor_base_{nullptr};
-  size_t upper_neighbor_memory_size_{0};
 
   //! Cumulative offsets for each upper neighbor chunk in contiguous memory
   std::vector<size_t> upper_chunk_offsets_{};
-
-  std::once_flag degrade_flag_;
 };
 
 }  // namespace core
