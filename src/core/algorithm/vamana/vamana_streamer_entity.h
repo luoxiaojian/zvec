@@ -232,6 +232,8 @@ class VamanaStreamerEntity : public VamanaEntity {
     sync_chunks(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST, idx, &dist_chunks_);
   }
 
+  int ensure_dist_chunk_for(uint32_t chunk_index);
+
   int alloc_dist_chunks_for_existing_nodes();
 
   size_t estimate_doc_capacity() const {

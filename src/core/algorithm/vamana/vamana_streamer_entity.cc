@@ -136,6 +136,9 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
       return IndexError_IndexFull;
     }
     chunk_index++;
+    if (auto dret = ensure_dist_chunk_for(chunk_index); dret != 0) {
+      return dret;
+    }
     auto p = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NODE, chunk_index,
                                   chunk_size_);
     if (ailego_unlikely(p.first != 0)) {
@@ -145,23 +148,6 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
     node_chunk = p.second;
     chunk_offset = 0UL;
     node_chunks_.emplace_back(node_chunk);
-
-    // Synchronously allocate corresponding dist chunk if dist storage is active
-    if (dist_loaded_ && dist_entry_size_ > 0) {
-      uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
-      uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
-      auto dp = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
-                                     chunk_index, dist_chunk_size);
-      if (ailego_unlikely(dp.first != 0)) {
-        LOG_ERROR("Alloc dist chunk %u failed", chunk_index);
-      } else {
-        dp.second->resize(dist_chunk_data_size);
-        while (dist_chunks_.size() <= chunk_index) {
-          dist_chunks_.emplace_back(nullptr);
-        }
-        dist_chunks_[chunk_index] = std::move(dp.second);
-      }
-    }
   } else {
     node_chunk = node_chunks_[chunk_index];
     chunk_offset = node_chunk->data_size();
@@ -215,6 +201,9 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
         LOG_ERROR("add vector failed for no memory quota");
         return IndexError_IndexFull;
       }
+      if (auto dret = ensure_dist_chunk_for(chunk_idx); dret != 0) {
+        return dret;
+      }
       auto p = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NODE, chunk_idx,
                                     chunk_size_);
       if (ailego_unlikely(p.first != 0)) {
@@ -223,24 +212,6 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
       }
       node_chunk = p.second;
       node_chunks_.emplace_back(node_chunk);
-
-      // Synchronously allocate corresponding dist chunk if dist storage is
-      // active
-      if (dist_loaded_ && dist_entry_size_ > 0) {
-        uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
-        uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
-        auto dp = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
-                                       chunk_idx, dist_chunk_size);
-        if (ailego_unlikely(dp.first != 0)) {
-          LOG_ERROR("Alloc dist chunk %u failed", chunk_idx);
-        } else {
-          dp.second->resize(dist_chunk_data_size);
-          while (dist_chunks_.size() <= chunk_idx) {
-            dist_chunks_.emplace_back(nullptr);
-          }
-          dist_chunks_[chunk_idx] = std::move(dp.second);
-        }
-      }
     }
     node_chunk = node_chunks_[chunk_idx];
     chunk_offset = (node_id & node_index_mask_) * node_size();
@@ -688,6 +659,33 @@ int VamanaStreamerEntity::ensure_dist_storage() {
   }
 
   dist_loaded_ = true;
+  return 0;
+}
+
+int VamanaStreamerEntity::ensure_dist_chunk_for(uint32_t chunk_index) {
+  // No-op when dist storage is not active.
+  if (!dist_loaded_ || dist_entry_size_ == 0) return 0;
+
+  // Idempotent: nothing to do if this dist chunk slot already exists and is
+  // populated. (Slots created by the placeholder loop below will hold
+  // nullptr and must still be (re-)allocated.)
+  if (chunk_index < dist_chunks_.size() && dist_chunks_[chunk_index]) {
+    return 0;
+  }
+
+  uint32_t dist_chunk_data_size = node_cnt_per_chunk_ * dist_entry_size_;
+  uint32_t dist_chunk_size = AlignPageSize(dist_chunk_data_size);
+  auto dp = broker_->alloc_chunk(ChunkBroker::CHUNK_TYPE_NEIGHBOR_DIST,
+                                 chunk_index, dist_chunk_size);
+  if (ailego_unlikely(dp.first != 0)) {
+    LOG_ERROR("Alloc dist chunk %u failed", chunk_index);
+    return dp.first;
+  }
+  dp.second->resize(dist_chunk_data_size);
+  while (dist_chunks_.size() <= chunk_index) {
+    dist_chunks_.emplace_back(nullptr);
+  }
+  dist_chunks_[chunk_index] = std::move(dp.second);
   return 0;
 }
 
