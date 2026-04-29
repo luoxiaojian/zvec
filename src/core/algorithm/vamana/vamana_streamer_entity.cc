@@ -359,17 +359,19 @@ int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
                                uint64_t max_index_size, bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
   bool huge_page = stg->isHugePage();
-  int ret = init_chunk_params(max_index_size, huge_page);
-  if (ailego_unlikely(ret != 0)) {
-    LOG_ERROR("init_chunk_params failed: %s", IndexError::What(ret));
-    return ret;
-  }
 
-  ret = broker_->open(std::move(stg), chunk_size_, check_crc);
+  int ret = broker_->open(std::move(stg), chunk_size_, check_crc);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Open index failed: %s", IndexError::What(ret));
     return ret;
   }
+
+  ret = init_chunk_params(max_index_size, huge_page);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("init_chunk_params failed: %s", IndexError::What(ret));
+    return ret;
+  }
+  broker_->set_max_chunks_size(max_index_size_);
 
   // Init header
   auto header_chunk = broker_->get_chunk(ChunkBroker::CHUNK_TYPE_HEADER,
