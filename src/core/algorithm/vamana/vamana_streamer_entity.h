@@ -67,6 +67,10 @@ class VamanaStreamerEntity : public VamanaEntity {
   virtual int dump(const IndexDumper::Pointer &dumper) override;
   virtual void update_entry_point(node_id_t ep) override;
 
+  // Calculate medoid: find the data point closest to the centroid
+  // of all vectors (DiskANN standard entry point selection).
+  node_id_t calculate_medoid(uint32_t dimension, uint32_t data_type) override;
+
   // --- Neighbor distance storage ---
   int ensure_dist_storage() override;
   bool dist_storage_loaded() const override {
