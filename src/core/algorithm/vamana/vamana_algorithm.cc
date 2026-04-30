@@ -56,7 +56,7 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   }
   ctx->reset_query(query_vec);
 
-  greedy_search(entry_point, ctx);
+  greedy_search(entry_point, ctx, /*use_pool=*/false);
 
   // Step 2: RobustPrune to select diverse neighbors
   auto &topk_heap = ctx->topk_heap();
@@ -96,7 +96,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
   topk_heap.limit(ef_search);
 
-  greedy_search(entry_point, ctx);
+  greedy_search(entry_point, ctx, /*use_pool=*/true);
 
   return 0;
 }
@@ -112,7 +112,8 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // ============================================================================
 template <typename EntityType>
 void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
-                                                VamanaContext *ctx) const {
+                                                VamanaContext *ctx,
+                                                bool use_pool) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   VamanaDistCalculator &dc = ctx->dist_calculator();
 
@@ -133,14 +134,17 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   static constexpr uint32_t PREFETCH_BATCH = 2;
   static constexpr uint32_t PREFETCH_STEP = 2;
 
-  if (index_filter.is_valid()) {
+  if (!use_pool || index_filter.is_valid()) {
     VisitFilter &visit = ctx->visit_filter();
     CandidateHeap &candidates = ctx->candidates();
     auto &topk_heap = ctx->topk_heap();
 
-    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
-      return index_filter(entity.get_key_typed(id));
-    };
+    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
+    if (index_filter.is_valid()) {
+      filter = [&](node_id_t id) {
+        return index_filter(entity.get_key_typed(id));
+      };
+    }
 
     candidates.clear();
     visit.clear();
@@ -160,7 +164,6 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       topk_heap.emplace(entry_point, entry_dist);
     }
     candidates.emplace(entry_point, entry_dist);
-
 
     while (!candidates.empty() && !ctx->reach_scan_limit()) {
       auto top = candidates.begin();
@@ -214,14 +217,6 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       }
       dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
 
-      // Update candidates and topk.
-      // Unlike vanilla DiskANN which inserts all unvisited neighbors into
-      // the candidate queue unconditionally, we apply an early-pruning
-      // optimization: a neighbor is only inserted into the candidate queue
-      // (and topk_heap) if it could potentially improve the final results,
-      // i.e. either the topk heap is not yet full, or the neighbor is closer
-      // than the current worst result. This avoids expanding clearly
-      // unpromising branches and reduces the candidate queue size.
       for (uint32_t i = 0; i < unvisited_count; ++i) {
         node_id_t node = neighbor_ids[i];
         dist_t node_dist = dists[i];
@@ -241,7 +236,6 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     dist_t entry_dist = dc.batch_dist(entry_point);
     pool.set_visited(entry_point);
     pool.insert(entry_point, entry_dist);
-
 
     while (pool.has_next()) {
       auto current_node = pool.pop();

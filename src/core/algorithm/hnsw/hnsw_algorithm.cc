@@ -48,7 +48,7 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 
   for (; cur_level >= 0; --cur_level) {
     search_neighbors(cur_level, &entry_point, &dist, ctx->level_topk(cur_level),
-                     ctx);
+                     ctx, /*use_pool=*/false);
   }
 
   // add neighbors from down level to top level, to avoid upper level visible
@@ -86,7 +86,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
-  search_neighbors(0, &entry_point, &dist, topk_heap, ctx);
+  search_neighbors(0, &entry_point, &dist, topk_heap, ctx, /*use_pool=*/true);
 
   if (ctx->group_by_search()) {
     expand_neighbors_by_group(topk_heap, ctx);
@@ -174,7 +174,8 @@ template <typename EntityType>
 void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
                                                  node_id_t *entry_point,
                                                  dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx) const {
+                                                 HnswContext *ctx,
+                                                 bool use_pool) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
@@ -188,10 +189,13 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   static constexpr node_id_t BATCH_SIZE = 2;
   static constexpr node_id_t PREFETCH_STEP = 2;
 
-  if (ctx->filter().is_valid() || level != 0) {
-    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
-      return ctx->filter()(entity.get_key_typed(id));
-    };
+  if (!use_pool || ctx->filter().is_valid() || level != 0) {
+    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
+    if (ctx->filter().is_valid()) {
+      filter = [&](node_id_t id) {
+        return ctx->filter()(entity.get_key_typed(id));
+      };
+    }
 
     VisitFilter &visit = ctx->visit_filter();
     CandidateHeap &candidates = ctx->candidates();
