@@ -450,7 +450,8 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   //! static_cast<const VamanaMmapStreamerEntity&> in the algorithm is safe.
   const VamanaEntity::Pointer clone() const override;
 
-  inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) TypedNeighbors get_neighbors_typed(
+      node_id_t id) const {
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset =
         (id & node_index_mask_) * node_size() + vector_size() + sizeof(key_t);
@@ -459,8 +460,9 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return TypedNeighbors(std::move(block));
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+  inline __attribute__((always_inline)) int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
       uint32_t chunk_idx = ids[i] >> node_index_mask_bits_;
@@ -471,7 +473,8 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return 0;
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) key_t get_key_typed(
+      node_id_t id) const {
     if (!use_key_info_map_) return id;
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size() + vector_size();
@@ -480,7 +483,8 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   }
 
  private:
-  inline const char *get_node_chunk_base(uint32_t chunk_idx) const {
+  inline __attribute__((always_inline)) const char *get_node_chunk_base(
+      uint32_t chunk_idx) const {
     if (ailego_unlikely(chunk_idx >= node_chunk_bases_.size())) {
       sync_node_chunk_bases(chunk_idx);
     }
@@ -571,7 +575,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
   }
 
-  inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) TypedNeighbors get_neighbors_typed(
+      node_id_t id) const {
     if (ailego_likely(node_base_ != nullptr)) {
       const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
                         vector_size() + sizeof(key_t);
@@ -581,8 +586,9 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+  inline __attribute__((always_inline)) int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
     if (ailego_likely(node_base_ != nullptr)) {
       vec_blocks.resize(count);
       for (auto i = 0U; i < count; ++i) {
@@ -595,7 +601,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::get_vector_typed(ids, count, vec_blocks);
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) key_t get_key_typed(
+      node_id_t id) const {
     if (ailego_likely(node_base_ != nullptr)) {
       if (!use_key_info_map_) return id;
       const char *ptr =

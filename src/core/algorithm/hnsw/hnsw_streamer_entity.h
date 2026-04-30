@@ -756,7 +756,8 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   //! static_cast<const HnswMmapStreamerEntity&> in the algorithm is safe.
   const HnswEntity::Pointer clone() const override;
 
-  inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
+  inline __attribute__((always_inline)) TypedNeighbors get_neighbors_typed(
+      level_t level, node_id_t id) const {
     if (level == 0UL) {
       uint32_t chunk_idx = id >> node_index_mask_bits_;
       uint32_t offset =
@@ -778,8 +779,9 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     return TypedNeighbors(std::move(block));
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+  inline __attribute__((always_inline)) int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
     vec_blocks.resize(count);
     for (auto i = 0U; i < count; ++i) {
       uint32_t chunk_idx = ids[i] >> node_index_mask_bits_;
@@ -790,7 +792,8 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     return 0;
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) key_t get_key_typed(
+      node_id_t id) const {
     if (!use_key_info_map_) {
       return id;
     }
@@ -802,7 +805,8 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
 
  private:
   //! Get cached base address for a node chunk, syncing if needed
-  inline const char *get_node_chunk_base(uint32_t chunk_idx) const {
+  inline __attribute__((always_inline)) const char *get_node_chunk_base(
+      uint32_t chunk_idx) const {
     if (ailego_unlikely(chunk_idx >= node_chunk_bases_.size())) {
       sync_node_chunk_bases(chunk_idx);
     }
@@ -810,7 +814,8 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   }
 
   //! Get cached base address for an upper neighbor chunk, syncing if needed
-  inline const char *get_upper_neighbor_chunk_base(uint32_t chunk_idx) const {
+  inline __attribute__((always_inline)) const char *
+  get_upper_neighbor_chunk_base(uint32_t chunk_idx) const {
     if (ailego_unlikely(chunk_idx >= upper_neighbor_chunk_bases_.size())) {
       sync_upper_neighbor_chunk_bases(chunk_idx);
     }
@@ -921,7 +926,8 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswMmapStreamerEntity::add_vector_with_id(level, id, vec);
   }
 
-  inline TypedNeighbors get_neighbors_typed(level_t level, node_id_t id) const {
+  inline __attribute__((always_inline)) TypedNeighbors get_neighbors_typed(
+      level_t level, node_id_t id) const {
     if (ailego_likely(node_base_ != nullptr)) {
       if (level == 0UL) {
         const char *ptr = node_base_ + static_cast<size_t>(id) * node_size() +
@@ -946,8 +952,9 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswMmapStreamerEntity::get_neighbors_typed(level, id);
   }
 
-  inline int get_vector_typed(const node_id_t *ids, uint32_t count,
-                              std::vector<MmapMemoryBlock> &vec_blocks) const {
+  inline __attribute__((always_inline)) int get_vector_typed(
+      const node_id_t *ids, uint32_t count,
+      std::vector<MmapMemoryBlock> &vec_blocks) const {
     if (ailego_likely(node_base_ != nullptr)) {
       vec_blocks.resize(count);
       for (auto i = 0U; i < count; ++i) {
@@ -960,7 +967,8 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
     return HnswMmapStreamerEntity::get_vector_typed(ids, count, vec_blocks);
   }
 
-  inline key_t get_key_typed(node_id_t id) const {
+  inline __attribute__((always_inline)) key_t get_key_typed(
+      node_id_t id) const {
     if (ailego_likely(node_base_ != nullptr)) {
       if (!use_key_info_map_) {
         return id;
