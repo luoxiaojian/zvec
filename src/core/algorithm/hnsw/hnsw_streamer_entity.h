@@ -218,6 +218,10 @@ class HnswStreamerEntity : public HnswEntity {
     return sizeof(NeighborsHeader) + upper_neighbor_cnt() * sizeof(node_id_t);
   }
 
+  inline size_t max_degree(level_t level) const {
+    return level == 0 ? neighbor_size_ : upper_neighbor_size_;
+  }
+
 
  protected:
   union UpperNeighborIndexMeta {

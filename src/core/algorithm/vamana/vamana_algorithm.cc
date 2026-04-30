@@ -115,37 +115,9 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
                                                 VamanaContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   VamanaDistCalculator &dc = ctx->dist_calculator();
-  VisitFilter &visit = ctx->visit_filter();
-  CandidateHeap &candidates = ctx->candidates();
-  auto &topk_heap = ctx->topk_heap();
 
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
-  std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
-  if (index_filter.is_valid()) {
-    filter = [&](node_id_t id) {
-      return index_filter(entity.get_key_typed(id));
-    };
-  }
-
-  candidates.clear();
-  visit.clear();
-
-  // Initialize with entry point using batch_dist (single-element batch).
-  // We must NOT use dc.dist(entry_point) here because dist() calls
-  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
-  // expects two raw int8 inputs), but query_ has been preprocessed by
-  // reset_query (+128 shift to uint8). batch_dist() correctly calls
-  // batch_distance_() which expects the preprocessed uint8 query.
-  dist_t entry_dist = dc.batch_dist(entry_point);
-  if (ailego_unlikely(dc.error())) {
-    return;
-  }
-  visit.set_visited(entry_point);
-  if (!filter(entry_point)) {
-    topk_heap.emplace(entry_point, entry_dist);
-  }
-  candidates.emplace(entry_point, entry_dist);
 
   // Pre-allocate temporary vectors outside the hot loop to avoid
   // per-iteration heap allocations. Sized to max_degree initially;
@@ -157,78 +129,170 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
 
-  while (!candidates.empty() && !ctx->reach_scan_limit()) {
-    auto top = candidates.begin();
-    node_id_t current_node = top->first;
-    dist_t current_dist = top->second;
+  // Prefetch for better cache performance
+  static constexpr uint32_t PREFETCH_BATCH = 2;
+  static constexpr uint32_t PREFETCH_STEP = 2;
 
-    // Early termination: if the closest candidate is worse than the worst
-    // result in a full topk heap, we won't find anything better.
-    if (topk_heap.full() && current_dist > topk_heap[0].second) {
-      break;
+  if (index_filter.is_valid()) {
+    VisitFilter &visit = ctx->visit_filter();
+    CandidateHeap &candidates = ctx->candidates();
+    auto &topk_heap = ctx->topk_heap();
+
+    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
+      return index_filter(entity.get_key_typed(id));
+    };
+
+    candidates.clear();
+    visit.clear();
+
+    // Initialize with entry point using batch_dist (single-element batch).
+    // We must NOT use dc.dist(entry_point) here because dist() calls
+    // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
+    // expects two raw int8 inputs), but query_ has been preprocessed by
+    // reset_query (+128 shift to uint8). batch_dist() correctly calls
+    // batch_distance_() which expects the preprocessed uint8 query.
+    dist_t entry_dist = dc.batch_dist(entry_point);
+    if (ailego_unlikely(dc.error())) {
+      return;
     }
-
-    candidates.pop();
-
-    // Expand neighbors using typed access (no virtual dispatch)
-    const auto neighbors = entity.get_neighbors_typed(current_node);
-    ailego_prefetch(neighbors.data);
-
-    // Resize buffers if this node has more neighbors than expected
-    if (neighbors.size() > buf_capacity) {
-      buf_capacity = neighbors.size();
-      neighbor_ids.resize(buf_capacity);
-      dists.resize(buf_capacity);
-      neighbor_vecs.resize(buf_capacity);
+    visit.set_visited(entry_point);
+    if (!filter(entry_point)) {
+      topk_heap.emplace(entry_point, entry_dist);
     }
+    candidates.emplace(entry_point, entry_dist);
 
-    // Collect unvisited neighbors (reuse pre-allocated buffer)
-    uint32_t unvisited_count = 0;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
-      node_id_t node = neighbors[i];
-      if (visit.visited(node)) continue;
-      visit.set_visited(node);
-      neighbor_ids[unvisited_count++] = node;
-    }
-    if (unvisited_count == 0) continue;
 
-    // Batch fetch vectors using typed access (reuse pre-allocated buffer)
-    neighbor_vec_blocks.clear();
-    int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
-                                      neighbor_vec_blocks);
-    if (ailego_unlikely(ret != 0)) break;
+    while (!candidates.empty() && !ctx->reach_scan_limit()) {
+      auto top = candidates.begin();
+      node_id_t current_node = top->first;
+      dist_t current_dist = top->second;
 
-    // Prefetch for better cache performance
-    static constexpr uint32_t PREFETCH_BATCH = 2;
-    static constexpr uint32_t PREFETCH_STEP = 2;
-    for (uint32_t i = 0;
-         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
-      ailego_prefetch(neighbor_vec_blocks[i].data());
-    }
+      // Early termination: if the closest candidate is worse than the worst
+      // result in a full topk heap, we won't find anything better.
+      if (topk_heap.full() && current_dist > topk_heap[0].second) {
+        break;
+      }
 
-    // Batch distance computation (reuse pre-allocated buffers)
-    for (uint32_t i = 0; i < unvisited_count; ++i) {
-      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
-    }
-    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+      candidates.pop();
 
-    // Update candidates and topk.
-    // Unlike vanilla DiskANN which inserts all unvisited neighbors into
-    // the candidate queue unconditionally, we apply an early-pruning
-    // optimization: a neighbor is only inserted into the candidate queue
-    // (and topk_heap) if it could potentially improve the final results,
-    // i.e. either the topk heap is not yet full, or the neighbor is closer
-    // than the current worst result. This avoids expanding clearly
-    // unpromising branches and reduces the candidate queue size.
-    for (uint32_t i = 0; i < unvisited_count; ++i) {
-      node_id_t node = neighbor_ids[i];
-      dist_t node_dist = dists[i];
-      if ((!topk_heap.full()) || node_dist < topk_heap[0].second) {
-        candidates.emplace(node, node_dist);
-        if (!filter(node)) {
-          topk_heap.emplace(node, node_dist);
+      // Expand neighbors using typed access (no virtual dispatch)
+      const auto neighbors = entity.get_neighbors_typed(current_node);
+      ailego_prefetch(neighbors.data);
+
+      // Resize buffers if this node has more neighbors than expected
+      if (neighbors.size() > buf_capacity) {
+        buf_capacity = neighbors.size();
+        neighbor_ids.resize(buf_capacity);
+        dists.resize(buf_capacity);
+        neighbor_vecs.resize(buf_capacity);
+      }
+
+      // Collect unvisited neighbors (reuse pre-allocated buffer)
+      uint32_t unvisited_count = 0;
+      for (uint32_t i = 0; i < neighbors.size(); ++i) {
+        node_id_t node = neighbors[i];
+        if (visit.visited(node)) continue;
+        visit.set_visited(node);
+        neighbor_ids[unvisited_count++] = node;
+      }
+      if (unvisited_count == 0) continue;
+
+      // Batch fetch vectors using typed access (reuse pre-allocated buffer)
+      neighbor_vec_blocks.clear();
+      int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                        neighbor_vec_blocks);
+      if (ailego_unlikely(ret != 0)) break;
+
+      for (uint32_t i = 0;
+           i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
+        ailego_prefetch(neighbor_vec_blocks[i].data());
+      }
+
+      // Batch distance computation (reuse pre-allocated buffers)
+      for (uint32_t i = 0; i < unvisited_count; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
+      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+
+      // Update candidates and topk.
+      // Unlike vanilla DiskANN which inserts all unvisited neighbors into
+      // the candidate queue unconditionally, we apply an early-pruning
+      // optimization: a neighbor is only inserted into the candidate queue
+      // (and topk_heap) if it could potentially improve the final results,
+      // i.e. either the topk heap is not yet full, or the neighbor is closer
+      // than the current worst result. This avoids expanding clearly
+      // unpromising branches and reduces the candidate queue size.
+      for (uint32_t i = 0; i < unvisited_count; ++i) {
+        node_id_t node = neighbor_ids[i];
+        dist_t node_dist = dists[i];
+        if ((!topk_heap.full()) || node_dist < topk_heap[0].second) {
+          candidates.emplace(node, node_dist);
+          if (!filter(node)) {
+            topk_heap.emplace(node, node_dist);
+          }
         }
       }
+    }
+  } else {
+    auto &pool = ctx->pool();
+    uint32_t cap = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
+    pool.reset(entity.doc_cnt(), cap, cap);
+
+    dist_t entry_dist = dc.batch_dist(entry_point);
+    pool.set_visited(entry_point);
+    pool.insert(entry_point, entry_dist);
+
+
+    while (pool.has_next()) {
+      auto current_node = pool.pop();
+
+      const auto neighbors = entity.get_neighbors_typed(current_node);
+      ailego_prefetch(neighbors.data);
+
+      if (neighbors.size() > buf_capacity) {
+        buf_capacity = neighbors.size();
+        neighbor_ids.resize(buf_capacity);
+        dists.resize(buf_capacity);
+        neighbor_vecs.resize(buf_capacity);
+      }
+
+      uint32_t unvisited_count = 0;
+      for (uint32_t i = 0; i < neighbors.size(); ++i) {
+        node_id_t node = neighbors[i];
+        if (pool.check_visited(node)) {
+          continue;
+        }
+        pool.set_visited(node);
+        neighbor_ids[unvisited_count++] = node;
+      }
+
+      if (unvisited_count == 0) {
+        continue;
+      }
+
+      neighbor_vec_blocks.clear();
+      int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                        neighbor_vec_blocks);
+      if (ailego_unlikely(ret != 0)) break;
+
+      for (uint32_t i = 0;
+           i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
+        ailego_prefetch(neighbor_vec_blocks[i].data());
+      }
+      for (uint32_t i = 0; i < unvisited_count; ++i) {
+        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+      }
+
+      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+
+      for (uint32_t i = 0; i < unvisited_count; ++i) {
+        pool.insert(neighbor_ids[i], dists[i]);
+      }
+    }
+
+    auto &topk_heap = ctx->topk_heap();
+    for (uint32_t i = 0; i < pool.size(); ++i) {
+      topk_heap.emplace(pool.id(i), pool.dist(i));
     }
   }
 }
