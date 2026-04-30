@@ -14,6 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/linear_pool.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
 #include "vamana_entity.h"
@@ -118,6 +119,9 @@ class VamanaContext : public IndexContext {
   }
   inline TopkHeap &update_heap() {
     return update_heap_;
+  }
+  inline LinearPool<dist_t> &pool() {
+    return pool_;
   }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
@@ -309,6 +313,8 @@ class VamanaContext : public IndexContext {
 
   VisitFilter::Mode filter_mode_{VisitFilter::ByteMap};
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
+
+  LinearPool<dist_t> pool_;
 };
 
 }  // namespace core

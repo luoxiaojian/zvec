@@ -115,7 +115,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! Note: the nearest neighbors result keeps in topk, and entry_point and
   //! dist will be updated to current level nearest node id and distance
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx) const;
+                        TopkHeap &topk, HnswContext *ctx,
+                        bool use_pool) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
