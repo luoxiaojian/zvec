@@ -171,6 +171,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
+        case QuantizerType::kUniformInt8:
+          converter_name = "UniformInt8StreamingConverter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -292,6 +295,18 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
+  }
+
+  // Re-init reformer with stored meta params (e.g. UniformInt8 scale/bias
+  // are only known after training and stored in the index meta)
+  if (reformer_ != nullptr && streamer_ != nullptr) {
+    const auto &stored_reformer_params = streamer_->meta().reformer_params();
+    if (!stored_reformer_params.empty()) {
+      if (reformer_->init(stored_reformer_params) != 0) {
+        LOG_ERROR("Failed to re-init reformer with stored params");
+        return core::IndexError_Runtime;
+      }
+    }
   }
 
   // converter/reformer/metric are created in IndexFactory::CreateIndex
