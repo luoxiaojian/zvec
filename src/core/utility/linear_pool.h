@@ -36,7 +36,16 @@ inline void *align_alloc_memory(size_t nbytes, bool set = true, uint8_t x = 0) {
   }
   auto p = std::aligned_alloc(alignment, len);
   if constexpr (alignment >= size_2M) {
+    // MADV_HUGEPAGE is a Linux-only hint for transparent huge pages.
+    // It is intentionally absent on macOS/BSD (which manage superpages
+    // differently); skip the call there — it's a perf hint, not required
+    // for correctness.
+#ifdef MADV_HUGEPAGE
     madvise(p, len, MADV_HUGEPAGE);
+#else
+    (void)p;
+    (void)len;
+#endif
   }
   if (set) {
     std::memset(p, x, len);

@@ -1,0 +1,137 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
+#include "metric_params.h"
+
+namespace zvec {
+namespace core {
+
+/*! Index Metric for Unit-Scale Int8 Quantization (scale=1, with sq_sum extra
+ *  field)
+ *
+ * Vector layout: [ original_dim int8 ] + [ 4 bytes float: sq_sum_half ]
+ * Total `dim` passed to distance functions = original_dim + 4.
+ *
+ * Single-path design (like record quantizer): both add and search use the
+ * dpbusd kernel `unit_scale_squared_euclidean_int8_{batch_}distance`.
+ *   dist = sq_sum_half - dpbusd(query_as_uint8, data_int8)
+ *
+ * The query_preprocess_func is nullptr because the UnitScaleInt8 reformer
+ * already produces uint8 queries directly (no +128 shift needed).
+ * During graph construction the stored int8 vector is passed as "query",
+ * and dpbusd interprets it as uint8 implicitly — the resulting ranking is
+ * a valid proxy for L2 (bias terms cancel for fixed-query comparisons).
+ */
+class UnitScaleInt8Metric : public IndexMetric {
+ public:
+  int init(const IndexMeta &meta, const ailego::Params &index_params) override {
+    if (meta.data_type() != IndexMeta::DataType::DT_INT8) {
+      LOG_ERROR("UnitScaleInt8Metric: unsupported type %d", meta.data_type());
+      return IndexError_Unsupported;
+    }
+
+    std::string metric_name;
+    index_params.get(UNIT_SCALE_INT8_METRIC_ORIGIN_METRIC_NAME, &metric_name);
+    if (metric_name.empty()) {
+      LOG_ERROR("UnitScaleInt8Metric: param %s is required",
+                UNIT_SCALE_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
+      return IndexError_InvalidArgument;
+    }
+
+    if (metric_name != "SquaredEuclidean") {
+      LOG_ERROR("UnitScaleInt8Metric: only SquaredEuclidean supported, got %s",
+                metric_name.c_str());
+      return IndexError_Unsupported;
+    }
+
+    meta_ = meta;
+    params_ = index_params;
+
+    LOG_INFO("UnitScaleInt8Metric initialized: dimension=%u",
+             meta_.dimension());
+    return 0;
+  }
+
+  int cleanup(void) override {
+    return 0;
+  }
+
+  bool is_matched(const IndexMeta &meta) const override {
+    return meta.data_type() == meta_.data_type() &&
+           meta.unit_size() == meta_.unit_size();
+  }
+
+  bool is_matched(const IndexMeta &meta,
+                  const IndexQueryMeta &qmeta) const override {
+    return qmeta.data_type() == meta_.data_type() &&
+           qmeta.unit_size() == meta_.unit_size() &&
+           qmeta.dimension() == meta.dimension();
+  }
+
+  //! dpbusd distance: dist = sq_sum_half - dpbusd(query_uint8, data_int8)
+  MatrixDistance distance(void) const override {
+    return turbo::get_distance_func(turbo::MetricType::kSquaredEuclidean,
+                                    turbo::DataType::kInt8,
+                                    turbo::QuantizeType::kUnitScale);
+  }
+
+  MatrixDistance distance_matrix(size_t m, size_t n) const override {
+    if (m == 1 && n == 1) {
+      return distance();
+    }
+    return nullptr;
+  }
+
+  MatrixBatchDistance batch_distance(void) const override {
+    return turbo::get_batch_distance_func(turbo::MetricType::kSquaredEuclidean,
+                                          turbo::DataType::kInt8,
+                                          turbo::QuantizeType::kUnitScale);
+  }
+
+  const ailego::Params &params(void) const override {
+    return params_;
+  }
+  int train(const void *, size_t) override {
+    return 0;
+  }
+  bool support_train(void) const override {
+    return false;
+  }
+  void normalize(float *) const override {}
+  bool support_normalize(void) const override {
+    return false;
+  }
+
+  //! No separate query metric — single-path design.
+  Pointer query_metric(void) const override {
+    return nullptr;
+  }
+
+  //! nullptr: UnitScaleInt8 reformer produces uint8 queries directly.
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
+    return nullptr;
+  }
+
+ private:
+  IndexMeta meta_{};
+  ailego::Params params_{};
+};
+
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(UnitScaleInt8, UnitScaleInt8Metric);
+
+}  // namespace core
+}  // namespace zvec

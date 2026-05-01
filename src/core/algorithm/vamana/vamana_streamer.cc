@@ -15,6 +15,7 @@
 #include <iostream>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
+#include "utility/streamer_meta_utility.h"
 #include "vamana_algorithm.h"
 #include "vamana_context.h"
 #include "vamana_dist_calculator.h"
@@ -232,9 +233,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
       cleanup_on_error();
       return IndexError_Mismatch;
     }
-    auto metric_params = index_meta.metric_params();
-    metric_params.merge(meta_.metric_params());
-    meta_.set_metric(index_meta.metric_name(), 0, metric_params);
+    MergeStoredIndexMeta(index_meta, &meta_);
   }
 
   // Create metric

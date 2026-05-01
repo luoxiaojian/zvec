@@ -85,6 +85,11 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
+  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
+                 // Internally specializes to a non-negative-integer fast path
+                 // (scale=1, dpbusd + sq_sum_half tail) when the data meets
+                 // the corresponding conditions at train time; this is
+                 // transparent to users.
 };
 
 struct SerializableBase {
