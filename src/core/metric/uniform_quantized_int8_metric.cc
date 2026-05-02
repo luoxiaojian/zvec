@@ -16,6 +16,7 @@
 #include <ailego/math_batch/euclidean_distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "metric_params.h"
 
 namespace zvec {
@@ -90,6 +91,12 @@ class UniformQuantizedInt8Metric : public IndexMetric {
   //! Uses direct int8 L2: sum((a[i]-b[i])^2) — no reconstruction needed
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (m == 1 && n == 1) {
+      auto turbo_ret = turbo::get_distance_func(
+          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+          turbo::QuantizeType::kUniform);
+      if (turbo_ret) {
+        return turbo_ret;
+      }
       return reinterpret_cast<MatrixDistanceHandle>(
           ailego::SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute);
     }
@@ -100,6 +107,12 @@ class UniformQuantizedInt8Metric : public IndexMetric {
   //! Retrieve batch distance function
   //! Uses direct int8 batch L2 with prefetching
   MatrixBatchDistance batch_distance(void) const override {
+    auto turbo_ret = turbo::get_batch_distance_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUniform);
+    if (turbo_ret) {
+      return turbo_ret;
+    }
     return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
         ailego::DistanceBatch::SquaredEuclideanDistanceBatch<int8_t, 12,
                                                              2>::ComputeBatch);
