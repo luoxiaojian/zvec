@@ -61,16 +61,24 @@ static TURBO_ALWAYS_INLINE void uniform_sq_l2_int8_batch_impl(
     accs[i] = _mm512_setzero_si512();
   }
 
+  // x86 cache line = 64B = 64 int8 values; we only need to issue one
+  // prefetch per cache line, not per 32-element chunk. The inner loop
+  // advances `d` in steps of 32, so the cache-line boundary is hit exactly
+  // every other iteration (when (d & 63) == 0).
   size_t d = 0;
   for (; d + 32 <= dim; d += 32) {
+    const bool prefetch_now = ((d & 63) == 0);
+
     // Load 32 query bytes and widen int8 → int16
     __m256i q_ymm =
         _mm256_loadu_si256(reinterpret_cast<const __m256i *>(q + d));
     __m512i q_zmm = _mm512_cvtepi8_epi16(q_ymm);
 
     for (size_t i = 0; i < batch_size; ++i) {
-      // Prefetch a future vector's cache line at this offset
-      if (prefetch_ptrs[i]) {
+      // Prefetch the next cache line of a future vector at this offset.
+      // Skipped on odd 32-byte chunks since the previous prefetch already
+      // covered the whole 64-byte line.
+      if (prefetch_now && prefetch_ptrs[i]) {
         _mm_prefetch(
             reinterpret_cast<const char *>(
                 reinterpret_cast<const int8_t *>(prefetch_ptrs[i]) + d),
