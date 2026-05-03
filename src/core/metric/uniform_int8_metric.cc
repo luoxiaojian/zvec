@@ -29,37 +29,33 @@ namespace core {
  * This is the key benefit: distance = sum((a[i] - b[i])^2) on raw int8
  * values, with optional post-scaling by 1/scale^2 for real L2 distances.
  */
-class UniformQuantizedInt8Metric : public IndexMetric {
+class UniformInt8Metric : public IndexMetric {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
     if (meta.data_type() != IndexMeta::DataType::DT_INT8) {
-      LOG_ERROR("UniformQuantizedInt8Metric: unsupported type %d",
-                meta.data_type());
+      LOG_ERROR("UniformInt8Metric: unsupported type %d", meta.data_type());
       return IndexError_Unsupported;
     }
 
     std::string metric_name;
-    index_params.get(UNIFORM_QUANTIZED_INT8_METRIC_ORIGIN_METRIC_NAME,
-                     &metric_name);
+    index_params.get(UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME, &metric_name);
     if (metric_name.empty()) {
-      LOG_ERROR("UniformQuantizedInt8Metric: param %s is required",
-                UNIFORM_QUANTIZED_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
+      LOG_ERROR("UniformInt8Metric: param %s is required",
+                UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
       return IndexError_InvalidArgument;
     }
 
     if (metric_name != "SquaredEuclidean") {
-      LOG_ERROR(
-          "UniformQuantizedInt8Metric: only SquaredEuclidean supported, got %s",
-          metric_name.c_str());
+      LOG_ERROR("UniformInt8Metric: only SquaredEuclidean supported, got %s",
+                metric_name.c_str());
       return IndexError_Unsupported;
     }
 
     meta_ = meta;
     params_ = index_params;
 
-    LOG_INFO("UniformQuantizedInt8Metric initialized: dimension=%u",
-             meta_.dimension());
+    LOG_INFO("UniformInt8Metric initialized: dimension=%u", meta_.dimension());
     return 0;
   }
 
@@ -156,8 +152,7 @@ class UniformQuantizedInt8Metric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformQuantizedInt8,
-                                    UniformQuantizedInt8Metric);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformInt8, UniformInt8Metric);
 
 }  // namespace core
 }  // namespace zvec

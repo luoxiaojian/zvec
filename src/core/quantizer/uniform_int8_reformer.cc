@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -29,7 +30,10 @@ namespace core {
  */
 class UniformInt8StreamingReformer : public IndexReformer {
  public:
-  //! Constructor
+  //! Constructor.
+  //! `dst_type` is required by the INDEX_FACTORY_REGISTER_REFORMER_ALIAS
+  //! macro signature but is unused here: the quantization output is
+  //! always int8, governed by the (scale, bias) pair received in init().
   UniformInt8StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
 
   //! Initialize Reformer

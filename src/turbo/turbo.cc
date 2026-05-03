@@ -16,8 +16,8 @@
 #include <zvec/turbo/turbo.h>
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
-#include "avx512_vnni/uniform_quantized_int8/quantize.h"
-#include "avx512_vnni/uniform_quantized_int8/squared_euclidean.h"
+#include "avx512_vnni/uniform_int8/quantize.h"
+#include "avx512_vnni/uniform_int8/squared_euclidean.h"
 
 namespace zvec::turbo {
 

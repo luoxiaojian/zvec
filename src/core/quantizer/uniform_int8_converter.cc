@@ -16,10 +16,13 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+
 #include <ailego/pattern/defer.h>
+
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
+
 #include "../metric/metric_params.h"
 
 namespace zvec {
@@ -34,7 +37,10 @@ namespace core {
  */
 class UniformInt8StreamingConverter : public IndexConverter {
  public:
-  //! Constructor
+  //! Constructor.
+  //! `dst_type` is required by the INDEX_FACTORY_REGISTER_CONVERTER_ALIAS
+  //! macro signature but is unused here: the output type is always
+  //! IndexMeta::DataType::DT_INT8, hard-coded in init().
   UniformInt8StreamingConverter(IndexMeta::DataType /*dst_type*/) {}
 
   //! Destructor
@@ -45,6 +51,11 @@ class UniformInt8StreamingConverter : public IndexConverter {
     meta_ = index_meta;
     original_dimension_ = index_meta.dimension();
 
+    // Reset stats so a re-init() call does not leak counters from a
+    // previous lifecycle.
+    *stats_.mutable_trained_count() = 0;
+    *stats_.mutable_transformed_count() = 0;
+
     // Store converter info in meta
     meta_.set_converter("UniformInt8StreamingConverter", 0, params);
 
@@ -53,9 +64,9 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
     // Set metric to our direct int8 L2 metric
     ailego::Params metric_params;
-    metric_params.set(UNIFORM_QUANTIZED_INT8_METRIC_ORIGIN_METRIC_NAME,
+    metric_params.set(UNIFORM_INT8_METRIC_ORIGIN_METRIC_NAME,
                       index_meta.metric_name());
-    meta_.set_metric("UniformQuantizedInt8", 0, metric_params);
+    meta_.set_metric("UniformInt8", 0, metric_params);
 
     // Set reformer name now (scale/bias will be updated in train()).
     // During search-only path, the stored meta provides the real params.
@@ -67,6 +78,7 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
   //! Cleanup Converter
   int cleanup(void) override {
+    *stats_.mutable_trained_count() = 0;
     *stats_.mutable_transformed_count() = 0;
     return 0;
   }

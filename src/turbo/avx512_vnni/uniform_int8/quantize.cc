@@ -29,7 +29,7 @@
 //
 // Compiled with -march=avx512vnni (set per-file in src/turbo/CMakeLists.txt).
 
-#include "avx512_vnni/uniform_quantized_int8/quantize.h"
+#include "avx512_vnni/uniform_int8/quantize.h"
 
 #include <algorithm>
 #include <cmath>

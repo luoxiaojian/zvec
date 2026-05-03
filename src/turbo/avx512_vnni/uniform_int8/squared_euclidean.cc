@@ -30,7 +30,7 @@
 // This file is compiled with per-file -march=avx512vnni (set in
 // CMakeLists.txt).
 
-#include "avx512_vnni/uniform_quantized_int8/squared_euclidean.h"
+#include "avx512_vnni/uniform_int8/squared_euclidean.h"
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
