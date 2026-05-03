@@ -297,15 +297,17 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // Re-init reformer with stored meta params (e.g. UniformInt8 scale/bias
-  // are only known after training and stored in the index meta)
-  if (reformer_ != nullptr && streamer_ != nullptr) {
-    const auto &stored_reformer_params = streamer_->meta().reformer_params();
-    if (!stored_reformer_params.empty()) {
-      if (reformer_->init(stored_reformer_params) != 0) {
-        LOG_ERROR("Failed to re-init reformer with stored params");
-        return core::IndexError_Runtime;
-      }
+  // Some reformers (e.g. UniformInt8) derive their params from training and
+  // can only obtain them once the streamer has loaded the persisted index
+  // meta. Such reformers self-declare via requires_post_open_reinit() and
+  // get a second init() call here. Reformers that initialize fully at
+  // construction (the common case) are left untouched to avoid clobbering
+  // any derived state computed in their first init().
+  if (reformer_ != nullptr && streamer_ != nullptr &&
+      reformer_->requires_post_open_reinit()) {
+    if (reformer_->init(streamer_->meta().reformer_params()) != 0) {
+      LOG_ERROR("Failed to re-init reformer with stored params");
+      return core::IndexError_Runtime;
     }
   }
 

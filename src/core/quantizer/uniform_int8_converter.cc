@@ -89,23 +89,48 @@ class UniformInt8StreamingConverter : public IndexConverter {
       return IndexError_Runtime;
     }
 
+    bool all_integer = true;
     for (; iter->is_valid(); iter->next()) {
       const float *vec = reinterpret_cast<const float *>(iter->data());
       for (size_t i = 0; i < original_dimension_; ++i) {
-        global_min = std::min(global_min, vec[i]);
-        global_max = std::max(global_max, vec[i]);
+        float v = vec[i];
+        if (!std::isfinite(v)) {
+          LOG_ERROR(
+              "UniformInt8StreamingConverter: non-finite value in training "
+              "set (record_idx=%zu, dim_idx=%zu, value=%f)",
+              (size_t)*stats_.mutable_trained_count(), i, v);
+          return IndexError_InvalidArgument;
+        }
+        global_min = std::min(global_min, v);
+        global_max = std::max(global_max, v);
+        if (all_integer && std::floor(v) != v) {
+          all_integer = false;
+        }
       }
       (*stats_.mutable_trained_count())++;
     }
 
-    // Compute global scale and bias: maps [min, max] → [-127, 127]
+    // Reject empty training set: scale/bias would be undefined and would
+    // silently produce all-clipped int8 vectors at search time.
+    if (*stats_.mutable_trained_count() == 0) {
+      LOG_ERROR("UniformInt8StreamingConverter: empty training set");
+      return IndexError_InvalidArgument;
+    }
+
+    // Compute global scale and bias:
+    //   forward:  int8 = clip(round(float * scale + bias), -127, 127)
+    //   inverse:  float ≈ (int8 - bias) / scale
+    //
+    // Lossless integer fast-path: when all training values are integers and
+    // the dynamic range fits within [-127, 127] (e.g. SIFT data in [0, 218]),
+    // we use scale=1 so the int8 representation is an exact shift of the
+    // input. Both endpoints must be integers so the bias shift is exact;
+    // otherwise we fall back to the linear-rescale path.
     constexpr float epsilon = std::numeric_limits<float>::epsilon();
     float range = global_max - global_min;
-    if (range <= 254.0f) {
-      // Range fits within int8 dynamic range: use scale=1 for lossless
-      // integer quantization (e.g. SIFT data with integer values in [0,218])
+    if (all_integer && range <= 254.0f) {
       scale_ = 1.0f;
-      bias_ = -std::round(global_min) - 127.0f;
+      bias_ = -global_min - 127.0f;  // global_min is integer — no round needed
     } else {
       scale_ = 254.0f / std::max(range, epsilon);
       bias_ = -global_min * scale_ - 127.0f;
@@ -202,7 +227,7 @@ class UniformInt8StreamingConverter : public IndexConverter {
         if (front_iter_->is_valid()) {
           const float *vec =
               reinterpret_cast<const float *>(front_iter_->data());
-          int8_t *out = reinterpret_cast<int8_t *>(buffer_.data());
+          int8_t *out = buffer_.data();
           float scale = owner_->scale_;
           float bias = owner_->bias_;
           for (size_t i = 0; i < owner_->original_dim_; ++i) {
@@ -214,7 +239,7 @@ class UniformInt8StreamingConverter : public IndexConverter {
       }
 
       const UniformInt8Holder *owner_{nullptr};
-      std::vector<uint8_t> buffer_{};
+      std::vector<int8_t> buffer_{};
       IndexHolder::Iterator::Pointer front_iter_{};
     };
 

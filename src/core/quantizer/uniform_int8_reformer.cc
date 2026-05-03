@@ -35,19 +35,51 @@ class UniformInt8StreamingReformer : public IndexReformer {
   UniformInt8StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
 
   //! Initialize Reformer
-  //! During build, scale/bias come from converter's train().
-  //! During search, first init may have empty params (from converter init);
-  //! the real params are provided via a second init after the index is opened.
+  //!
+  //! Lifecycle note: during build, scale/bias come from the converter's
+  //! train(); during search-only path, the converter first creates the
+  //! reformer with empty params, then Index::Open re-invokes init() with
+  //! the persisted params. We treat empty-params as "not yet initialized"
+  //! and reject any quantize/normalize call until real params arrive, so a
+  //! mis-wired pipeline fails loudly instead of silently producing garbage.
   int init(const ailego::Params &params) override {
-    params.get(UNIFORM_INT8_REFORMER_SCALE, &scale_);
-    params.get(UNIFORM_INT8_REFORMER_BIAS, &bias_);
-    // Precompute reciprocal for score normalization
-    // int8_l2 = scale^2 * real_l2, so real_l2 = int8_l2 / scale^2
-    scale_reciprocal_sq_ = (scale_ != 0.0f) ? (1.0f / (scale_ * scale_)) : 1.0f;
+    bool has_scale = params.get(UNIFORM_INT8_REFORMER_SCALE, &scale_);
+    bool has_bias = params.get(UNIFORM_INT8_REFORMER_BIAS, &bias_);
+
+    if (!has_scale || !has_bias) {
+      // Tolerated only as the first-pass init from the converter; the second
+      // init (post-Open) is expected to supply real values.
+      initialized_ = false;
+      LOG_INFO(
+          "UniformInt8StreamingReformer init: params not ready yet "
+          "(scale_present=%d, bias_present=%d), waiting for second init",
+          (int)has_scale, (int)has_bias);
+      return 0;
+    }
+
+    if (!std::isfinite(scale_) || scale_ == 0.0f || !std::isfinite(bias_)) {
+      LOG_ERROR(
+          "UniformInt8StreamingReformer: invalid params scale=%f, bias=%f",
+          scale_, bias_);
+      initialized_ = false;
+      return IndexError_InvalidArgument;
+    }
+
+    // int8_l2 = scale^2 * real_l2, so real_l2 = int8_l2 / scale^2.
+    scale_reciprocal_sq_ = 1.0f / (scale_ * scale_);
+    initialized_ = true;
 
     LOG_INFO("UniformInt8StreamingReformer init: scale=%f, bias=%f", scale_,
              bias_);
     return 0;
+  }
+
+  //! Scale/bias are computed during train() and persisted into the index
+  //! meta; on Open() the reformer is constructed before the streamer has
+  //! loaded that meta, so we need a second init() call to receive the
+  //! real params. See IndexReformer::requires_post_open_reinit() doc.
+  bool requires_post_open_reinit() const override {
+    return true;
   }
 
   //! Cleanup Reformer
@@ -68,96 +100,36 @@ class UniformInt8StreamingReformer : public IndexReformer {
   //! Transform a single query: float → int8
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    IndexMeta::DataType ft = qmeta.data_type();
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        qmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
-      return IndexError_Unsupported;
-    }
-
-    *ometa = qmeta;
-    ometa->set_meta(IndexMeta::DataType::DT_INT8, qmeta.dimension());
-    out->resize(ometa->element_size());
-
-    const float *vec = reinterpret_cast<const float *>(query);
-    int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
-    quantize(vec, qmeta.dimension(), ovec);
-
-    return 0;
+    return do_quantize(query, qmeta, 1, out, ometa);
   }
 
   //! Transform batch queries: float → int8
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    IndexMeta::DataType ft = qmeta.data_type();
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        qmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
-      return IndexError_Unsupported;
-    }
-
-    *ometa = qmeta;
-    ometa->set_meta(IndexMeta::DataType::DT_INT8, qmeta.dimension());
-    out->resize(count * ometa->element_size());
-
-    const float *vec = reinterpret_cast<const float *>(query);
-    for (size_t i = 0; i < count; ++i) {
-      int8_t *ovec =
-          reinterpret_cast<int8_t *>(&(*out)[i * ometa->element_size()]);
-      quantize(&vec[i * qmeta.dimension()], qmeta.dimension(), ovec);
-    }
-
-    return 0;
+    return do_quantize(query, qmeta, count, out, ometa);
   }
 
   //! Convert a single record: float → int8 (used during build)
   int convert(const void *record, const IndexQueryMeta &rmeta, std::string *out,
               IndexQueryMeta *ometa) const override {
-    IndexMeta::DataType ft = rmeta.data_type();
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        rmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
-      return IndexError_Unsupported;
-    }
-
-    *ometa = rmeta;
-    ometa->set_meta(IndexMeta::DataType::DT_INT8, rmeta.dimension());
-    out->resize(ometa->element_size());
-
-    const float *vec = reinterpret_cast<const float *>(record);
-    int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
-    quantize(vec, rmeta.dimension(), ovec);
-
-    return 0;
+    return do_quantize(record, rmeta, 1, out, ometa);
   }
 
   //! Convert batch records: float → int8
   int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
               std::string *out, IndexQueryMeta *ometa) const override {
-    IndexMeta::DataType ft = rmeta.data_type();
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        rmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
-      return IndexError_Unsupported;
-    }
-
-    *ometa = rmeta;
-    ometa->set_meta(IndexMeta::DataType::DT_INT8, rmeta.dimension());
-    out->resize(count * ometa->element_size());
-
-    const float *vec = reinterpret_cast<const float *>(records);
-    for (size_t i = 0; i < count; ++i) {
-      int8_t *ovec =
-          reinterpret_cast<int8_t *>(&(*out)[i * ometa->element_size()]);
-      quantize(&vec[i * rmeta.dimension()], rmeta.dimension(), ovec);
-    }
-
-    return 0;
+    return do_quantize(records, rmeta, count, out, ometa);
   }
 
   //! Normalize results: convert int8 L2 distances back to float L2 distances
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
                 IndexDocumentList &result) const override {
+    if (!initialized_) {
+      LOG_ERROR(
+          "UniformInt8StreamingReformer::normalize called before init "
+          "with valid params");
+      return IndexError_Runtime;
+    }
     for (auto &it : result) {
       *it.mutable_score() *= scale_reciprocal_sq_;
     }
@@ -172,13 +144,22 @@ class UniformInt8StreamingReformer : public IndexReformer {
   //! Revert: convert int8 vector back to float
   int revert(const void *in, const IndexQueryMeta &qmeta,
              std::string *out) const override {
+    if (!initialized_) {
+      LOG_ERROR(
+          "UniformInt8StreamingReformer::revert called before init "
+          "with valid params");
+      return IndexError_Runtime;
+    }
     size_t dim = qmeta.dimension();
     out->resize(dim * sizeof(float));
     float *out_buf = reinterpret_cast<float *>(out->data());
     const int8_t *buf = reinterpret_cast<const int8_t *>(in);
 
-    // Reverse quantization: float_val = (int8_val - bias) / scale
-    float inv_scale = (scale_ != 0.0f) ? (1.0f / scale_) : 0.0f;
+    // Approximate dequantization (lossy):
+    //   forward:  int8 = clip(round(float * scale + bias), -127, 127)
+    //   inverse:  float ≈ (int8 - bias) / scale
+    // initialized_ guarantees scale_ != 0 and finite.
+    float inv_scale = 1.0f / scale_;
     for (size_t i = 0; i < dim; ++i) {
       out_buf[i] = (static_cast<float>(buf[i]) - bias_) * inv_scale;
     }
@@ -187,6 +168,35 @@ class UniformInt8StreamingReformer : public IndexReformer {
   }
 
  private:
+  //! Common quantization path shared by transform()/convert() (single & batch)
+  int do_quantize(const void *src, const IndexQueryMeta &smeta, uint32_t count,
+                  std::string *out, IndexQueryMeta *ometa) const {
+    if (!initialized_) {
+      LOG_ERROR(
+          "UniformInt8StreamingReformer: quantize called before init "
+          "with valid params");
+      return IndexError_Runtime;
+    }
+    if (smeta.data_type() != IndexMeta::DataType::DT_FP32 ||
+        smeta.unit_size() !=
+            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
+      return IndexError_Unsupported;
+    }
+
+    *ometa = smeta;
+    ometa->set_meta(IndexMeta::DataType::DT_INT8, smeta.dimension());
+    const size_t out_stride = ometa->element_size();
+    out->resize(static_cast<size_t>(count) * out_stride);
+
+    const float *vec = reinterpret_cast<const float *>(src);
+    int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
+    const size_t dim = smeta.dimension();
+    for (uint32_t i = 0; i < count; ++i) {
+      quantize(vec + i * dim, dim, ovec + i * out_stride);
+    }
+    return 0;
+  }
+
   //! Quantize float vector to int8 using global scale/bias
   inline void quantize(const float *in, size_t dim, int8_t *out) const {
     for (size_t i = 0; i < dim; ++i) {
@@ -200,6 +210,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
   float scale_{0.0f};
   float bias_{0.0f};
   float scale_reciprocal_sq_{1.0f};
+  bool initialized_{false};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformInt8StreamingReformer,
