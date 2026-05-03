@@ -25,6 +25,13 @@ using BatchDistanceFunc = std::function<void(
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
+// Quantize fp32 -> int8 with a global affine transform:
+//   out[i] = clip(round(in[i] * scale + bias), -127, 127)
+// Raw function pointer (rather than std::function) to avoid indirect-call
+// overhead on the per-record / per-query hot path.
+using QuantizeFunc = void (*)(const float *in, size_t dim, float scale,
+                              float bias, int8_t *out);
+
 enum class MetricType {
   kSquaredEuclidean,
   kCosine,
@@ -52,5 +59,10 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
                                               DataType data_type,
                                               QuantizeType quantize_type);
+
+// Returns a vectorized quantize kernel for (data_type, quantize_type), or
+// nullptr if no SIMD implementation is available on the current CPU
+// (callers must keep a scalar fallback).
+QuantizeFunc get_quantize_func(DataType data_type, QuantizeType quantize_type);
 
 }  // namespace zvec::turbo

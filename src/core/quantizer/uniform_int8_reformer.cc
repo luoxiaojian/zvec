@@ -14,11 +14,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <limits>
-#include <memory>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
@@ -69,8 +67,14 @@ class UniformInt8StreamingReformer : public IndexReformer {
     scale_reciprocal_sq_ = 1.0f / (scale_ * scale_);
     initialized_ = true;
 
-    LOG_INFO("UniformInt8StreamingReformer init: scale=%f, bias=%f", scale_,
-             bias_);
+    // Resolve the SIMD quantize kernel once; falls back to scalar when the
+    // current CPU lacks AVX-512 (turbo returns nullptr on those builds).
+    quantize_func_ = turbo::get_quantize_func(turbo::DataType::kInt8,
+                                              turbo::QuantizeType::kUniform);
+
+    LOG_INFO(
+        "UniformInt8StreamingReformer init: scale=%f, bias=%f, simd=%s",
+        scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
     return 0;
   }
 
@@ -197,8 +201,14 @@ class UniformInt8StreamingReformer : public IndexReformer {
     return 0;
   }
 
-  //! Quantize float vector to int8 using global scale/bias
+  //! Quantize float vector to int8 using global scale/bias.
+  //! Uses the SIMD kernel resolved in init() when available, otherwise
+  //! falls back to the scalar reference implementation.
   inline void quantize(const float *in, size_t dim, int8_t *out) const {
+    if (quantize_func_ != nullptr) {
+      quantize_func_(in, dim, scale_, bias_, out);
+      return;
+    }
     for (size_t i = 0; i < dim; ++i) {
       float v = std::round(in[i] * scale_ + bias_);
       v = std::max(-127.0f, std::min(127.0f, v));
@@ -211,6 +221,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
   float bias_{0.0f};
   float scale_reciprocal_sq_{1.0f};
   bool initialized_{false};
+  turbo::QuantizeFunc quantize_func_{nullptr};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformInt8StreamingReformer,

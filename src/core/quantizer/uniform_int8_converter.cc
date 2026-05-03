@@ -19,6 +19,7 @@
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 #include "../metric/metric_params.h"
 
 namespace zvec {
@@ -224,17 +225,24 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
      private:
       void encode_record(void) {
-        if (front_iter_->is_valid()) {
-          const float *vec =
-              reinterpret_cast<const float *>(front_iter_->data());
-          int8_t *out = buffer_.data();
-          float scale = owner_->scale_;
-          float bias = owner_->bias_;
-          for (size_t i = 0; i < owner_->original_dim_; ++i) {
-            float v = std::round(vec[i] * scale + bias);
-            v = std::max(-127.0f, std::min(127.0f, v));
-            out[i] = static_cast<int8_t>(v);
-          }
+        if (!front_iter_->is_valid()) {
+          return;
+        }
+        const float *vec =
+            reinterpret_cast<const float *>(front_iter_->data());
+        int8_t *out = buffer_.data();
+        const float scale = owner_->scale_;
+        const float bias = owner_->bias_;
+        const size_t dim = owner_->original_dim_;
+
+        if (owner_->quantize_func_ != nullptr) {
+          owner_->quantize_func_(vec, dim, scale, bias, out);
+          return;
+        }
+        for (size_t i = 0; i < dim; ++i) {
+          float v = std::round(vec[i] * scale + bias);
+          v = std::max(-127.0f, std::min(127.0f, v));
+          out[i] = static_cast<int8_t>(v);
         }
       }
 
@@ -248,7 +256,9 @@ class UniformInt8StreamingConverter : public IndexConverter {
         : front_(std::move(front)),
           original_dim_(original_dim),
           scale_(scale),
-          bias_(bias) {}
+          bias_(bias),
+          quantize_func_(turbo::get_quantize_func(
+              turbo::DataType::kInt8, turbo::QuantizeType::kUniform)) {}
 
     size_t count(void) const override {
       return front_->count();
@@ -283,6 +293,8 @@ class UniformInt8StreamingConverter : public IndexConverter {
     size_t original_dim_{0};
     float scale_{0.0f};
     float bias_{0.0f};
+    //! Resolved once at Holder construction; nullptr → use scalar fallback.
+    turbo::QuantizeFunc quantize_func_{nullptr};
   };
 
   //! Members
