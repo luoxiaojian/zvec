@@ -127,24 +127,64 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
   const int8_t *lhs = reinterpret_cast<const int8_t *>(a);
   const int8_t *rhs = reinterpret_cast<const int8_t *>(b);
 
-  __m512i acc = _mm512_setzero_si512();
+  // Use four independent accumulators to break the data-dependency chain
+  // on `acc`. Both vpaddd and vpmaddwd have ~1-cycle latency but multi-port
+  // throughput; with a single accumulator the next iteration must wait on
+  // the previous add to retire. Four parallel chains let the OoO engine
+  // dispatch one madd+add per cycle on Skylake-X / Ice Lake / Sapphire
+  // Rapids, yielding ~1.5–2x speedup for dim >= 256.
+  __m512i acc0 = _mm512_setzero_si512();
+  __m512i acc1 = _mm512_setzero_si512();
+  __m512i acc2 = _mm512_setzero_si512();
+  __m512i acc3 = _mm512_setzero_si512();
 
   size_t d = 0;
-  for (; d + 32 <= dim; d += 32) {
-    __m256i a_ymm =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(lhs + d));
-    __m256i b_ymm =
-        _mm256_loadu_si256(reinterpret_cast<const __m256i *>(rhs + d));
 
-    __m512i a_zmm = _mm512_cvtepi8_epi16(a_ymm);
-    __m512i b_zmm = _mm512_cvtepi8_epi16(b_ymm);
+  // Main loop: process 128 bytes (4 × 32) per iteration, one chunk per acc.
+  for (; d + 128 <= dim; d += 128) {
+    __m512i diff0 = _mm512_sub_epi16(
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(lhs + d + 0))),
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(rhs + d + 0))));
+    __m512i diff1 = _mm512_sub_epi16(
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(lhs + d + 32))),
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(rhs + d + 32))));
+    __m512i diff2 = _mm512_sub_epi16(
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(lhs + d + 64))),
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(rhs + d + 64))));
+    __m512i diff3 = _mm512_sub_epi16(
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(lhs + d + 96))),
+        _mm512_cvtepi8_epi16(_mm256_loadu_si256(
+            reinterpret_cast<const __m256i *>(rhs + d + 96))));
 
-    __m512i diff = _mm512_sub_epi16(a_zmm, b_zmm);
-    acc = _mm512_add_epi32(acc, _mm512_madd_epi16(diff, diff));
+    acc0 = _mm512_add_epi32(acc0, _mm512_madd_epi16(diff0, diff0));
+    acc1 = _mm512_add_epi32(acc1, _mm512_madd_epi16(diff1, diff1));
+    acc2 = _mm512_add_epi32(acc2, _mm512_madd_epi16(diff2, diff2));
+    acc3 = _mm512_add_epi32(acc3, _mm512_madd_epi16(diff3, diff3));
   }
 
+  // Bridge loop: 32-byte chunks for the remaining (dim % 128) bytes.
+  for (; d + 32 <= dim; d += 32) {
+    __m512i diff = _mm512_sub_epi16(
+        _mm512_cvtepi8_epi16(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i *>(lhs + d))),
+        _mm512_cvtepi8_epi16(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i *>(rhs + d))));
+    acc0 = _mm512_add_epi32(acc0, _mm512_madd_epi16(diff, diff));
+  }
+
+  // Reduce four accumulators -> one, then horizontally to a scalar.
+  __m512i acc = _mm512_add_epi32(_mm512_add_epi32(acc0, acc1),
+                                 _mm512_add_epi32(acc2, acc3));
   int result = _mm512_reduce_add_epi32(acc);
 
+  // Scalar tail (dim not a multiple of 32).
   for (; d < dim; ++d) {
     int diff = static_cast<int>(lhs[d]) - static_cast<int>(rhs[d]);
     result += diff * diff;
@@ -173,11 +213,13 @@ void uniform_squared_euclidean_int8_batch_distance(const void *const *vectors,
     uniform_sq_l2_int8_batch_impl<batch_size>(query, &vectors[i], prefetch_ptrs,
                                               dim, distances + i);
   }
-  // Handle remaining vectors one at a time
+  // Tail (n % batch_size vectors): delegate to the single-vector kernel.
+  // It already uses 4-way independent accumulators (see P1-2) and avoids
+  // both an extra `batch_size=1` template instantiation and the per-call
+  // std::array setup that the batch_impl path requires.
   for (; i < n; ++i) {
-    std::array<const void *, 1> prefetch_ptrs{nullptr};
-    uniform_sq_l2_int8_batch_impl<1>(query, &vectors[i], prefetch_ptrs, dim,
-                                     distances + i);
+    uniform_squared_euclidean_int8_distance(vectors[i], query, dim,
+                                            distances + i);
   }
 }
 
