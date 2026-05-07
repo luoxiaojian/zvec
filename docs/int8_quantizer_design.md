@@ -153,9 +153,11 @@ dist = ‖x‖²/2 - ⟨q, x⟩ = sq_sum_half - ip(q, x)
 
 其中 `ip(q, x)` 通过 `dpbusd(uint8_query, int8_data)` 高效计算。
 
-> **注意**：dpbusd 输出并不是真实内积 `<v_q, v_x>`，而是 `<v_q, v_x> - 128·Σv_q`。
-> 由于 `128·Σv_q` 对固定查询是常数，不影响候选向量之间的排序，因此对搜索
-> 结果正确性无影响。
+> **注意**：dpbusd 计算的是 `Σ(q_uint8[i] * d_int8[i])`，其中
+> `d_int8[i] = round(x[i]) + bias`，展开后为 `Σ(q[i] * round(x[i])) + bias·Σq[i]`。
+> 由于 `bias·Σq[i]` 对固定查询是常数，不影响候选向量之间的排序，因此对搜索
+> 结果正确性无影响。在标准 SIFT（global_min=0）场景下 bias=-128，此偏移量为
+> `-128·Σq[i]`。
 
 #### 4.5 Add 路径距离：对称 int8×int8 L2
 
