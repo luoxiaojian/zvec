@@ -86,6 +86,7 @@ enum class QuantizerType {
   kInt4,
   kRabitq,
   kUniformInt8,  // Global uniform int8 quantization (shared scale/bias)
+  kSiftInt8,     // SIFT-specialized int8 (scale=1, dpbusd + sq_sum_half tail)
 };
 
 struct SerializableBase {

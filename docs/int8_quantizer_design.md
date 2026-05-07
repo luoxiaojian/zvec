@@ -85,7 +85,8 @@ SIFT Int8 Quantizer 专为 **SIFT 类数据集**设计。SIFT 特征向量的值
 |------|--------|------|
 | Converter | `SiftInt8StreamingConverter` | 训练阶段计算 bias，量化数据并附加 sq_sum_half |
 | Reformer | `SiftInt8StreamingReformer` | 查询量化为 uint8，记录量化为 int8 + sq_sum_half |
-| Metric | `SiftInt8` | dpbusd 内积 + sq_sum_half 初始化的距离计算 |
+| Metric (add 路径) | `SiftInt8` | 图构建阶段使用对称 int8×int8 L2 距离 |
+| Metric (search 路径) | `SiftInt8Query` | 查询阶段使用 dpbusd 不对称距离（`SiftInt8::query_metric()` 返回） |
 
 **关键参数（自动计算，无需手动设置）：**
 
@@ -136,7 +137,7 @@ SIFT Int8 Quantizer 专为 **SIFT 类数据集**设计。SIFT 特征向量的值
 
 extra field 设计参考了 Record Quantizer 将额外信息附加在向量尾部的方式，但 SIFT Quantizer **只存储 sq_sum_half 一个字段**（4 字节），远小于 Record Quantizer 的 20 字节开销。
 
-#### 4.4 距离计算的数学推导
+#### 4.4 距离计算的数学推导（search 路径）
 
 设查询 q，数据 x（均为 float），则：
 
@@ -152,7 +153,35 @@ dist = ‖x‖²/2 - ⟨q, x⟩ = sq_sum_half - ip(q, x)
 
 其中 `ip(q, x)` 通过 `dpbusd(uint8_query, int8_data)` 高效计算。
 
-#### 4.5 AVX-512 VNNI 距离计算
+> **注意**：dpbusd 输出并不是真实内积 `<v_q, v_x>`，而是 `<v_q, v_x> - 128·Σv_q`。
+> 由于 `128·Σv_q` 对固定查询是常数，不影响候选向量之间的排序，因此对搜索
+> 结果正确性无影响。
+
+#### 4.5 Add 路径距离：对称 int8×int8 L2
+
+**重要**：在 Vamana / HNSW 图的**构建阶段**，距离函数被用来比较**两个数据库
+向量** a 和 b。此时两者都是**同一种量化方式**的 int8（带 bias），不能使用
+dpbusd（会被误解释为 uint8×int8，语义错误导致 recall 急剧下降到 ~1%）。
+
+因此 Metric 设计为双路径：
+
+| 路径 | 使用场景 | 距离函数 | 语义 |
+|------|----------|----------|------|
+| add | 图构建（a,b 都是 int8 数据） | `uniform_squared_euclidean_int8_distance`（复用 uniform_int8 kernel） | `sum((a[i] - b[i])²)`，仅前 `original_dim` 字节，跳过 4 字节 tail |
+| search | 查询（query=uint8, data=int8） | `sift_squared_euclidean_int8_distance` | `sq_sum_half - dpbusd(q, x)` |
+
+两者都是真实 L2 的单调排序代理：
+- add 路径：`(a_int8 - b_int8)² = (round(v_a) - round(v_b))² ≈ (v_a - v_b)²`
+- search 路径：如上公式推导
+
+实现上 `SiftInt8Metric::distance()` 返回 add 路径（`std::function` lambda
+将 `dim` 减去 `sizeof(float)` 后转发到 uniform kernel），`SiftInt8Metric::
+query_metric()` 返回 `SiftInt8QueryMetric` 实例，其 `distance()` 返回 sift
+dpbusd 路径。Vamana/HNSW Streamer 在 `Open()` 时分别取 `add_distance_ =
+metric_->distance()` 与 `search_distance_ = metric_->query_metric()
+->distance()`。
+
+#### 4.6 AVX-512 VNNI 距离计算（search 路径）
 
 ```
 批量计算流程（每 batch_size=4 个向量为一组）：
@@ -178,7 +207,7 @@ dist = ‖x‖²/2 - ⟨q, x⟩ = sq_sum_half - ip(q, x)
 > `distances[i] = sq_sum_half - ip`，使距离函数成为自包含接口，
 > 与 zvec 框架的 Metric 接口契约一致。
 
-#### 4.6 Normalize 行为
+#### 4.7 Normalize 行为
 
 Reformer::normalize() 是 **no-op**（空操作）。距离值是单调排序代理，不是真实的 L2 距离，但排序顺序与真实 L2 完全一致。
 
@@ -219,7 +248,7 @@ Reformer::normalize() 是 **no-op**（空操作）。距离值是单调排序代
 |------|------|
 | `src/core/quantizer/sift_int8_converter.cc` | Converter 实现 |
 | `src/core/quantizer/sift_int8_reformer.cc` | Reformer 实现 |
-| `src/core/metric/sift_int8_metric.cc` | Metric 实现 |
+| `src/core/metric/sift_int8_metric.cc` | Metric 实现（`SiftInt8` 对称 add 路径 + `SiftInt8Query` dpbusd search 路径） |
 | `src/turbo/avx512_vnni/sift_int8/squared_euclidean.h` | SIMD 距离声明 |
 | `src/turbo/avx512_vnni/sift_int8/squared_euclidean.cc` | SIMD 距离实现 |
 
@@ -231,3 +260,22 @@ Reformer::normalize() 是 **no-op**（空操作）。距离值是单调排序代
 | `src/turbo/turbo.cc` | 注册 sift_int8 距离函数 |
 | `src/core/quantizer/quantizer_params.h` | 添加 `SIFT_INT8_REFORMER_BIAS` 常量 |
 | `src/core/metric/metric_params.h` | 添加 `SIFT_INT8_METRIC_ORIGIN_METRIC_NAME` 常量 |
+| `src/include/zvec/core/interface/index_param.h` | 添加 `QuantizerType::kSiftInt8` 枚举 |
+| `src/core/interface/index.cc` | 添加 `kSiftInt8 → "SiftInt8StreamingConverter"` 分支 |
+
+---
+
+## 五、SIFT 1M 数据集验证结果
+
+以 SIFT 1M（128 维、值域 [0, 218]）为基准，与旧的 Uniform Int8 方案对齐：
+
+| 配置 | Recall@1 | Recall@10 | QPS |
+|------|----------|-----------|-----|
+| Vamana + UniformInt8 (ef=12) | 95.46% | 90.77% | 30,562 |
+| Vamana + SiftInt8 (ef=12) | **95.13%** | 90.74% | **34,176** |
+| HNSW + UniformInt8 (ef=29) | 94.92% | 90.66% | 30,432 |
+| HNSW + SiftInt8 (ef=29) | 94.74% | 90.67% | **31,085** |
+| HNSW + SiftInt8 (ef=80) | 99.15% | 98.22% | 13,759 |
+
+在同等 recall 档位下，SIFT Int8 相比 Uniform Int8 获得 Vamana +12% / HNSW +2%
+的 QPS 提升，验证 dpbusd 内积路径的性能优势。
