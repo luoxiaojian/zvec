@@ -47,6 +47,7 @@ enum class DataType {
 enum class QuantizeType {
   kDefault,
   kUniform,
+  kSift,
 };
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
