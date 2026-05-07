@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <cmath>
-
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -22,7 +21,8 @@
 namespace zvec {
 namespace core {
 
-/*! Reformer for SIFT Int8 Quantization (scale=1, with sq_sum extra field)
+/*! Reformer for Unit-Scale Int8 Quantization (scale=1, with sq_sum extra
+ *  field)
  *
  * Query quantization: float → uint8 (value = clamp(round(float), 0, 255))
  * Record quantization: float → int8 (value = round(float) + bias) + sq_sum/2
@@ -30,39 +30,47 @@ namespace core {
  * The query is stored as pure uint8 with no extra fields, since the query
  * norm is constant across all distance comparisons and cancels out in ranking.
  */
-class SiftInt8StreamingReformer : public IndexReformer {
+class UnitScaleInt8StreamingReformer : public IndexReformer {
  public:
-  SiftInt8StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
+  UnitScaleInt8StreamingReformer(IndexMeta::DataType /*dst_type*/) {}
 
   int init(const ailego::Params &params) override {
-    bool has_bias = params.get(SIFT_INT8_REFORMER_BIAS, &bias_);
+    bool has_bias = params.get(UNIT_SCALE_INT8_REFORMER_BIAS, &bias_);
 
     if (!has_bias) {
       initialized_ = false;
       LOG_INFO(
-          "SiftInt8StreamingReformer init: bias not ready yet, "
+          "UnitScaleInt8StreamingReformer init: bias not ready yet, "
           "waiting for second init");
       return 0;
     }
 
     if (!std::isfinite(bias_)) {
-      LOG_ERROR("SiftInt8StreamingReformer: invalid bias=%f", bias_);
+      LOG_ERROR("UnitScaleInt8StreamingReformer: invalid bias=%f", bias_);
       initialized_ = false;
       return IndexError_InvalidArgument;
     }
 
     initialized_ = true;
-    LOG_INFO("SiftInt8StreamingReformer init: bias=%f", bias_);
+    LOG_INFO("UnitScaleInt8StreamingReformer init: bias=%f", bias_);
     return 0;
   }
 
-  bool requires_post_open_reinit() const override { return true; }
+  bool requires_post_open_reinit() const override {
+    return true;
+  }
 
-  int cleanup(void) override { return 0; }
+  int cleanup(void) override {
+    return 0;
+  }
 
-  int load(IndexStorage::Pointer) override { return 0; }
+  int load(IndexStorage::Pointer) override {
+    return 0;
+  }
 
-  int unload(void) override { return 0; }
+  int unload(void) override {
+    return 0;
+  }
 
   //! Transform query: float → uint8 (stored in int8 buffer)
   //! Query is quantized as uint8 with no extra fields.
@@ -87,7 +95,7 @@ class SiftInt8StreamingReformer : public IndexReformer {
     return do_convert_record(records, rmeta, count, out, ometa);
   }
 
-  //! Normalize results: no-op for SIFT distance proxy
+  //! Normalize results: no-op for unit-scale distance proxy.
   //! The distance is a monotonic ranking proxy (sq_sum_half - ip),
   //! not a true L2 distance, so no post-scaling is needed.
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
@@ -95,14 +103,16 @@ class SiftInt8StreamingReformer : public IndexReformer {
     return 0;
   }
 
-  bool need_revert() const override { return true; }
+  bool need_revert() const override {
+    return true;
+  }
 
   //! Revert: convert int8 record back to float (approximate)
   int revert(const void *in, const IndexQueryMeta &qmeta,
              std::string *out) const override {
     if (!initialized_) {
       LOG_ERROR(
-          "SiftInt8StreamingReformer::revert called before init "
+          "UnitScaleInt8StreamingReformer::revert called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -131,7 +141,7 @@ class SiftInt8StreamingReformer : public IndexReformer {
                          IndexQueryMeta *ometa) const {
     if (!initialized_) {
       LOG_ERROR(
-          "SiftInt8StreamingReformer: transform called before init "
+          "UnitScaleInt8StreamingReformer: transform called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -164,7 +174,7 @@ class SiftInt8StreamingReformer : public IndexReformer {
                         IndexQueryMeta *ometa) const {
     if (!initialized_) {
       LOG_ERROR(
-          "SiftInt8StreamingReformer: convert called before init "
+          "UnitScaleInt8StreamingReformer: convert called before init "
           "with valid params");
       return IndexError_Runtime;
     }
@@ -192,8 +202,7 @@ class SiftInt8StreamingReformer : public IndexReformer {
 
   //! Quantize query: float → uint8 (stored in int8 buffer)
   //! Query uses uint8 representation for dpbusd (first operand = unsigned).
-  inline void quantize_query(const float *in, size_t dim,
-                             int8_t *out) const {
+  inline void quantize_query(const float *in, size_t dim, int8_t *out) const {
     for (size_t i = 0; i < dim; ++i) {
       float v = std::round(in[i]);
       v = std::max(0.0f, std::min(255.0f, v));
@@ -205,8 +214,7 @@ class SiftInt8StreamingReformer : public IndexReformer {
   }
 
   //! Quantize record: float → int8 (value + bias) + sq_sum_half tail
-  inline void quantize_record(const float *in, size_t dim,
-                              int8_t *out) const {
+  inline void quantize_record(const float *in, size_t dim, int8_t *out) const {
     float sq_sum = 0.0f;
     for (size_t i = 0; i < dim; ++i) {
       float v = in[i];
@@ -223,8 +231,8 @@ class SiftInt8StreamingReformer : public IndexReformer {
   bool initialized_{false};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(SiftInt8StreamingReformer,
-                                      SiftInt8StreamingReformer,
+INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UnitScaleInt8StreamingReformer,
+                                      UnitScaleInt8StreamingReformer,
                                       IndexMeta::DataType::DT_INT8);
 
 }  // namespace core

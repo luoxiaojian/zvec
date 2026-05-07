@@ -20,22 +20,23 @@
 namespace zvec {
 namespace core {
 
-/*! Query-side Metric for SIFT Int8 Quantization
+/*! Query-side Metric for Unit-Scale Int8 Quantization.
  *
  * Used exclusively on the search path: computes the distance proxy
  *   dist = sq_sum_half - dpbusd(query_uint8, data_int8)
- * via `sift_squared_euclidean_int8_distance`.  The first operand is
+ * via `unit_scale_squared_euclidean_int8_distance`.  The first operand is
  * interpreted as uint8 (query), the second as int8 (database vector).
  *
  * This metric is NOT used for building the graph (add path), since both
- * operands during add are int8 database vectors — see SiftInt8Metric for
- * the symmetric int8×int8 L2 kernel used in that path.
+ * operands during add are int8 database vectors — see UnitScaleInt8Metric
+ * for the symmetric int8×int8 L2 kernel used in that path.
  */
-class SiftInt8QueryMetric : public IndexMetric {
+class UnitScaleInt8QueryMetric : public IndexMetric {
  public:
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
     if (meta.data_type() != IndexMeta::DataType::DT_INT8) {
-      LOG_ERROR("SiftInt8QueryMetric: unsupported type %d", meta.data_type());
+      LOG_ERROR("UnitScaleInt8QueryMetric: unsupported type %d",
+                meta.data_type());
       return IndexError_Unsupported;
     }
     meta_ = meta;
@@ -43,7 +44,9 @@ class SiftInt8QueryMetric : public IndexMetric {
     return 0;
   }
 
-  int cleanup(void) override { return 0; }
+  int cleanup(void) override {
+    return 0;
+  }
 
   bool is_matched(const IndexMeta &meta) const override {
     return meta.data_type() == meta_.data_type() &&
@@ -60,13 +63,13 @@ class SiftInt8QueryMetric : public IndexMetric {
   MatrixDistance distance(void) const override {
     return turbo::get_distance_func(turbo::MetricType::kSquaredEuclidean,
                                     turbo::DataType::kInt8,
-                                    turbo::QuantizeType::kSift);
+                                    turbo::QuantizeType::kUnitScale);
   }
 
   MatrixBatchDistance batch_distance(void) const override {
     return turbo::get_batch_distance_func(turbo::MetricType::kSquaredEuclidean,
                                           turbo::DataType::kInt8,
-                                          turbo::QuantizeType::kSift);
+                                          turbo::QuantizeType::kUnitScale);
   }
 
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
@@ -76,12 +79,22 @@ class SiftInt8QueryMetric : public IndexMetric {
     return nullptr;
   }
 
-  const ailego::Params &params(void) const override { return params_; }
-  int train(const void *, size_t) override { return 0; }
-  bool support_train(void) const override { return false; }
+  const ailego::Params &params(void) const override {
+    return params_;
+  }
+  int train(const void *, size_t) override {
+    return 0;
+  }
+  bool support_train(void) const override {
+    return false;
+  }
   void normalize(float *) const override {}
-  bool support_normalize(void) const override { return false; }
-  Pointer query_metric(void) const override { return nullptr; }
+  bool support_normalize(void) const override {
+    return false;
+  }
+  Pointer query_metric(void) const override {
+    return nullptr;
+  }
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return nullptr;
   }
@@ -91,9 +104,11 @@ class SiftInt8QueryMetric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(SiftInt8Query, SiftInt8QueryMetric);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(UnitScaleInt8Query,
+                                    UnitScaleInt8QueryMetric);
 
-/*! Index Metric for SIFT Int8 Quantization (scale=1, with sq_sum extra field)
+/*! Index Metric for Unit-Scale Int8 Quantization (scale=1, with sq_sum extra
+ *  field)
  *
  * Vector layout: [ original_dim int8 ] + [ 4 bytes float: sq_sum_half ]
  * Total `dim` passed to distance functions = original_dim + 4.
@@ -106,24 +121,24 @@ INDEX_FACTORY_REGISTER_METRIC_ALIAS(SiftInt8Query, SiftInt8QueryMetric);
  * Search path: the query is uint8 (via query_metric()).  Distance is
  *   dist = sq_sum_half - dpbusd(query_uint8, data_int8).
  */
-class SiftInt8Metric : public IndexMetric {
+class UnitScaleInt8Metric : public IndexMetric {
  public:
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
     if (meta.data_type() != IndexMeta::DataType::DT_INT8) {
-      LOG_ERROR("SiftInt8Metric: unsupported type %d", meta.data_type());
+      LOG_ERROR("UnitScaleInt8Metric: unsupported type %d", meta.data_type());
       return IndexError_Unsupported;
     }
 
     std::string metric_name;
-    index_params.get(SIFT_INT8_METRIC_ORIGIN_METRIC_NAME, &metric_name);
+    index_params.get(UNIT_SCALE_INT8_METRIC_ORIGIN_METRIC_NAME, &metric_name);
     if (metric_name.empty()) {
-      LOG_ERROR("SiftInt8Metric: param %s is required",
-                SIFT_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
+      LOG_ERROR("UnitScaleInt8Metric: param %s is required",
+                UNIT_SCALE_INT8_METRIC_ORIGIN_METRIC_NAME.c_str());
       return IndexError_InvalidArgument;
     }
 
     if (metric_name != "SquaredEuclidean") {
-      LOG_ERROR("SiftInt8Metric: only SquaredEuclidean supported, got %s",
+      LOG_ERROR("UnitScaleInt8Metric: only SquaredEuclidean supported, got %s",
                 metric_name.c_str());
       return IndexError_Unsupported;
     }
@@ -140,19 +155,20 @@ class SiftInt8Metric : public IndexMetric {
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
         turbo::QuantizeType::kUniform);
 
-    // Create the query-side metric (sift dpbusd).
-    query_metric_ = IndexFactory::CreateMetric("SiftInt8Query");
+    // Create the query-side metric (dpbusd).
+    query_metric_ = IndexFactory::CreateMetric("UnitScaleInt8Query");
     if (!query_metric_) {
-      LOG_ERROR("SiftInt8Metric: failed to create SiftInt8QueryMetric");
+      LOG_ERROR(
+          "UnitScaleInt8Metric: failed to create UnitScaleInt8QueryMetric");
       return IndexError_NoExist;
     }
     int ret = query_metric_->init(meta, ailego::Params());
     if (ret != 0) {
-      LOG_ERROR("SiftInt8Metric: failed to init query metric");
+      LOG_ERROR("UnitScaleInt8Metric: failed to init query metric");
       return ret;
     }
 
-    LOG_INFO("SiftInt8Metric initialized: dimension=%u", meta_.dimension());
+    LOG_INFO("UnitScaleInt8Metric initialized: dimension=%u", meta_.dimension());
     return 0;
   }
 
@@ -201,14 +217,24 @@ class SiftInt8Metric : public IndexMetric {
     return nullptr;
   }
 
-  const ailego::Params &params(void) const override { return params_; }
-  int train(const void *, size_t) override { return 0; }
-  bool support_train(void) const override { return false; }
+  const ailego::Params &params(void) const override {
+    return params_;
+  }
+  int train(const void *, size_t) override {
+    return 0;
+  }
+  bool support_train(void) const override {
+    return false;
+  }
   void normalize(float *) const override {}
-  bool support_normalize(void) const override { return false; }
+  bool support_normalize(void) const override {
+    return false;
+  }
 
-  //! Search path: dpbusd-based sift distance.
-  Pointer query_metric(void) const override { return query_metric_; }
+  //! Search path: dpbusd-based distance.
+  Pointer query_metric(void) const override {
+    return query_metric_;
+  }
 
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return nullptr;
@@ -222,7 +248,7 @@ class SiftInt8Metric : public IndexMetric {
   turbo::BatchDistanceFunc add_batch_distance_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(SiftInt8, SiftInt8Metric);
+INDEX_FACTORY_REGISTER_METRIC_ALIAS(UnitScaleInt8, UnitScaleInt8Metric);
 
 }  // namespace core
 }  // namespace zvec

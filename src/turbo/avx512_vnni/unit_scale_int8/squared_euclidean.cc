@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AVX512-VNNI optimized squared Euclidean distance for SIFT-quantized INT8.
+// AVX512-VNNI optimized squared Euclidean distance for unit-scale quantized
+// INT8 (the scale=1 specialization of the Uniform Int8 Quantizer).
 //
-// SIFT data has scale=1, so quantization is lossless for integer-valued
-// inputs. Each database vector is stored as:
-//   [ original_dim bytes: int8_t  (value = round(float) - 128) ]
+// Scale=1 means quantization is lossless for integer-valued inputs in the
+// required range. Each database vector is stored as:
+//   [ original_dim bytes: int8_t  (value = round(float) + bias) ]
 //   [ 4 bytes float: sq_sum_half  (sum of original float squares / 2) ]
 //
 // The query is stored as pure uint8 (value = round(float)), no tail.
@@ -29,7 +30,7 @@
 // This file is compiled with per-file -march=avx512vnni (set in
 // src/turbo/CMakeLists.txt).
 
-#include "avx512_vnni/sift_int8/squared_euclidean.h"
+#include "avx512_vnni/unit_scale_int8/squared_euclidean.h"
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
@@ -51,7 +52,7 @@ namespace zvec::turbo::avx512_vnni {
 // sq_sum_half).
 // ---------------------------------------------------------------------------
 template <size_t batch_size>
-static TURBO_ALWAYS_INLINE void sift_ip_batch_impl(
+static TURBO_ALWAYS_INLINE void unit_scale_ip_batch_impl(
     const void *query, const void *const *vectors,
     const std::array<const void *, batch_size> &prefetch_ptrs,
     size_t original_dim, float *ip_results) {
@@ -106,9 +107,9 @@ static TURBO_ALWAYS_INLINE void sift_ip_batch_impl(
 // ---------------------------------------------------------------------------
 // Public: single-vector distance
 // ---------------------------------------------------------------------------
-void sift_squared_euclidean_int8_distance(const void *database_vec,
-                                          const void *query, size_t dim,
-                                          float *distance) {
+void unit_scale_squared_euclidean_int8_distance(const void *database_vec,
+                                                const void *query, size_t dim,
+                                                float *distance) {
   const int original_dim = static_cast<int>(dim) - 4;
   if (original_dim <= 0) {
     return;
@@ -118,8 +119,8 @@ void sift_squared_euclidean_int8_distance(const void *database_vec,
   std::array<const void *, 1> prefetch_ptrs{nullptr};
   const void *vecs[1] = {database_vec};
   float ip_result;
-  sift_ip_batch_impl<1>(query, vecs, prefetch_ptrs,
-                         static_cast<size_t>(original_dim), &ip_result);
+  unit_scale_ip_batch_impl<1>(query, vecs, prefetch_ptrs,
+                              static_cast<size_t>(original_dim), &ip_result);
 
   // Read sq_sum_half from the database vector tail
   const float *tail = reinterpret_cast<const float *>(
@@ -132,10 +133,9 @@ void sift_squared_euclidean_int8_distance(const void *database_vec,
 // ---------------------------------------------------------------------------
 // Public: batch distance
 // ---------------------------------------------------------------------------
-void sift_squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim,
-                                                float *distances) {
+void unit_scale_squared_euclidean_int8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances) {
   const int original_dim = static_cast<int>(dim) - 4;
   if (original_dim <= 0) {
     return;
@@ -153,7 +153,7 @@ void sift_squared_euclidean_int8_batch_distance(const void *const *vectors,
     }
 
     std::array<float, batch_size> ip_results;
-    sift_ip_batch_impl<batch_size>(
+    unit_scale_ip_batch_impl<batch_size>(
         query, &vectors[i], prefetch_ptrs,
         static_cast<size_t>(original_dim), ip_results.data());
 
@@ -168,8 +168,8 @@ void sift_squared_euclidean_int8_batch_distance(const void *const *vectors,
 
   // Tail: remaining vectors
   for (; i < n; ++i) {
-    sift_squared_euclidean_int8_distance(vectors[i], query, dim,
-                                         distances + i);
+    unit_scale_squared_euclidean_int8_distance(vectors[i], query, dim,
+                                               distances + i);
   }
 }
 
@@ -179,12 +179,12 @@ void sift_squared_euclidean_int8_batch_distance(const void *const *vectors,
 
 namespace zvec::turbo::avx512_vnni {
 
-void sift_squared_euclidean_int8_distance(const void * /*database_vec*/,
-                                          const void * /*query*/,
-                                          size_t /*dim*/,
-                                          float * /*distance*/) {}
+void unit_scale_squared_euclidean_int8_distance(const void * /*database_vec*/,
+                                                const void * /*query*/,
+                                                size_t /*dim*/,
+                                                float * /*distance*/) {}
 
-void sift_squared_euclidean_int8_batch_distance(
+void unit_scale_squared_euclidean_int8_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*n*/,
     size_t /*dim*/, float * /*distances*/) {}
 

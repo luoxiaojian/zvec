@@ -121,9 +121,9 @@ static const std::string UNIFORM_INT8_REFORMER_SCALE =
 static const std::string UNIFORM_INT8_REFORMER_BIAS =
     "uniform_int8.reformer.bias";
 
-//! SiftInt8StreamingConverter / Reformer
-static const std::string SIFT_INT8_REFORMER_BIAS =
-    "sift_int8.reformer.bias";
+//! UnitScaleInt8StreamingConverter / Reformer
+static const std::string UNIT_SCALE_INT8_REFORMER_BIAS =
+    "unit_scale_int8.reformer.bias";
 
 //! DoubleBitConverter
 static const std::string DOUBLE_BIT_CONVERTER_TRAIN_SAMPLE_COUNT =

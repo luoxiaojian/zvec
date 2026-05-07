@@ -18,10 +18,11 @@
 
 namespace zvec::turbo::avx512_vnni {
 
-// Compute squared Euclidean distance for SIFT-quantized INT8 vectors.
+// Compute squared Euclidean distance for unit-scale quantized INT8 vectors
+// (the scale=1 specialization of the Uniform Int8 Quantizer).
 //
 // Layout (database vector):
-//   [ original_dim bytes: int8_t elements (value = round(float) - 128) ]
+//   [ original_dim bytes: int8_t elements (value = round(float) + bias) ]
 //   [ float sq_sum_half ]  (sum of original float squares / 2)
 //
 // Total: dim = original_dim + sizeof(float) = original_dim + 4.
@@ -29,16 +30,16 @@ namespace zvec::turbo::avx512_vnni {
 // The query is stored as uint8 (value = round(float)), with no tail.
 // Distance is computed as: sq_sum_half - dpbusd(query_uint8, data_int8),
 // which serves as a monotonic proxy for the true L2 distance for ranking.
-void sift_squared_euclidean_int8_distance(const void *database_vec,
-                                          const void *query, size_t dim,
-                                          float *distance);
+void unit_scale_squared_euclidean_int8_distance(const void *database_vec,
+                                                const void *query, size_t dim,
+                                                float *distance);
 
-// Batch version: compute distances between `n` SIFT-quantized database
-// vectors and a single uint8 query. The query must already be in uint8
+// Batch version: compute distances between `n` unit-scale quantized database
+// vectors and a single uint8 query.  The query must already be in uint8
 // format (no preprocessing needed — unlike record_quantized which requires
-// int8→uint8 shifting, SIFT queries are natively stored as uint8).
-void sift_squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                                const void *query, size_t n,
-                                                size_t dim, float *distances);
+// int8→uint8 shifting, unit-scale queries are natively stored as uint8).
+void unit_scale_squared_euclidean_int8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances);
 
 }  // namespace zvec::turbo::avx512_vnni
