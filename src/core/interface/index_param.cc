@@ -227,12 +227,23 @@ ailego::JsonObject QuantizerParam::SerializeToJsonObject(
     json_obj.set("type",
                  zvec::ailego::JsonValue(magic_enum::enum_name(type).data()));
   }
+  if (!omit_empty_value || mode != "auto") {
+    json_obj.set("mode", zvec::ailego::JsonValue(mode.c_str()));
+  }
   return json_obj;
 }
 
 bool QuantizerParam::DeserializeFromJsonObject(
     const ailego::JsonObject &json_obj) {
   DESERIALIZE_ENUM_FIELD(json_obj, type, QuantizerType);
+  // Optional: read "mode" (defaults to "auto" if absent)
+  if (json_obj.has("mode")) {
+    ailego::JsonValue val;
+    json_obj.get("mode", &val);
+    if (val.is_string()) {
+      mode = val.as_stl_string();
+    }
+  }
   return true;
 }
 

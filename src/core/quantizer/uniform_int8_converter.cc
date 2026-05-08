@@ -63,6 +63,11 @@ class UniformInt8StreamingConverter : public IndexConverter {
     *stats_.mutable_transformed_count() = 0;
     fast_path_delegate_.reset();
 
+    // Read mode: "auto" (default) or "uniform" (force standard path).
+    std::string mode;
+    params.get(UNIFORM_INT8_CONVERTER_MODE, &mode);
+    force_uniform_ = (mode == "uniform");
+
     // Store converter info in meta
     meta_.set_converter("UniformInt8StreamingConverter", 0, params);
 
@@ -148,7 +153,8 @@ class UniformInt8StreamingConverter : public IndexConverter {
     // to [0, 255], so negative values are not supported on that path even
     // though Uniform could encode them losslessly via
     // `scale=1, bias=-global_min-127`.
-    if (all_integer && global_min >= 0.0f && global_max <= 255.0f) {
+    if (!force_uniform_ && all_integer && global_min >= 0.0f &&
+        global_max <= 255.0f) {
       auto delegate =
           IndexFactory::CreateConverter("UnitScaleInt8StreamingConverter");
       if (delegate) {
@@ -387,6 +393,8 @@ class UniformInt8StreamingConverter : public IndexConverter {
   size_t original_dimension_{0};
   float scale_{0.0f};
   float bias_{0.0f};
+  //! When true, disable unit-scale auto-switch (mode="uniform").
+  bool force_uniform_{false};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformInt8StreamingConverter,
