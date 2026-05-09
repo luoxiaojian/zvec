@@ -573,6 +573,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   void degrade_to_mmap() {
     vector_memory_.reset();
     vector_base_ = nullptr;
+    vector_stride_ = 0;
     graph_memory_.reset();
     graph_base_ = nullptr;
     LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
@@ -611,7 +612,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
       vec_blocks.resize(count);
       for (auto i = 0U; i < count; ++i) {
         const char *ptr =
-            vector_base_ + static_cast<size_t>(ids[i]) * vector_size();
+            vector_base_ + static_cast<size_t>(ids[i]) * vector_stride_;
         vec_blocks[i].reset(const_cast<char *>(ptr));
       }
       return 0;
@@ -630,13 +631,16 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }
 
-  //! Direct vector pointer from flat vector array (stride = vector_size).
-  //! This gives the same memory layout as pyglass/NormQuant for optimal
-  //! cache utilization during distance computation.
+  //! Direct vector pointer from flat vector array.
+  //! Stride is padded up to kVectorAlignment (64B) to preserve cache-line
+  //! alignment even when vector_size is not a multiple of 64 (e.g. unit-scale
+  //! int8 on SIFT stores 128B int8 + 4B extra field = 132B per vector, which
+  //! would otherwise straddle cache lines). The padding is purely in-memory
+  //! and does NOT affect the on-disk index file layout.
   inline __attribute__((always_inline)) const void *get_vector_ptr(
       node_id_t id) const {
     if (ailego_likely(vector_base_ != nullptr)) {
-      return vector_base_ + static_cast<size_t>(id) * vector_size();
+      return vector_base_ + static_cast<size_t>(id) * vector_stride_;
     }
     return VamanaMmapStreamerEntity::get_vector_ptr(id);
   }
@@ -657,14 +661,21 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     }
   };
 
-  //! Flat vector array: vectors stored densely (stride = vector_size).
+  //! Flat vector array: vectors stored densely with per-vector stride
+  //! padded up to kVectorAlignment (64B) to keep each vector's starting
+  //! address cache-line aligned. Base is page-aligned by the allocator.
   std::shared_ptr<char> vector_memory_{};
   char *vector_base_{nullptr};
+  //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
+  size_t vector_stride_{0};
 
   //! Graph array: [key | neighbors] stored densely (stride = graph_stride_).
   std::shared_ptr<char> graph_memory_{};
   char *graph_base_{nullptr};
   size_t graph_stride_{0};  // sizeof(key_t) + neighbors_size()
+
+  //! Cache-line alignment used for per-vector stride in the flat array.
+  static constexpr size_t kVectorAlignment = 64;
 
  private:
   static char *allocate_contiguous(size_t size);
