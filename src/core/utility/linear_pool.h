@@ -15,6 +15,7 @@
 
 #include <sys/mman.h>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 

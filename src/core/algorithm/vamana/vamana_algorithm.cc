@@ -14,6 +14,7 @@
 
 #include "vamana_algorithm.h"
 #include <type_traits>
+#include <ailego/internal/cpu_features.h>
 
 namespace zvec {
 namespace core {
@@ -250,8 +251,87 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       }
     }
   } else {
-    auto &pool = ctx->pool();
     uint32_t cap = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
+
+    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      // AVX2-gated BlockHeap fast path. Binaries compiled on an AVX2 host
+      // may run on lower-arch machines, so we must runtime-check before
+      // invoking BlockHeap::push_block (which is compiled with AVX2 when
+      // the toolchain supports it; see src/core/CMakeLists.txt and
+      // src/core/utility/CMakeLists.txt).
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
+        BlockHeap &bpool = ctx->block_pool();
+        const uint32_t max_deg = entity.max_degree();
+        bpool.reset(static_cast<int32_t>(entity.doc_cnt()),
+                    static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
+
+        // Seed with the entry point (block-of-one push).
+        dist_t ep_dist = dc.batch_dist(entry_point);
+        bpool.set_visited(entry_point);
+        bpool.push_block(&ep_dist, &entry_point, 1);
+
+        static constexpr uint32_t GRAPH_PO = 8;  // prefetch window
+
+        while (bpool.has_next()) {
+          auto current_node = bpool.pop();
+
+          const auto neighbors = entity.get_neighbors_typed(current_node);
+          ailego_prefetch(neighbors.data);
+
+          if (neighbors.size() > buf_capacity) {
+            buf_capacity = neighbors.size();
+            neighbor_ids.resize(buf_capacity);
+            dists.resize(buf_capacity);
+            neighbor_vecs.resize(buf_capacity);
+          }
+
+          const uint32_t po =
+              std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+          uint32_t unvisited_count = 0;
+          uint32_t i = 0;
+
+          for (; i < po; ++i) {
+            node_id_t node = neighbors[i];
+            if (bpool.check_visited(node)) continue;
+            bpool.set_visited(node);
+            const void *vec_ptr = entity.get_vector_ptr(node);
+            const char *p = reinterpret_cast<const char *>(vec_ptr);
+            for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+              _mm_prefetch(p + cl * 64, _MM_HINT_T0);
+            }
+            neighbor_ids[unvisited_count] = node;
+            neighbor_vecs[unvisited_count] = vec_ptr;
+            unvisited_count++;
+          }
+          for (; i < neighbors.size(); ++i) {
+            node_id_t node = neighbors[i];
+            if (bpool.check_visited(node)) continue;
+            bpool.set_visited(node);
+            neighbor_ids[unvisited_count] = node;
+            neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+            unvisited_count++;
+          }
+
+          if (unvisited_count == 0) continue;
+          dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+
+          // Single block-insert — amortized O(k) bookkeeping per batch.
+          bpool.push_block(dists.data(), neighbor_ids.data(),
+                           static_cast<int32_t>(unvisited_count));
+        }
+
+        auto &topk_heap = ctx->topk_heap();
+        const int32_t n = bpool.size();
+        for (int32_t i = 0; i < n; ++i) {
+          topk_heap.emplace(bpool.id(i), bpool.dist(i));
+        }
+        return;
+      }
+      // Fall through to the existing LinearPool fast path when the runtime
+      // CPU lacks AVX2.
+    }
+
+    auto &pool = ctx->pool();
     pool.reset(entity.doc_cnt(), cap, cap);
 
     dist_t entry_dist = dc.batch_dist(entry_point);

@@ -14,6 +14,7 @@
 #pragma once
 
 #include <zvec/core/framework/index_context.h>
+#include "utility/block_heap.h"
 #include "utility/linear_pool.h"
 #include "utility/visit_filter.h"
 #include "vamana_dist_calculator.h"
@@ -122,6 +123,11 @@ class VamanaContext : public IndexContext {
   }
   inline LinearPool<dist_t> &pool() {
     return pool_;
+  }
+  // Block-insert pool used by the AVX2-gated greedy_search fast path.
+  // Only accessed under a runtime CpuFeatures::AVX2 guard at call sites.
+  inline BlockHeap &block_pool() {
+    return block_pool_;
   }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
@@ -309,6 +315,7 @@ class VamanaContext : public IndexContext {
   float filter_negative_prob_{VamanaEntity::kDefaultBFNegativeProbability};
 
   LinearPool<dist_t> pool_;
+  BlockHeap block_pool_;
 };
 
 }  // namespace core
