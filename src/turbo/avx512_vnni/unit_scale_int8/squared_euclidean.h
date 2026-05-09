@@ -36,10 +36,15 @@ void unit_scale_squared_euclidean_int8_distance(const void *database_vec,
 
 // Batch version: compute distances between `n` unit-scale quantized database
 // vectors and a single uint8 query.  The query must already be in uint8
-// format (no preprocessing needed — unlike record_quantized which requires
-// int8→uint8 shifting, unit-scale queries are natively stored as uint8).
+// format (preprocessed via +128 shift from int8 encoding).
 void unit_scale_squared_euclidean_int8_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances);
+
+// Preprocess the query vector in-place: shift int8 -> uint8 by adding 128.
+// Only the first (dim - 4) bytes (original_dim) are shifted; the 4-byte
+// sq_sum_half tail is left intact.  `dim` includes the 4-byte tail.
+void unit_scale_squared_euclidean_int8_query_preprocess(void *query,
+                                                        size_t dim);
 
 }  // namespace zvec::turbo::avx512_vnni

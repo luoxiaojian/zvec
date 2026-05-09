@@ -24,11 +24,13 @@ namespace core {
 /*! Reformer for Unit-Scale Int8 Quantization (scale=1, with sq_sum extra
  *  field)
  *
- * Query quantization: float → uint8 (value = clamp(round(float), 0, 255))
+ * Query quantization: float → int8 (value = round(float) + bias), no sq_sum
  * Record quantization: float → int8 (value = round(float) + bias) + sq_sum/2
  *
- * The query is stored as pure uint8 with no extra fields, since the query
- * norm is constant across all distance comparisons and cancels out in ranking.
+ * Both query and record use the same int8 encoding.  The metric's
+ * query_preprocess_func then shifts int8 → uint8 (+128) before dpbusd.
+ * This ensures correct distance computation in both search and graph
+ * construction (add path).
  */
 class UnitScaleInt8StreamingReformer : public IndexReformer {
  public:
@@ -72,8 +74,8 @@ class UnitScaleInt8StreamingReformer : public IndexReformer {
     return 0;
   }
 
-  //! Transform query: float → uint8 (stored in int8 buffer)
-  //! Query is quantized as uint8 with no extra fields.
+  //! Transform query: float → int8 (same encoding as data vectors)
+  //! Query uses int8 representation; the metric's preprocess shifts to uint8.
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
     return do_transform_query(query, qmeta, 1, out, ometa);
@@ -133,7 +135,7 @@ class UnitScaleInt8StreamingReformer : public IndexReformer {
   }
 
  private:
-  //! Transform query: float → uint8, stored in the output dimension that
+  //! Transform query: float → int8, stored in the output dimension that
   //! matches database vectors (original_dim + sizeof(float)) for alignment,
   //! but the tail bytes are unused by the distance kernel.
   int do_transform_query(const void *src, const IndexQueryMeta &smeta,
@@ -200,13 +202,13 @@ class UnitScaleInt8StreamingReformer : public IndexReformer {
     return 0;
   }
 
-  //! Quantize query: float → uint8 (stored in int8 buffer)
-  //! Query uses uint8 representation for dpbusd (first operand = unsigned).
+  //! Quantize query: float → int8 (same encoding as record, no sq_sum_half)
+  //! Uses int8 representation; the metric preprocess will shift to uint8.
   inline void quantize_query(const float *in, size_t dim, int8_t *out) const {
     for (size_t i = 0; i < dim; ++i) {
-      float v = std::round(in[i]);
-      v = std::max(0.0f, std::min(255.0f, v));
-      reinterpret_cast<uint8_t *>(out)[i] = static_cast<uint8_t>(v);
+      float quantized = std::round(in[i] + bias_);
+      quantized = std::max(-128.0f, std::min(127.0f, quantized));
+      out[i] = static_cast<int8_t>(quantized);
     }
     // Zero the tail (sq_sum_half area) — unused by query
     float *tail = reinterpret_cast<float *>(out + dim);

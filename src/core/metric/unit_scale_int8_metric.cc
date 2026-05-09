@@ -26,15 +26,16 @@ namespace core {
  * Vector layout: [ original_dim int8 ] + [ 4 bytes float: sq_sum_half ]
  * Total `dim` passed to distance functions = original_dim + 4.
  *
- * Single-path design (like record quantizer): both add and search use the
- * dpbusd kernel `unit_scale_squared_euclidean_int8_{batch_}distance`.
- *   dist = sq_sum_half - dpbusd(query_as_uint8, data_int8)
+ * Single metric providing both search and pairwise distance functions:
  *
- * The query_preprocess_func is nullptr because the UnitScaleInt8 reformer
- * already produces uint8 queries directly (no +128 shift needed).
- * During graph construction the stored int8 vector is passed as "query",
- * and dpbusd interprets it as uint8 implicitly — the resulting ranking is
- * a valid proxy for L2 (bias terms cancel for fixed-query comparisons).
+ * Search path (distance/batch_distance): dpbusd proxy distance.
+ *   dist = sq_sum_half - dpbusd(query_uint8, data_int8)
+ *   Query must be preprocessed (int8 -> uint8 via get_query_preprocess_func)
+ *   before calling distance().
+ *
+ * Add path / pairwise (pairwise_distance/pairwise_batch_distance):
+ *   Symmetric int8×int8 L2: sum((a[i] - b[i])^2) over original_dim elements,
+ *   ignoring the 4-byte sq_sum_half tail. No preprocessing required.
  */
 class UnitScaleInt8Metric : public IndexMetric {
  public:
@@ -82,7 +83,7 @@ class UnitScaleInt8Metric : public IndexMetric {
            qmeta.dimension() == meta.dimension();
   }
 
-  //! dpbusd distance: dist = sq_sum_half - dpbusd(query_uint8, data_int8)
+  //! Search-path distance: dpbusd proxy (needs preprocessed uint8 query).
   MatrixDistance distance(void) const override {
     return turbo::get_distance_func(turbo::MetricType::kSquaredEuclidean,
                                     turbo::DataType::kInt8,
@@ -102,6 +103,27 @@ class UnitScaleInt8Metric : public IndexMetric {
                                           turbo::QuantizeType::kUnitScale);
   }
 
+  //! Query preprocess: shift int8 -> uint8 (+128) for dpbusd distance.
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
+    return turbo::get_query_preprocess_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUnitScale);
+  }
+
+  //! Pairwise (data-to-data) distance: symmetric int8×int8 L2.
+  //! Implemented in turbo. No preprocessing required.
+  MatrixDistance pairwise_distance(void) const override {
+    return turbo::get_pairwise_distance_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUnitScale);
+  }
+
+  MatrixBatchDistance pairwise_batch_distance(void) const override {
+    return turbo::get_pairwise_batch_distance_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUnitScale);
+  }
+
   const ailego::Params &params(void) const override {
     return params_;
   }
@@ -116,13 +138,8 @@ class UnitScaleInt8Metric : public IndexMetric {
     return false;
   }
 
-  //! No separate query metric — single-path design.
+  //! No sub-metric (single metric design).
   Pointer query_metric(void) const override {
-    return nullptr;
-  }
-
-  //! nullptr: UnitScaleInt8 reformer produces uint8 queries directly.
-  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return nullptr;
   }
 

@@ -255,17 +255,6 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     return IndexError_InvalidArgument;
   }
 
-  add_distance_ = metric_->distance();
-  add_batch_distance_ = metric_->batch_distance();
-  search_distance_ = add_distance_;
-  search_batch_distance_ = add_batch_distance_;
-
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
-  }
-
   // Create algorithm based on entity storage mode
   switch (entity_->storage_mode()) {
     case VamanaStorageMode::kBufferPool:
@@ -455,8 +444,6 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -528,8 +515,6 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
   if (metric_->support_train()) {
@@ -592,7 +577,6 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
@@ -654,7 +638,6 @@ int VamanaStreamer::search_bf_impl(const void *query,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
 
   const auto &filter = static_cast<IndexContext *>(ctx)->filter();
@@ -696,7 +679,6 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
   ctx->resize_results(count);
 
   auto &topk = ctx->topk_heap();

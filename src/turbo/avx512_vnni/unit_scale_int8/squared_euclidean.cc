@@ -65,8 +65,8 @@ static TURBO_ALWAYS_INLINE void unit_scale_ip_batch_impl(
 
   size_t d = 0;
   for (; d + 64 <= original_dim; d += 64) {
-    __m512i q_reg = _mm512_loadu_si512(
-        reinterpret_cast<const __m512i *>(q + d));
+    __m512i q_reg =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(q + d));
 
     for (size_t i = 0; i < batch_size; ++i) {
       if (prefetch_ptrs[i]) {
@@ -75,9 +75,8 @@ static TURBO_ALWAYS_INLINE void unit_scale_ip_batch_impl(
                 reinterpret_cast<const int8_t *>(prefetch_ptrs[i]) + d),
             _MM_HINT_T0);
       }
-      __m512i v_reg = _mm512_loadu_si512(
-          reinterpret_cast<const __m512i *>(
-              reinterpret_cast<const int8_t *>(vectors[i]) + d));
+      __m512i v_reg = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(
+          reinterpret_cast<const int8_t *>(vectors[i]) + d));
       // dpbusd: treats first operand as uint8, second as int8
       accs[i] = _mm512_dpbusd_epi32(accs[i], q_reg, v_reg);
     }
@@ -94,8 +93,7 @@ static TURBO_ALWAYS_INLINE void unit_scale_ip_batch_impl(
     for (size_t i = 0; i < batch_size; ++i) {
       temp_results[i] +=
           qv *
-          static_cast<int>(
-              reinterpret_cast<const int8_t *>(vectors[i])[d]);
+          static_cast<int>(reinterpret_cast<const int8_t *>(vectors[i])[d]);
     }
   }
 
@@ -153,9 +151,9 @@ void unit_scale_squared_euclidean_int8_batch_distance(
     }
 
     std::array<float, batch_size> ip_results;
-    unit_scale_ip_batch_impl<batch_size>(
-        query, &vectors[i], prefetch_ptrs,
-        static_cast<size_t>(original_dim), ip_results.data());
+    unit_scale_ip_batch_impl<batch_size>(query, &vectors[i], prefetch_ptrs,
+                                         static_cast<size_t>(original_dim),
+                                         ip_results.data());
 
     // Combine with per-vector sq_sum_half
     for (size_t j = 0; j < batch_size; ++j) {
@@ -173,6 +171,35 @@ void unit_scale_squared_euclidean_int8_batch_distance(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public: query preprocess (int8 -> uint8 via +128 shift)
+// ---------------------------------------------------------------------------
+void unit_scale_squared_euclidean_int8_query_preprocess(void *query,
+                                                        size_t dim) {
+  const int original_dim = static_cast<int>(dim) - 4;
+  if (original_dim <= 0) {
+    return;
+  }
+
+  int8_t *input = reinterpret_cast<int8_t *>(query);
+  uint8_t *output = reinterpret_cast<uint8_t *>(query);
+
+  // 128 represented as int8_t wraps to -128, but two's complement addition
+  // produces the correct uint8 result: int8 + 128 -> uint8.
+  const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(128));
+
+  size_t i = 0;
+  for (; i + 64 <= static_cast<size_t>(original_dim); i += 64) {
+    __m512i data =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(input + i));
+    __m512i shifted = _mm512_add_epi8(data, offset);
+    _mm512_storeu_si512(reinterpret_cast<__m512i *>(output + i), shifted);
+  }
+  for (; i < static_cast<size_t>(original_dim); ++i) {
+    output[i] = static_cast<uint8_t>(static_cast<int>(input[i]) + 128);
+  }
+}
+
 }  // namespace zvec::turbo::avx512_vnni
 
 #else  // no AVX512 support
@@ -187,6 +214,9 @@ void unit_scale_squared_euclidean_int8_distance(const void * /*database_vec*/,
 void unit_scale_squared_euclidean_int8_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*n*/,
     size_t /*dim*/, float * /*distances*/) {}
+
+void unit_scale_squared_euclidean_int8_query_preprocess(void * /*query*/,
+                                                        size_t /*dim*/) {}
 
 }  // namespace zvec::turbo::avx512_vnni
 
