@@ -252,12 +252,6 @@ class VamanaContext : public IndexContext {
     return topk_;
   }
 
-  inline void update_dist_caculator_distance(
-      const IndexMetric::MatrixDistance &distance,
-      const IndexMetric::MatrixBatchDistance &batch_distance) {
-    dc_.update_distance(distance, batch_distance);
-  }
-
  private:
   void fill_random_to_topk_full(void);
 

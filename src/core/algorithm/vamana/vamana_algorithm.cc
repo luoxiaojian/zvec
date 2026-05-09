@@ -61,16 +61,20 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   greedy_search(entry_point, ctx, /*use_pool=*/false);
 
   // Step 2: Recompute candidate distances using pairwise L2 for robust_prune.
-  // greedy_search used the search kernel (dpbusd proxy) which gives correct
-  // ranking but non-L2 distance values. robust_prune's occlusion check needs
-  // true L2 distances consistent with batch_dist_pair.
+  // This is only needed when pairwise_distance differs from the search kernel
+  // (e.g., UnitScaleInt8 uses dpbusd proxy for search but needs true L2 for
+  // occlusion checks). When pairwise_distance is null, the search kernel IS
+  // the true symmetric distance, so greedy_search already produces correct
+  // values.
   auto &topk_heap = ctx->topk_heap();
   {
     VamanaDistCalculator &dc = ctx->dist_calculator();
-    for (size_t i = 0; i < topk_heap.size(); ++i) {
-      const void *cand_vec = entity_.get_vector(topk_heap[i].first);
-      if (ailego_likely(cand_vec != nullptr)) {
-        topk_heap[i].second = dc.pairwise_dist(query_vec, cand_vec);
+    if (dc.has_pairwise_distance()) {
+      for (size_t i = 0; i < topk_heap.size(); ++i) {
+        const void *cand_vec = entity_.get_vector(topk_heap[i].first);
+        if (ailego_likely(cand_vec != nullptr)) {
+          topk_heap[i].second = dc.pairwise_dist(query_vec, cand_vec);
+        }
       }
     }
   }

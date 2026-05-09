@@ -132,6 +132,13 @@ class VamanaDistCalculator {
     return score;
   }
 
+  // Returns true if a dedicated pairwise distance kernel is available.
+  // When true, the search kernel differs from the pairwise kernel and
+  // candidate distances from greedy_search need recomputation.
+  inline bool has_pairwise_distance() const {
+    return pairwise_distance_ != nullptr;
+  }
+
   // Single pairwise distance: compute data-to-data distance between two
   // stored vectors. Uses pairwise_distance_ (symmetric kernel) if available,
   // otherwise falls back to distance_.
