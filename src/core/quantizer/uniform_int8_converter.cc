@@ -188,22 +188,23 @@ class UniformInt8StreamingConverter : public IndexConverter {
     }
 
     // Compute global scale and bias:
-    //   forward:  int8 = clip(round(float * scale + bias), -127, 127)
+    //   forward:  int8 = clip(round(float * scale + bias), 0, 127)
     //   inverse:  float ≈ (int8 - bias) / scale
     //
+    // Values are mapped to [0, 127] to enable the VNNI abs trick in the
+    // distance kernel (sub_epi8 + abs_epi8 + vpdpbusd), which requires
+    // max |diff| ≤ 127 to avoid int8 overflow.
+    //
     // Lossless integer fast-path: when all training values are integers and
-    // the dynamic range fits within [-127, 127] (e.g. SIFT data in [0, 218]),
-    // we use scale=1 so the int8 representation is an exact shift of the
-    // input. Both endpoints must be integers so the bias shift is exact;
-    // otherwise we fall back to the linear-rescale path.
+    // the dynamic range fits within 127, we use scale=1 for exact mapping.
     constexpr float epsilon = std::numeric_limits<float>::epsilon();
     float range = global_max - global_min;
-    if (all_integer && range <= 254.0f) {
+    if (all_integer && range <= 127.0f) {
       scale_ = 1.0f;
-      bias_ = -global_min - 127.0f;  // global_min is integer — no round needed
+      bias_ = -global_min;  // global_min is integer — maps to 0
     } else {
-      scale_ = 254.0f / std::max(range, epsilon);
-      bias_ = -global_min * scale_ - 127.0f;
+      scale_ = 127.0f / std::max(range, epsilon);
+      bias_ = -global_min * scale_;
     }
 
     LOG_INFO(
@@ -325,7 +326,7 @@ class UniformInt8StreamingConverter : public IndexConverter {
         }
         for (size_t i = 0; i < dim; ++i) {
           float v = std::round(vec[i] * scale + bias);
-          v = std::max(-127.0f, std::min(127.0f, v));
+          v = std::max(0.0f, std::min(127.0f, v));
           out[i] = static_cast<int8_t>(v);
         }
       }

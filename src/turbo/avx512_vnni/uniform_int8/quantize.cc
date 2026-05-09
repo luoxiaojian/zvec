@@ -18,19 +18,16 @@
 //   1. Load 16 fp32 values                                   (vmovups)
 //   2. Fused multiply-add:  v = in * scale + bias            (vfmadd)
 //   3. Convert fp32 -> int32 with current rounding mode      (vcvtps2dq)
-//      (default = round-to-nearest-even, matches std::round
-//       for the magnitude range relevant to int8 output)
-//   4. Saturating pack int32 -> int8                         (vpmovsdb)
-//      Hardware saturation handles the clip to [-128, 127];
-//      the upstream training code clamps the bias so the value
-//      never reaches -128, keeping the symmetric [-127, 127]
-//      contract identical to the scalar implementation.
-//   5. Store 16 int8 values                                  (vmovdqu)
+//   4. Clamp int32 to [0, 127]                              (vpmaxsd + vpminsd)
+//   5. Saturating pack int32 -> int8                         (vpmovsdb)
+//   6. Store 16 int8 values                                  (vmovdqu)
+//
+// Output values are guaranteed to be in [0, 127] to enable the VNNI
+// abs trick (sub_epi8 + abs_epi8 + vpdpbusd) in the distance kernel.
 //
 // Compiled with -march=avx512vnni (set per-file in src/turbo/CMakeLists.txt).
 
 #include "avx512_vnni/uniform_int8/quantize.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -43,6 +40,8 @@ void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
                            float bias, std::int8_t *out) {
   const __m512 vscale = _mm512_set1_ps(scale);
   const __m512 vbias = _mm512_set1_ps(bias);
+  const __m512i vzero = _mm512_setzero_si512();
+  const __m512i v127 = _mm512_set1_epi32(127);
 
   std::size_t i = 0;
   for (; i + 16 <= dim; i += 16) {
@@ -50,7 +49,10 @@ void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
     v = _mm512_fmadd_ps(v, vscale, vbias);
     // fp32 -> int32 with current rounding mode (round-to-nearest-even).
     __m512i vi = _mm512_cvtps_epi32(v);
-    // Saturating pack int32 -> int8 (clips to [-128, 127]).
+    // Clamp to [0, 127] for the VNNI abs trick.
+    vi = _mm512_max_epi32(vi, vzero);
+    vi = _mm512_min_epi32(vi, v127);
+    // Pack int32 -> int8 (values already in [0, 127], no saturation needed).
     __m128i packed = _mm512_cvtsepi32_epi8(vi);
     _mm_storeu_si128(reinterpret_cast<__m128i *>(out + i), packed);
   }
@@ -58,7 +60,7 @@ void uniform_int8_quantize(const float *in, std::size_t dim, float scale,
   // Tail: scalar fallback (matches the scalar reference exactly).
   for (; i < dim; ++i) {
     float v = std::round(in[i] * scale + bias);
-    v = std::max(-127.0f, std::min(127.0f, v));
+    v = std::max(0.0f, std::min(127.0f, v));
     out[i] = static_cast<std::int8_t>(v);
   }
 }

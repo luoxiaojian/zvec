@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "vamana_algorithm.h"
+#include <type_traits>
 
 namespace zvec {
 namespace core {
@@ -145,9 +146,10 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
 
-  // Prefetch for better cache performance
+  // Number of cache lines per vector (e.g. 2 for dim=128).
   static constexpr uint32_t PREFETCH_BATCH = 2;
   static constexpr uint32_t PREFETCH_STEP = 2;
+  const uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
 
   if (!use_pool || index_filter.is_valid()) {
     VisitFilter &visit = ctx->visit_filter();
@@ -252,50 +254,108 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     pool.set_visited(entry_point);
     pool.insert(entry_point, entry_dist);
 
-    while (pool.has_next()) {
-      auto current_node = pool.pop();
+    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      // Optimized path for Mmap/Contiguous: merged neighbor scan + vector
+      // pointer collection + prefetch in a single loop (like pyglass).
+      // Eliminates get_vector_typed overhead and gives prefetch lead time.
+      static constexpr uint32_t GRAPH_PO = 8;  // prefetch window
 
-      const auto neighbors = entity.get_neighbors_typed(current_node);
-      ailego_prefetch(neighbors.data);
+      while (pool.has_next()) {
+        auto current_node = pool.pop();
 
-      if (neighbors.size() > buf_capacity) {
-        buf_capacity = neighbors.size();
-        neighbor_ids.resize(buf_capacity);
-        dists.resize(buf_capacity);
-        neighbor_vecs.resize(buf_capacity);
-      }
+        const auto neighbors = entity.get_neighbors_typed(current_node);
+        ailego_prefetch(neighbors.data);
 
-      uint32_t unvisited_count = 0;
-      for (uint32_t i = 0; i < neighbors.size(); ++i) {
-        node_id_t node = neighbors[i];
-        if (pool.check_visited(node)) {
-          continue;
+        if (neighbors.size() > buf_capacity) {
+          buf_capacity = neighbors.size();
+          neighbor_ids.resize(buf_capacity);
+          dists.resize(buf_capacity);
+          neighbor_vecs.resize(buf_capacity);
         }
-        pool.set_visited(node);
-        neighbor_ids[unvisited_count++] = node;
+
+        const uint32_t po =
+            std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+        uint32_t unvisited_count = 0;
+        uint32_t i = 0;
+
+        // Phase 1: scan first `po` neighbors with prefetch.
+        // Prefetch is issued here, and the remaining neighbor scan
+        // below provides the lead time before batch_dist is called.
+        for (; i < po; ++i) {
+          node_id_t node = neighbors[i];
+          if (pool.check_visited(node)) continue;
+          pool.set_visited(node);
+          const void *vec_ptr = entity.get_vector_ptr(node);
+          const char *p = reinterpret_cast<const char *>(vec_ptr);
+          for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+            _mm_prefetch(p + cl * 64, _MM_HINT_T0);
+          }
+          neighbor_ids[unvisited_count] = node;
+          neighbor_vecs[unvisited_count] = vec_ptr;
+          unvisited_count++;
+        }
+
+        // Phase 2: scan remaining neighbors (no prefetch — they will be
+        // prefetched by the batch kernel's internal prefetch logic).
+        for (; i < neighbors.size(); ++i) {
+          node_id_t node = neighbors[i];
+          if (pool.check_visited(node)) continue;
+          pool.set_visited(node);
+          neighbor_ids[unvisited_count] = node;
+          neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+          unvisited_count++;
+        }
+
+        if (unvisited_count == 0) continue;
+        dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+
+        for (uint32_t j = 0; j < unvisited_count; ++j) {
+          pool.insert(neighbor_ids[j], dists[j]);
+        }
       }
+    } else {
+      // Fallback path for BufferPool: uses MemoryBlock wrappers to pin pages.
+      while (pool.has_next()) {
+        auto current_node = pool.pop();
 
-      if (unvisited_count == 0) {
-        continue;
-      }
+        const auto neighbors = entity.get_neighbors_typed(current_node);
+        ailego_prefetch(neighbors.data);
 
-      neighbor_vec_blocks.clear();
-      int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
-                                        neighbor_vec_blocks);
-      if (ailego_unlikely(ret != 0)) break;
+        if (neighbors.size() > buf_capacity) {
+          buf_capacity = neighbors.size();
+          neighbor_ids.resize(buf_capacity);
+          dists.resize(buf_capacity);
+          neighbor_vecs.resize(buf_capacity);
+        }
 
-      for (uint32_t i = 0;
-           i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
-        ailego_prefetch(neighbor_vec_blocks[i].data());
-      }
-      for (uint32_t i = 0; i < unvisited_count; ++i) {
-        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
-      }
+        uint32_t unvisited_count = 0;
+        for (uint32_t i = 0; i < neighbors.size(); ++i) {
+          node_id_t node = neighbors[i];
+          if (pool.check_visited(node)) continue;
+          pool.set_visited(node);
+          neighbor_ids[unvisited_count++] = node;
+        }
 
-      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+        if (unvisited_count == 0) continue;
 
-      for (uint32_t i = 0; i < unvisited_count; ++i) {
-        pool.insert(neighbor_ids[i], dists[i]);
+        neighbor_vec_blocks.clear();
+        int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                          neighbor_vec_blocks);
+        if (ailego_unlikely(ret != 0)) break;
+
+        for (uint32_t i = 0;
+             i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count);
+             ++i) {
+          ailego_prefetch(neighbor_vec_blocks[i].data());
+        }
+        for (uint32_t i = 0; i < unvisited_count; ++i) {
+          neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+        }
+        dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+
+        for (uint32_t i = 0; i < unvisited_count; ++i) {
+          pool.insert(neighbor_ids[i], dists[i]);
+        }
       }
     }
 

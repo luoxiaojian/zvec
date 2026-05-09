@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <cmath>
-
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -76,9 +75,8 @@ class UniformInt8StreamingReformer : public IndexReformer {
     quantize_func_ = turbo::get_quantize_func(turbo::DataType::kInt8,
                                               turbo::QuantizeType::kUniform);
 
-    LOG_INFO(
-        "UniformInt8StreamingReformer init: scale=%f, bias=%f, simd=%s",
-        scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
+    LOG_INFO("UniformInt8StreamingReformer init: scale=%f, bias=%f, simd=%s",
+             scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
     return 0;
   }
 
@@ -206,6 +204,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
   }
 
   //! Quantize float vector to int8 using global scale/bias.
+  //! Output values are in [0, 127] to enable the VNNI abs trick.
   //! Uses the SIMD kernel resolved in init() when available, otherwise
   //! falls back to the scalar reference implementation.
   inline void quantize(const float *in, size_t dim, int8_t *out) const {
@@ -215,7 +214,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
     }
     for (size_t i = 0; i < dim; ++i) {
       float v = std::round(in[i] * scale_ + bias_);
-      v = std::max(-127.0f, std::min(127.0f, v));
+      v = std::max(0.0f, std::min(127.0f, v));
       out[i] = static_cast<int8_t>(v);
     }
   }
