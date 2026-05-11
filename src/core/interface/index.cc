@@ -14,6 +14,7 @@
 
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
@@ -171,6 +172,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kRabitq:
           // no converter here
           return 0;
+        case QuantizerType::kUniformInt8:
+          converter_name = "UniformInt8StreamingConverter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -289,9 +293,93 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
+
+  // Peek persisted meta to detect whether the index was built with a
+  // different reformer/metric than Init() set up. This can happen when, e.g.,
+  // UniformInt8StreamingConverter transparently delegates to SIFT during
+  // train() based on data statistics. If the persisted meta diverges from
+  // what Init() assumed, rebuild reformer/metric/streamer from the persisted
+  // meta before opening the streamer so that data layout and kernels match.
+  core::IndexMeta disk_meta;
+  int deser_ret =
+      core::IndexHelper::DeserializeFromStorage(storage_.get(), &disk_meta);
+  if (deser_ret == 0 && !disk_meta.reformer_name().empty()) {
+    const bool reformer_mismatch =
+        reformer_ != nullptr &&
+        disk_meta.reformer_name() != proxima_index_meta_.reformer_name();
+    const bool metric_mismatch =
+        metric_ != nullptr &&
+        disk_meta.metric_name() != proxima_index_meta_.metric_name();
+    const bool dim_mismatch =
+        disk_meta.dimension() != proxima_index_meta_.dimension();
+    if (reformer_mismatch || metric_mismatch || dim_mismatch) {
+      LOG_INFO(
+          "Index::Open: rebuilding reformer/metric/streamer from persisted "
+          "meta (reformer: '%s' -> '%s', metric: '%s' -> '%s', dim: %zu -> "
+          "%zu)",
+          proxima_index_meta_.reformer_name().c_str(),
+          disk_meta.reformer_name().c_str(),
+          proxima_index_meta_.metric_name().c_str(),
+          disk_meta.metric_name().c_str(), proxima_index_meta_.dimension(),
+          disk_meta.dimension());
+
+      const std::string streamer_name = disk_meta.streamer_name();
+      // Start from the build-time streamer params persisted on disk, then
+      // overlay search-time params from the current Init() config (e.g.,
+      // use_contiguous_memory, ef) which are not stored during build.
+      ailego::Params streamer_params = disk_meta.streamer_params();
+      streamer_params.merge(proxima_index_params_);
+
+      proxima_index_meta_ = disk_meta;
+
+      reformer_ = core::IndexFactory::CreateReformer(disk_meta.reformer_name());
+      if (!reformer_ || reformer_->init(disk_meta.reformer_params()) != 0) {
+        LOG_ERROR("Failed to rebuild reformer '%s' from persisted meta",
+                  disk_meta.reformer_name().c_str());
+        return core::IndexError_Runtime;
+      }
+
+      metric_ = core::IndexFactory::CreateMetric(disk_meta.metric_name());
+      if (!metric_ ||
+          metric_->init(disk_meta, disk_meta.metric_params()) != 0) {
+        LOG_ERROR("Failed to rebuild metric '%s' from persisted meta",
+                  disk_meta.metric_name().c_str());
+        return core::IndexError_Runtime;
+      }
+      if (metric_->query_metric()) {
+        metric_ = metric_->query_metric();
+      }
+
+      streamer_ = core::IndexFactory::CreateStreamer(streamer_name);
+      if (!streamer_ || streamer_->init(disk_meta, streamer_params) != 0) {
+        LOG_ERROR("Failed to rebuild streamer '%s' from persisted meta",
+                  streamer_name.c_str());
+        return core::IndexError_Runtime;
+      }
+
+      streamer_vector_meta_.set_meta(disk_meta.data_type(),
+                                     disk_meta.dimension());
+      streamer_vector_meta_.set_meta_type(disk_meta.meta_type());
+    }
+  }
+
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
+  }
+
+  // Some reformers (e.g. UniformInt8) derive their params from training and
+  // can only obtain them once the streamer has loaded the persisted index
+  // meta. Such reformers self-declare via requires_post_open_reinit() and
+  // get a second init() call here. Reformers that initialize fully at
+  // construction (the common case) are left untouched to avoid clobbering
+  // any derived state computed in their first init().
+  if (reformer_ != nullptr && streamer_ != nullptr &&
+      reformer_->requires_post_open_reinit()) {
+    if (reformer_->init(streamer_->meta().reformer_params()) != 0) {
+      LOG_ERROR("Failed to re-init reformer with stored params");
+      return core::IndexError_Runtime;
+    }
   }
 
   // converter/reformer/metric are created in IndexFactory::CreateIndex
