@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "vamana_algorithm.h"
+#include <type_traits>
+#include <ailego/internal/cpu_features.h>
 
 namespace zvec {
 namespace core {
@@ -48,7 +50,8 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   ctx->topk_heap().limit(search_list_size);
   ctx->dist_calculator().clear_compare_cnt();
 
-  // Set query to the new node's vector
+  // Set query to the new node's vector. Use reset_query (same as search path)
+  // so that greedy_search works with the search-optimized distance kernel.
   const void *query_vec = entity_.get_vector(id);
   if (ailego_unlikely(query_vec == nullptr)) {
     LOG_ERROR("Failed to get vector for node %u", id);
@@ -56,10 +59,11 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   }
   ctx->reset_query(query_vec);
 
-  greedy_search(entry_point, ctx);
+  greedy_search(entry_point, ctx, /*use_pool=*/false);
+
+  auto &topk_heap = ctx->topk_heap();
 
   // Step 2: RobustPrune to select diverse neighbors
-  auto &topk_heap = ctx->topk_heap();
   robust_prune(id, topk_heap, entity_.alpha(), entity_.max_degree(), ctx);
   // Copy result before reverse updates (which also call robust_prune)
   auto pruned_neighbors = ctx->prune_result();
@@ -96,47 +100,129 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
   uint32_t ef_search = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
   topk_heap.limit(ef_search);
 
-  greedy_search(entry_point, ctx);
+  greedy_search(entry_point, ctx, /*use_pool=*/true);
 
   return 0;
 }
 
 // ============================================================================
-// greedy_search: Beam search from entry_point.
+// greedy_search helper templates
 //
-// Maintains a candidate min-heap (ordered by distance) and a visited set.
-// At each step, pops the closest unvisited candidate, expands its neighbors,
-// and adds unvisited neighbors to both the candidate heap and the topk heap.
-// Stops when the closest candidate is farther than the worst in topk, or
-// when the scan limit is reached.
+// Two specialized inner loops, dispatched from greedy_search():
+//
+//   pool_greedy_search:       Uses LinearPool or BlockHeap for single-heap
+//                             top-k tracking. Accesses vectors via
+//                             get_vector_typed + MemBlock (same as dual-heap).
+//   dual_heap_greedy_search:  The original CandidateHeap + TopkHeap +
+//                             VisitFilter approach.
+//
+// Both paths use identical vector access behavior (get_vector_typed + MemBlock)
+// so that this commit isolates only the heap management strategy difference.
 // ============================================================================
-template <typename EntityType>
-void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
-                                                VamanaContext *ctx) const {
-  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
-  VamanaDistCalculator &dc = ctx->dist_calculator();
+
+// Single-heap variant: uses LinearPool/BlockHeap for candidate management.
+// Vector access uses get_vector_typed + MemBlock, identical to dual-heap.
+template <typename EntityType, typename MemBlockType, typename HeapType>
+void pool_greedy_search(const EntityType &entity, HeapType &pool,
+                        VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
+                        node_id_t entry_point) {
+  const uint32_t max_deg = entity.max_degree();
+  const uint32_t cap = std::max(topk, ef);
+  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
+             static_cast<int32_t>(max_deg));
+
+  dist_t ep_dist = dc.batch_dist(entry_point);
+  pool.set_visited(entry_point);
+  pool.push_block(&ep_dist, &entry_point, 1);
+
+  uint32_t buf_capacity = max_deg;
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+
+  static constexpr uint32_t PREFETCH_BATCH = 2;
+  static constexpr uint32_t PREFETCH_STEP = 2;
+
+  while (pool.has_next()) {
+    auto current_node = pool.pop();
+
+    const auto neighbors = entity.get_neighbors_typed(current_node);
+    ailego_prefetch(neighbors.data);
+
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+    }
+
+    uint32_t unvisited_count = 0;
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      neighbor_ids[unvisited_count++] = node;
+    }
+    if (unvisited_count == 0) continue;
+
+    // Use get_vector_typed + MemBlock (same access as dual-heap path)
+    neighbor_vec_blocks.clear();
+    int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                      neighbor_vec_blocks);
+    if (ailego_unlikely(ret != 0)) break;
+
+    for (uint32_t i = 0;
+         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
+      ailego_prefetch(neighbor_vec_blocks[i].data());
+    }
+
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    }
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    pool.push_block(dists.data(), neighbor_ids.data(),
+                    static_cast<int32_t>(unvisited_count));
+  }
+}
+
+// Copy a BlockHeap/LinearPool's retained results into the topk heap.
+template <typename HeapType>
+void copy_pool_to_topk(const HeapType &pool, TopkHeap &topk_heap) {
+  const int32_t n = static_cast<int32_t>(pool.size());
+  for (int32_t i = 0; i < n; ++i) {
+    topk_heap.emplace(pool.id(i), pool.dist(i));
+  }
+}
+
+// ============================================================================
+// dual_heap_greedy_search: shared core for the fallback dual-heap path.
+//
+// Maintains a candidate min-heap + topk heap + VisitFilter.  Uses plain
+// batch_dist via get_vector_typed + MemBlock.
+// ============================================================================
+template <typename EntityType, typename MemBlockType, typename FilterFn>
+void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
+                             VamanaDistCalculator &dc, node_id_t entry_point,
+                             FilterFn &&filter) {
+  static constexpr uint32_t PREFETCH_BATCH = 2;
+  static constexpr uint32_t PREFETCH_STEP = 2;
+
+  uint32_t buf_capacity = entity.max_degree();
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
   auto &topk_heap = ctx->topk_heap();
 
-  const IndexFilter &index_filter =
-      static_cast<const IndexContext *>(ctx)->filter();
-  std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
-  if (index_filter.is_valid()) {
-    filter = [&](node_id_t id) {
-      return index_filter(entity.get_key_typed(id));
-    };
-  }
-
   candidates.clear();
   visit.clear();
 
-  // Initialize with entry point using batch_dist (single-element batch).
-  // We must NOT use dc.dist(entry_point) here because dist() calls
-  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
-  // expects two raw int8 inputs), but query_ has been preprocessed by
-  // reset_query (+128 shift to uint8). batch_dist() correctly calls
-  // batch_distance_() which expects the preprocessed uint8 query.
   dist_t entry_dist = dc.batch_dist(entry_point);
   if (ailego_unlikely(dc.error())) {
     return;
@@ -147,34 +233,20 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   }
   candidates.emplace(entry_point, entry_dist);
 
-  // Pre-allocate temporary vectors outside the hot loop to avoid
-  // per-iteration heap allocations. Sized to max_degree initially;
-  // resized inside the loop if actual neighbor count exceeds this.
-  uint32_t buf_capacity = entity.max_degree();
-  std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<MemBlockType> neighbor_vec_blocks;
-  neighbor_vec_blocks.reserve(buf_capacity);
-  std::vector<float> dists(buf_capacity);
-  std::vector<const void *> neighbor_vecs(buf_capacity);
-
   while (!candidates.empty() && !ctx->reach_scan_limit()) {
     auto top = candidates.begin();
     node_id_t current_node = top->first;
     dist_t current_dist = top->second;
 
-    // Early termination: if the closest candidate is worse than the worst
-    // result in a full topk heap, we won't find anything better.
     if (topk_heap.full() && current_dist > topk_heap[0].second) {
       break;
     }
 
     candidates.pop();
 
-    // Expand neighbors using typed access (no virtual dispatch)
     const auto neighbors = entity.get_neighbors_typed(current_node);
     ailego_prefetch(neighbors.data);
 
-    // Resize buffers if this node has more neighbors than expected
     if (neighbors.size() > buf_capacity) {
       buf_capacity = neighbors.size();
       neighbor_ids.resize(buf_capacity);
@@ -182,7 +254,6 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       neighbor_vecs.resize(buf_capacity);
     }
 
-    // Collect unvisited neighbors (reuse pre-allocated buffer)
     uint32_t unvisited_count = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
@@ -192,34 +263,21 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     }
     if (unvisited_count == 0) continue;
 
-    // Batch fetch vectors using typed access (reuse pre-allocated buffer)
     neighbor_vec_blocks.clear();
     int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
                                       neighbor_vec_blocks);
     if (ailego_unlikely(ret != 0)) break;
 
-    // Prefetch for better cache performance
-    static constexpr uint32_t PREFETCH_BATCH = 2;
-    static constexpr uint32_t PREFETCH_STEP = 2;
     for (uint32_t i = 0;
          i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
       ailego_prefetch(neighbor_vec_blocks[i].data());
     }
 
-    // Batch distance computation (reuse pre-allocated buffers)
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
 
-    // Update candidates and topk.
-    // Unlike vanilla DiskANN which inserts all unvisited neighbors into
-    // the candidate queue unconditionally, we apply an early-pruning
-    // optimization: a neighbor is only inserted into the candidate queue
-    // (and topk_heap) if it could potentially improve the final results,
-    // i.e. either the topk heap is not yet full, or the neighbor is closer
-    // than the current worst result. This avoids expanding clearly
-    // unpromising branches and reduces the candidate queue size.
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t node_dist = dists[i];
@@ -229,6 +287,62 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
           topk_heap.emplace(node, node_dist);
         }
       }
+    }
+  }
+}
+
+// ============================================================================
+// greedy_search: Beam search from entry_point.
+//
+// Dispatches to pool_greedy_search (single-heap) or dual_heap_greedy_search
+// (dual-heap) based on use_pool flag and filter presence.
+// ============================================================================
+template <typename EntityType>
+void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
+                                                VamanaContext *ctx,
+                                                bool use_pool) const {
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+  VamanaDistCalculator &dc = ctx->dist_calculator();
+
+  const IndexFilter &index_filter =
+      static_cast<const IndexContext *>(ctx)->filter();
+
+  if (!use_pool || index_filter.is_valid()) {
+    // Fallback path: add_node (use_pool=false) or filtered search.
+    auto run_with_filter = [&](auto &&filter) {
+      dual_heap_greedy_search<EntityType, MemBlockType>(
+          entity, ctx, dc, entry_point,
+          std::forward<decltype(filter)>(filter));
+    };
+
+    if (index_filter.is_valid()) {
+      auto filter = [&](node_id_t id) {
+        return index_filter(entity.get_key_typed(id));
+      };
+      run_with_filter(filter);
+    } else {
+      auto filter = [](node_id_t) { return false; };
+      run_with_filter(filter);
+    }
+  } else {
+    // Pool-based path: single-heap for unfiltered search.
+    // BlockHeap (AVX2) or LinearPool (scalar) selected at runtime.
+    const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
+    const uint32_t ef_v = ctx->ef();
+    const bool avx2_ok =
+        zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+    auto &topk_heap = ctx->topk_heap();
+
+    if (avx2_ok) {
+      auto &bpool = ctx->block_pool();
+      pool_greedy_search<EntityType, MemBlockType>(entity, bpool, dc, topk_v,
+                                                   ef_v, entry_point);
+      copy_pool_to_topk(bpool, topk_heap);
+    } else {
+      auto &lpool = ctx->pool();
+      pool_greedy_search<EntityType, MemBlockType>(entity, lpool, dc, topk_v,
+                                                   ef_v, entry_point);
+      copy_pool_to_topk(lpool, topk_heap);
     }
   }
 }
@@ -326,9 +440,11 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
       }
 
       if (batch_count > 0) {
-        // Batch compute distances from selected candidate to remaining
-        dc.batch_dist_pair(selected_vec, batch_vecs.data(), batch_count,
-                           batch_dists.data());
+        // Compute distances from selected candidate to remaining candidates.
+        // distance_ is the symmetric data-to-data kernel (no pairwise split).
+        for (uint32_t k = 0; k < batch_count; ++k) {
+          batch_dists[k] = dc.dist(selected_vec, batch_vecs[k]);
+        }
 
         // DiskANN (L2/Cosine):
         //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /
