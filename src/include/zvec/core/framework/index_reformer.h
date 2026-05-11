@@ -32,6 +32,20 @@ class IndexReformer : public IndexModule {
   //! Initialize Reformer
   virtual int init(const ailego::Params &params) = 0;
 
+  //! Whether this reformer needs a second init() call after the streamer
+  //! has loaded the persisted index meta from storage.
+  //!
+  //! Most reformers receive their full parameter set from the converter at
+  //! construction time and do not need this. However, some quantizers (e.g.
+  //! UniformInt8) compute reformer parameters during train() — those values
+  //! are persisted into the index meta but are unavailable to a fresh
+  //! Index::Open() until the streamer has loaded that meta. Such reformers
+  //! should override this to return true, and Index::Open() will re-invoke
+  //! init() with the persisted reformer params.
+  virtual bool requires_post_open_reinit() const {
+    return false;
+  }
+
   //! Cleanup Reformer
   virtual int cleanup(void) = 0;
 
