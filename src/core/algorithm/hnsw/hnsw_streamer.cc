@@ -17,7 +17,6 @@
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "utility/sparse_utility.h"
-#include "utility/streamer_meta_utility.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
@@ -288,7 +287,16 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
       LOG_ERROR("IndexMeta mismatch from the previous in index");
       return IndexError_Mismatch;
     }
-    MergeStoredIndexMeta(index_meta, &meta_);
+    // The IndexMetric Params may be updated like MipsSquaredEuclidean
+    auto metric_params = index_meta.metric_params();
+    metric_params.merge(meta_.metric_params());
+    meta_.set_metric(index_meta.metric_name(), 0, metric_params);
+    // Propagate reformer info from stored meta (needed for quantizers
+    // whose reformer params are computed during training, e.g. UniformInt8)
+    if (!index_meta.reformer_name().empty()) {
+      meta_.set_reformer(index_meta.reformer_name(), 0,
+                         index_meta.reformer_params());
+    }
   }
 
   metric_ = IndexFactory::CreateMetric(meta_.metric_name());
