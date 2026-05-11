@@ -41,24 +41,6 @@ void unit_scale_squared_euclidean_int8_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances);
 
-// Split-layout batch kernel.
-//
-// Used when the streamer stores the int8 vector body and the side-data
-// block in two separate flat arrays (cache-friendly, matches pyglass
-// MyQuant layout).  Vectors passed here are pure int8 data of length
-// (dim - 4) (no 4-byte tail).  `side_data[i]` points to the side-data
-// block of vector i; this kernel only reads the first `float` from that
-// block as `sq_sum_half`, but the pointer form allows future kernels to
-// consume additional extra values without changing the interface.
-// `dim` includes the 4-byte tail (matches the non-split variant), and
-// the kernel internally derives original_dim.
-//
-// Result: distances[i] = *(const float*)side_data[i]
-//                      - dpbusd(query_uint8, vectors[i]).
-void unit_scale_squared_euclidean_int8_batch_distance_split(
-    const void *const *vectors, const void *query, const void *const *side_data,
-    size_t n, size_t dim, float *distances);
-
 // Preprocess the query vector in-place: shift int8 -> uint8 by adding 128.
 // Only the first (dim - 4) bytes (original_dim) are shifted; the 4-byte
 // sq_sum_half tail is left intact.  `dim` includes the 4-byte tail.

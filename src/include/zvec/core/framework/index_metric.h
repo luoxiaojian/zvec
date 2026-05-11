@@ -55,20 +55,6 @@ struct IndexMetric : public IndexModule {
   using MatrixBatchDistance = std::function<void(
       const void **m, const void *q, size_t num, size_t dim, float *out)>;
 
-  //! Matrix Batch Distance Function Object (split layout).
-  //! Used when the entity stores the vector body and the per-vector side
-  //! data (e.g. sq_sum_half, or multiple extra scalars) in two separate flat
-  //! arrays.  Vectors passed through `m` are pure body (without the last
-  //! `side_data_size_per_vector` bytes); `side_data[i]` is a pointer to the
-  //! pre-gathered side-data block of vector i (layout is metric-specific and
-  //! sized by `side_data_size_per_vector()`), allowing the kernel to consume
-  //! one or more extra values per vector.  `dim` is the full stored
-  //! dimension (same value used by MatrixBatchDistance), and the kernel
-  //! internally trims the side bytes.
-  using MatrixBatchDistanceSplit = std::function<void(
-      const void **m, const void *q, const void *const *side_data, size_t num,
-      size_t dim, float *out)>;
-
   //! Destructor
   virtual ~IndexMetric(void) {}
 
@@ -114,21 +100,6 @@ struct IndexMetric : public IndexModule {
 
   //! Retrieve pairwise (data-to-data) batch distance function.
   virtual MatrixBatchDistance pairwise_batch_distance(void) const {
-    return nullptr;
-  }
-
-  //! Number of bytes of per-vector side data (e.g. sq_sum_half) that can be
-  //! split out of the stored vector body.  When > 0, storage backends are
-  //! free to place the final `side_data_size_per_vector()` bytes of every
-  //! stored vector into a separate flat array and use the split-layout batch
-  //! distance kernel.  Default 0 means no splitting.
-  virtual size_t side_data_size_per_vector(void) const {
-    return 0;
-  }
-
-  //! Retrieve split-layout batch distance function, or nullptr if the metric
-  //! does not support split layout.  Paired with side_data_size_per_vector().
-  virtual MatrixBatchDistanceSplit batch_distance_split(void) const {
     return nullptr;
   }
 

@@ -103,23 +103,6 @@ class UnitScaleInt8Metric : public IndexMetric {
                                           turbo::QuantizeType::kUnitScale);
   }
 
-  //! Side data size: the 4-byte `sq_sum_half` tail at the end of each vector.
-  //! Storage backends may split this tail into a separate flat array for
-  //! cache efficiency; the corresponding split-layout batch kernel will be
-  //! used in that case.
-  size_t side_data_size_per_vector(void) const override {
-    return sizeof(float);
-  }
-
-  //! Split-layout batch kernel: vectors are pure int8 (length = original_dim),
-  //! per-vector side data (here a single 4-byte `sq_sum_half`) is supplied
-  //! through the `side_data` pointer array.
-  MatrixBatchDistanceSplit batch_distance_split(void) const override {
-    return turbo::get_batch_distance_split_func(
-        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-        turbo::QuantizeType::kUnitScale);
-  }
-
   //! Query preprocess: shift int8 -> uint8 (+128) for dpbusd distance.
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
     return turbo::get_query_preprocess_func(

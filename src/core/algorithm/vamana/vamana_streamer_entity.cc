@@ -659,9 +659,6 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->graph_memory_ = graph_memory_;
   entity->graph_base_ = graph_base_;
   entity->graph_stride_ = graph_stride_;
-  entity->side_data_memory_ = side_data_memory_;
-  entity->side_data_base_ = side_data_base_;
-  entity->side_data_stride_ = side_data_stride_;
 
   return VamanaEntity::Pointer(entity);
 }
@@ -707,19 +704,11 @@ char *VamanaContiguousStreamerEntity::allocate_contiguous(size_t size) {
 }
 
 int VamanaContiguousStreamerEntity::build_contiguous_memory() {
-  return build_contiguous_memory(0);
-}
-
-int VamanaContiguousStreamerEntity::build_contiguous_memory(
-    size_t side_data_size_per_vector) {
   vector_memory_.reset();
   vector_base_ = nullptr;
   vector_stride_ = 0;
   graph_memory_.reset();
   graph_base_ = nullptr;
-  side_data_memory_.reset();
-  side_data_base_ = nullptr;
-  side_data_stride_ = 0;
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
@@ -727,18 +716,10 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
   const size_t per_node = node_size();
   const size_t vec_size = vector_size();
 
-  // Guard: disable split if it would leave an empty vector body.
-  if (side_data_size_per_vector >= vec_size) {
-    side_data_size_per_vector = 0;
-  }
-  const size_t core_vec_size = vec_size - side_data_size_per_vector;
-
   // Pad per-vector stride up to kVectorAlignment (64B) so every vector
-  // starts on a cache-line boundary.  In the split case this is computed
-  // from the core (tail-less) size, so e.g. unit-scale SIFT gets a tight
-  // 128B stride instead of the old 192B (which had 60B of padding).
+  // starts on a cache-line boundary.
   vector_stride_ =
-      (core_vec_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
+      (vec_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
   // graph_stride = key + neighbors (everything except vector)
   graph_stride_ = sizeof(key_t) + neighbors_size();
 
@@ -765,36 +746,8 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
   graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
   graph_base_ = raw_graph;
 
-  // Optional: allocate side-data flat array.
-  // NOTE: side-data stride is intentionally kept tight (== side_data_size,
-  // no cache-line padding).  The tail metadata is touched together with
-  // the accumulated inner-product in the split kernel and is accessed
-  // sequentially per neighbor; padding each entry up to 64B would only
-  // waste memory bandwidth without improving locality.
-  size_t side_data_memory_size = 0;
-  if (side_data_size_per_vector > 0) {
-    side_data_stride_ = side_data_size_per_vector;
-    const size_t total_side_data =
-        static_cast<size_t>(total_docs) * side_data_stride_;
-    side_data_memory_size = AlignHugePageSize(total_side_data);
-    char *raw_side = allocate_contiguous(side_data_memory_size);
-    if (!raw_side) {
-      vector_memory_.reset();
-      vector_base_ = nullptr;
-      vector_stride_ = 0;
-      graph_memory_.reset();
-      graph_base_ = nullptr;
-      side_data_stride_ = 0;
-      return IndexError_Runtime;
-    }
-    side_data_memory_.reset(raw_side, ContiguousDeleter{side_data_memory_size});
-    side_data_base_ = raw_side;
-  }
-
-  // Split node data from chunks into vector / graph / side arrays.
+  // Split node data from chunks into vector / graph arrays.
   // Original node layout: [vector (vec_size) | key (8B) | neighbors]
-  // Within `vector`, the split maps to:
-  //   [ core (core_vec_size) | side_data (side_data_size_per_vector) ]
   // Padding bytes in vector_base_ are left zero (anon mmap is zero-filled).
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
@@ -811,15 +764,9 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
       const char *node_src = src + static_cast<size_t>(i) * per_node;
       size_t global_id = static_cast<size_t>(base_id + i);
 
-      // Copy vector core to flat vector array at padded stride
+      // Copy vector to flat vector array at padded stride
       std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
-                  core_vec_size);
-
-      // Copy side-data tail, if any, to the side-data array
-      if (side_data_base_) {
-        std::memcpy(side_data_base_ + global_id * side_data_stride_,
-                    node_src + core_vec_size, side_data_size_per_vector);
-      }
+                  vec_size);
 
       // Copy key + neighbors to graph array
       std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
@@ -828,14 +775,12 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
   }
 
   LOG_INFO(
-      "Built Vamana contiguous memory (split layout): "
-      "vector_mem=%zu graph_mem=%zu side_mem=%zu total_docs=%u "
-      "node_chunks=%zu vector_size=%zu core_vec_size=%zu "
-      "vector_stride=%zu (cache-line aligned to %zuB) "
-      "side_data_size=%zu side_data_stride=%zu (unaligned, tight)",
-      vector_memory_size, graph_memory_size, side_data_memory_size, total_docs,
-      chunks.size(), vec_size, core_vec_size, vector_stride_, kVectorAlignment,
-      side_data_size_per_vector, side_data_stride_);
+      "Built Vamana contiguous memory: "
+      "vector_mem=%zu graph_mem=%zu total_docs=%u "
+      "node_chunks=%zu vector_size=%zu vector_stride=%zu "
+      "(cache-line aligned to %zuB)",
+      vector_memory_size, graph_memory_size, total_docs, chunks.size(),
+      vec_size, vector_stride_, kVectorAlignment);
 
   return 0;
 }

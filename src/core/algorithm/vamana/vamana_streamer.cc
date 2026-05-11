@@ -265,8 +265,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     case VamanaStorageMode::kContiguous: {
       auto &contiguous_entity =
           static_cast<VamanaContiguousStreamerEntity &>(*entity_);
-      int build_ret = contiguous_entity.build_contiguous_memory(
-          metric_->side_data_size_per_vector());
+      int build_ret = contiguous_entity.build_contiguous_memory();
       if (build_ret != 0) {
         LOG_ERROR("Failed to build contiguous memory, ret=%d", build_ret);
         cleanup_on_error();

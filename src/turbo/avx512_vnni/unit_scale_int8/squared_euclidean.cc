@@ -172,57 +172,6 @@ void unit_scale_squared_euclidean_int8_batch_distance(
 }
 
 // ---------------------------------------------------------------------------
-// Public: split-layout batch kernel (vectors are pure int8, no tail).
-// `side_data[i]` points to the side-data block of vector i; only the first
-// `float` (sq_sum_half) is consumed here, but the pointer form keeps the
-// interface open for future kernels that read multiple extra values per
-// vector.  This matches the pyglass MyQuant layout and avoids the extra
-// cache-line fetch caused by the per-vector tail in the embedded layout.
-// ---------------------------------------------------------------------------
-void unit_scale_squared_euclidean_int8_batch_distance_split(
-    const void *const *vectors, const void *query, const void *const *side_data,
-    size_t n, size_t dim, float *distances) {
-  const int original_dim = static_cast<int>(dim) - 4;
-  if (original_dim <= 0) {
-    return;
-  }
-
-  static constexpr size_t batch_size = 4;
-  static constexpr size_t prefetch_step = 2;
-
-  size_t i = 0;
-  for (; i + batch_size <= n; i += batch_size) {
-    std::array<const void *, batch_size> prefetch_ptrs;
-    for (size_t j = 0; j < batch_size; ++j) {
-      size_t pi = i + j + batch_size * prefetch_step;
-      prefetch_ptrs[j] = (pi < n) ? vectors[pi] : nullptr;
-    }
-
-    std::array<float, batch_size> ip_results;
-    unit_scale_ip_batch_impl<batch_size>(query, &vectors[i], prefetch_ptrs,
-                                         static_cast<size_t>(original_dim),
-                                         ip_results.data());
-
-    for (size_t j = 0; j < batch_size; ++j) {
-      const float sq_sum_half =
-          *reinterpret_cast<const float *>(side_data[i + j]);
-      distances[i + j] = sq_sum_half - ip_results[j];
-    }
-  }
-
-  // Tail: remaining vectors (1 at a time).
-  for (; i < n; ++i) {
-    std::array<const void *, 1> prefetch_ptrs{nullptr};
-    const void *vecs[1] = {vectors[i]};
-    float ip_result;
-    unit_scale_ip_batch_impl<1>(query, vecs, prefetch_ptrs,
-                                static_cast<size_t>(original_dim), &ip_result);
-    const float sq_sum_half = *reinterpret_cast<const float *>(side_data[i]);
-    distances[i] = sq_sum_half - ip_result;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Public: query preprocess (int8 -> uint8 via +128 shift)
 // ---------------------------------------------------------------------------
 void unit_scale_squared_euclidean_int8_query_preprocess(void *query,
@@ -265,11 +214,6 @@ void unit_scale_squared_euclidean_int8_distance(const void * /*database_vec*/,
 void unit_scale_squared_euclidean_int8_batch_distance(
     const void *const * /*vectors*/, const void * /*query*/, size_t /*n*/,
     size_t /*dim*/, float * /*distances*/) {}
-
-void unit_scale_squared_euclidean_int8_batch_distance_split(
-    const void *const * /*vectors*/, const void * /*query*/,
-    const void *const * /*side_data*/, size_t /*n*/, size_t /*dim*/,
-    float * /*distances*/) {}
 
 void unit_scale_squared_euclidean_int8_query_preprocess(void * /*query*/,
                                                         size_t /*dim*/) {}

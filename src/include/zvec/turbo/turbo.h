@@ -25,16 +25,6 @@ using BatchDistanceFunc = std::function<void(
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
-// Split-layout batch distance: vectors contain the core feature only,
-// any per-vector side data (e.g. sq_sum_half, or multiple extra scalars)
-// is provided via the `side_data` array, where `side_data[i]` points to
-// the side-data block of vector i.  This allows kernels to consume one
-// or more extra values per vector.  Returns nullptr if no split-layout
-// kernel is available for the given (metric, data_type, quantize_type).
-using BatchDistanceSplitFunc = std::function<void(
-    const void **m, const void *q, const void *const *side_data, size_t num,
-    size_t dim, float *out)>;
-
 // Quantize fp32 -> int8 with a global affine transform:
 //   out[i] = clip(round(in[i] * scale + bias), -127, 127)
 // Raw function pointer (rather than std::function) to avoid indirect-call
@@ -66,11 +56,6 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
 BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
                                           DataType data_type,
                                           QuantizeType quantize_type);
-
-// Split-layout batch distance kernel (see BatchDistanceSplitFunc).
-// Currently only implemented for (kSquaredEuclidean, kInt8, kUnitScale).
-BatchDistanceSplitFunc get_batch_distance_split_func(
-    MetricType metric_type, DataType data_type, QuantizeType quantize_type);
 
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
                                               DataType data_type,

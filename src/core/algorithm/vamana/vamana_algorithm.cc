@@ -125,100 +125,19 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // ============================================================================
 // greedy_search helper templates
 //
-// Three specialized inner loops, dispatched from greedy_search():
+// Two specialized inner loops, dispatched from greedy_search():
 //
-//   fast_greedy_search_split: contiguous entity + split layout (side scalar
-//                             like sq_sum_half stored in a flat side array).
-//                             Gathers sq_sums and calls batch_dist_split.
 //   fast_greedy_search:       mmap/contiguous with direct vector pointers.
 //                             Uses batch_dist on a pointer array.
 //   slow_greedy_search:       BufferPool-backed storage: must fetch MemBlock
 //                             wrappers via get_vector_typed to pin pages.
 //
-// All three accept either BlockHeap or LinearPool as `HeapType` because the
+// Both accept either BlockHeap or LinearPool as `HeapType` because the
 // two expose the same reset(n, ef, block_size) / push_block(dists, ids, n)
 // surface (LinearPool adapts via push_block and ignores the block_size hint).
 // ============================================================================
 
-// contiguous + split-layout variant: gather per-vector sq_sums from the
-// flat side-data array and dispatch to batch_dist_split.
-template <typename HeapType>
-void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
-                              HeapType &pool, VamanaDistCalculator &dc,
-                              uint32_t topk, uint32_t ef, node_id_t entry_point,
-                              uint32_t prefetch_lines) {
-  const uint32_t max_deg = entity.max_degree();
-  const uint32_t cap = std::max(topk, ef);
-  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
-             static_cast<int32_t>(max_deg));
-
-  dist_t ep_dist = dc.batch_dist(entry_point);
-  pool.set_visited(entry_point);
-  pool.push_block(&ep_dist, &entry_point, 1);
-
-  static constexpr uint32_t GRAPH_PO = 8;
-
-  uint32_t buf_capacity = max_deg;
-  std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<float> dists(buf_capacity);
-  std::vector<const void *> neighbor_vecs(buf_capacity);
-  std::vector<const void *> side_ptrs(buf_capacity);
-
-  const size_t side_stride = entity.side_data_stride();
-  const char *side_base = entity.side_data_base();
-
-  while (pool.has_next()) {
-    auto current_node = pool.pop();
-
-    const auto neighbors = entity.get_neighbors_typed(current_node);
-    ailego_prefetch(neighbors.data);
-
-    if (neighbors.size() > buf_capacity) {
-      buf_capacity = neighbors.size();
-      neighbor_ids.resize(buf_capacity);
-      dists.resize(buf_capacity);
-      neighbor_vecs.resize(buf_capacity);
-      side_ptrs.resize(buf_capacity);
-    }
-
-    const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
-    uint32_t unvisited_count = 0;
-    uint32_t i = 0;
-
-    for (; i < po; ++i) {
-      node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
-      const void *vec_ptr = entity.get_vector_ptr(node);
-      const char *p = reinterpret_cast<const char *>(vec_ptr);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        _mm_prefetch(p + cl * 64, _MM_HINT_T0);
-      }
-      neighbor_ids[unvisited_count] = node;
-      neighbor_vecs[unvisited_count] = vec_ptr;
-      side_ptrs[unvisited_count] = side_base + side_stride * node;
-      unvisited_count++;
-    }
-    for (; i < neighbors.size(); ++i) {
-      node_id_t node = neighbors[i];
-      if (pool.check_visited(node)) continue;
-      pool.set_visited(node);
-      neighbor_ids[unvisited_count] = node;
-      neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
-      side_ptrs[unvisited_count] = side_base + side_stride * node;
-      unvisited_count++;
-    }
-
-    if (unvisited_count == 0) continue;
-    dc.batch_dist_split(neighbor_vecs.data(), side_ptrs.data(), unvisited_count,
-                        dists.data());
-    pool.push_block(dists.data(), neighbor_ids.data(),
-                    static_cast<int32_t>(unvisited_count));
-  }
-}
-
-// mmap/contiguous variant (no split): resolve vectors via get_vector_ptr
+// mmap/contiguous variant: resolve vectors via get_vector_ptr
 // and dispatch to the classic pointer-array batch_dist.
 template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
@@ -364,21 +283,15 @@ void copy_pool_to_topk(const HeapType &pool, TopkHeap &topk_heap) {
 }
 
 // ============================================================================
-// dual_heap_greedy_search_impl: shared core for the two dual-heap variants.
+// dual_heap_greedy_search: shared core for the fallback dual-heap path.
 //
-// Maintains a candidate min-heap + topk heap + VisitFilter.  `DoSplit` is a
-// compile-time flag: when true the per-batch distance uses gather(sq_sums) +
-// batch_dist_split; when false it uses plain batch_dist.  All branching on
-// split is resolved at compile time so the inner loop contains a single
-// straight-line batch-distance call.  Do not call this directly; use the
-// two thin wrappers declared below.
+// Maintains a candidate min-heap + topk heap + VisitFilter.  Uses plain
+// batch_dist.
 // ============================================================================
-template <bool DoSplit, typename EntityType, typename MemBlockType,
-          typename FilterFn>
-void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
-                                  VamanaDistCalculator &dc,
-                                  node_id_t entry_point,
-                                  uint32_t prefetch_lines, FilterFn &&filter) {
+template <typename EntityType, typename MemBlockType, typename FilterFn>
+void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
+                             VamanaDistCalculator &dc, node_id_t entry_point,
+                             uint32_t prefetch_lines, FilterFn &&filter) {
   static constexpr uint32_t PREFETCH_BATCH = 2;
   static constexpr uint32_t PREFETCH_STEP = 2;
 
@@ -388,18 +301,6 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
   neighbor_vec_blocks.reserve(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
-
-  // Per-vector side-data pointer gather buffer; only allocated on the
-  // split path.  Each entry points to the side-data block of the
-  // corresponding neighbor (layout decided by the metric).
-  std::vector<const void *> side_ptrs;
-  const char *side_base = nullptr;
-  size_t side_stride = 0;
-  if constexpr (DoSplit) {
-    side_ptrs.resize(buf_capacity);
-    side_base = entity.side_data_base();
-    side_stride = entity.side_data_stride();
-  }
 
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
@@ -448,9 +349,6 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
-      if constexpr (DoSplit) {
-        side_ptrs.resize(buf_capacity);
-      }
     }
 
     // Collect unvisited neighbors (reuse pre-allocated buffer)
@@ -475,21 +373,10 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
     }
 
     // Batch distance computation (reuse pre-allocated buffers).
-    // Exactly one straight-line kernel call; the split/non-split choice is
-    // resolved at compile time via DoSplit.
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
-    if constexpr (DoSplit) {
-      for (uint32_t k = 0; k < unvisited_count; ++k) {
-        side_ptrs[k] =
-            side_base + static_cast<size_t>(neighbor_ids[k]) * side_stride;
-      }
-      dc.batch_dist_split(neighbor_vecs.data(), side_ptrs.data(),
-                          unvisited_count, dists.data());
-    } else {
-      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
-    }
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
 
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       node_id_t node = neighbor_ids[i];
@@ -502,41 +389,6 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
       }
     }
   }
-}
-
-// ============================================================================
-// dual_heap_greedy_search_split: split-layout variant.
-//
-// Used only for VamanaContiguousStreamerEntity with split side-data (e.g.
-// UnitScaleInt8's sq_sum_half extracted to a flat array).  The inner loop
-// gathers per-neighbor sq_sums and dispatches to batch_dist_split; no
-// runtime branching on split is required.
-// ============================================================================
-template <typename MemBlockType, typename FilterFn>
-void dual_heap_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
-                                   VamanaContext *ctx, VamanaDistCalculator &dc,
-                                   node_id_t entry_point,
-                                   uint32_t prefetch_lines, FilterFn &&filter) {
-  dual_heap_greedy_search_impl<true, VamanaContiguousStreamerEntity,
-                               MemBlockType>(entity, ctx, dc, entry_point,
-                                             prefetch_lines,
-                                             std::forward<FilterFn>(filter));
-}
-
-// ============================================================================
-// dual_heap_greedy_search: non-split variant.
-//
-// Used for every other case (contiguous without split side-data, mmap,
-// buffer-pool).  The inner loop dispatches to plain batch_dist; no runtime
-// branching on split is required.
-// ============================================================================
-template <typename EntityType, typename MemBlockType, typename FilterFn>
-void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
-                             VamanaDistCalculator &dc, node_id_t entry_point,
-                             uint32_t prefetch_lines, FilterFn &&filter) {
-  dual_heap_greedy_search_impl<false, EntityType, MemBlockType>(
-      entity, ctx, dc, entry_point, prefetch_lines,
-      std::forward<FilterFn>(filter));
 }
 
 // ============================================================================
@@ -562,9 +414,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   // Used by both the fallback candidates/filter path and the fast helpers.
   uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
   if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
-    // Contiguous flat array stride is already 64B-aligned and, when side
-    // data is split out, represents exactly the core body length.  Use it
-    // so that prefetch does not overshoot into the next vector.
+    // Contiguous flat array stride is already 64B-aligned.  Use it so that
+    // prefetch does not overshoot into the next vector.
     size_t stride = entity.vector_stride();
     if (stride > 0) {
       prefetch_lines = static_cast<uint32_t>(stride / 64);
@@ -573,27 +424,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
-    // Dispatched to one of two dual-heap helpers based on whether the entity
-    // exposes split side-data (e.g. UnitScaleInt8's sq_sum_half flat array):
-    //   - dual_heap_greedy_search_split: gather sq_sums + batch_dist_split
-    //   - dual_heap_greedy_search:       plain batch_dist
-    // The split/non-split decision is resolved once here; the inner loops
-    // contain a single straight-line kernel call.
-    bool use_split = false;
-    if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
-      use_split = dc.has_split_batch() && entity.has_side_data();
-    }
-
+    // Dispatched to dual_heap_greedy_search (plain batch_dist).
     auto run_with_filter = [&](auto &&filter) {
-      if constexpr (std::is_same_v<EntityType,
-                                   VamanaContiguousStreamerEntity>) {
-        if (use_split) {
-          dual_heap_greedy_search_split<MemBlockType>(
-              entity, ctx, dc, entry_point, prefetch_lines,
-              std::forward<decltype(filter)>(filter));
-          return;
-        }
-      }
       dual_heap_greedy_search<EntityType, MemBlockType>(
           entity, ctx, dc, entry_point, prefetch_lines,
           std::forward<decltype(filter)>(filter));
@@ -609,11 +441,10 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       run_with_filter(filter);
     }
   } else {
-    // Fast pool-based path.  Three specialized inner loops are dispatched
+    // Fast pool-based path.  Two specialized inner loops are dispatched
     // based on:
-    //   (1) contiguous + split side data  -> fast_greedy_search_split
-    //   (2) mmap/contiguous pointer read  -> fast_greedy_search
-    //   (3) BufferPool block read         -> slow_greedy_search
+    //   (1) mmap/contiguous pointer read  -> fast_greedy_search
+    //   (2) BufferPool block read         -> slow_greedy_search
     // Orthogonally, the pool type is selected at runtime:
     //   AVX2 available -> BlockHeap (amortized O(k) block-insert)
     //   otherwise      -> LinearPool (one-by-one sorted insert)
@@ -628,16 +459,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 
     if (avx2_ok) {
       auto &bpool = ctx->block_pool();
-      if constexpr (std::is_same_v<EntityType,
-                                   VamanaContiguousStreamerEntity>) {
-        if (dc.has_split_batch() && entity.has_side_data()) {
-          fast_greedy_search_split(entity, bpool, dc, topk_v, ef_v, entry_point,
-                                   prefetch_lines);
-        } else {
-          fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
-                             prefetch_lines);
-        }
-      } else if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
         fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
                            prefetch_lines);
       } else {
@@ -649,16 +471,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     } else {
       auto &lpool = ctx->pool();
 
-      if constexpr (std::is_same_v<EntityType,
-                                   VamanaContiguousStreamerEntity>) {
-        if (dc.has_split_batch() && entity.has_side_data()) {
-          fast_greedy_search_split(entity, lpool, dc, topk_v, ef_v, entry_point,
-                                   prefetch_lines);
-        } else {
-          fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
-                             prefetch_lines);
-        }
-      } else if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
         fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
                            prefetch_lines);
       } else {
