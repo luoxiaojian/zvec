@@ -110,22 +110,22 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 //
 // Two specialized inner loops, dispatched from greedy_search():
 //
-//   pool_greedy_search:       Uses LinearPool or BlockHeap for single-heap
-//                             top-k tracking. Accesses vectors via
-//                             get_vector_typed + MemBlock (same as dual-heap).
-//   dual_heap_greedy_search:  The original CandidateHeap + TopkHeap +
-//                             VisitFilter approach.
+//   fast_greedy_search:       mmap/contiguous with direct vector pointers.
+//                             Uses batch_dist on a pointer array.
+//   slow_greedy_search:       BufferPool-backed storage: must fetch MemBlock
+//                             wrappers via get_vector_typed to pin pages.
 //
-// Both paths use identical vector access behavior (get_vector_typed + MemBlock)
-// so that this commit isolates only the heap management strategy difference.
+// Both accept either BlockHeap or LinearPool as `HeapType` because the
+// two expose the same reset(n, ef, block_size) / push_block(dists, ids, n)
+// surface (LinearPool adapts via push_block and ignores the block_size hint).
 // ============================================================================
 
-// Single-heap variant: uses LinearPool/BlockHeap for candidate management.
-// Vector access uses get_vector_typed + MemBlock, identical to dual-heap.
-template <typename EntityType, typename MemBlockType, typename HeapType>
-void pool_greedy_search(const EntityType &entity, HeapType &pool,
+// mmap/contiguous variant: resolve vectors via get_vector_ptr
+// and dispatch to the classic pointer-array batch_dist.
+template <typename EntityType, typename HeapType>
+void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
-                        node_id_t entry_point) {
+                        node_id_t entry_point, uint32_t prefetch_lines) {
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
@@ -135,15 +135,12 @@ void pool_greedy_search(const EntityType &entity, HeapType &pool,
   pool.set_visited(entry_point);
   pool.push_block(&ep_dist, &entry_point, 1);
 
+  static constexpr uint32_t GRAPH_PO = 8;
+
   uint32_t buf_capacity = max_deg;
   std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<MemBlockType> neighbor_vec_blocks;
-  neighbor_vec_blocks.reserve(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
-
-  static constexpr uint32_t PREFETCH_BATCH = 2;
-  static constexpr uint32_t PREFETCH_STEP = 2;
 
   while (pool.has_next()) {
     auto current_node = pool.pop();
@@ -158,29 +155,34 @@ void pool_greedy_search(const EntityType &entity, HeapType &pool,
       neighbor_vecs.resize(buf_capacity);
     }
 
+    const uint32_t po =
+        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
     uint32_t unvisited_count = 0;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+    uint32_t i = 0;
+
+    for (; i < po; ++i) {
       node_id_t node = neighbors[i];
       if (pool.check_visited(node)) continue;
       pool.set_visited(node);
-      neighbor_ids[unvisited_count++] = node;
+      const void *vec_ptr = entity.get_vector_ptr(node);
+      const char *p = reinterpret_cast<const char *>(vec_ptr);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        _mm_prefetch(p + cl * 64, _MM_HINT_T0);
+      }
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = vec_ptr;
+      unvisited_count++;
     }
+    for (; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+      unvisited_count++;
+    }
+
     if (unvisited_count == 0) continue;
-
-    // Use get_vector_typed + MemBlock (same access as dual-heap path)
-    neighbor_vec_blocks.clear();
-    int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
-                                      neighbor_vec_blocks);
-    if (ailego_unlikely(ret != 0)) break;
-
-    for (uint32_t i = 0;
-         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
-      ailego_prefetch(neighbor_vec_blocks[i].data());
-    }
-
-    for (uint32_t i = 0; i < unvisited_count; ++i) {
-      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
-    }
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
@@ -200,12 +202,12 @@ void copy_pool_to_topk(const HeapType &pool, TopkHeap &topk_heap) {
 // dual_heap_greedy_search: shared core for the fallback dual-heap path.
 //
 // Maintains a candidate min-heap + topk heap + VisitFilter.  Uses plain
-// batch_dist via get_vector_typed + MemBlock.
+// batch_dist.
 // ============================================================================
 template <typename EntityType, typename MemBlockType, typename FilterFn>
 void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              VamanaDistCalculator &dc, node_id_t entry_point,
-                             FilterFn &&filter) {
+                             uint32_t prefetch_lines, FilterFn &&filter) {
   static constexpr uint32_t PREFETCH_BATCH = 2;
   static constexpr uint32_t PREFETCH_STEP = 2;
 
@@ -219,10 +221,17 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
   VisitFilter &visit = ctx->visit_filter();
   CandidateHeap &candidates = ctx->candidates();
   auto &topk_heap = ctx->topk_heap();
+  (void)prefetch_lines;  // reserved for future get_vector_ptr specialization
 
   candidates.clear();
   visit.clear();
 
+  // Initialize with entry point using batch_dist (single-element batch).
+  // We must NOT use dc.dist(entry_point) here because dist() calls
+  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
+  // expects two raw int8 inputs), but query_ has been preprocessed by
+  // reset_query (+128 shift to uint8). batch_dist() correctly calls
+  // batch_distance_() which expects the preprocessed uint8 query.
   dist_t entry_dist = dc.batch_dist(entry_point);
   if (ailego_unlikely(dc.error())) {
     return;
@@ -238,15 +247,19 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
     node_id_t current_node = top->first;
     dist_t current_dist = top->second;
 
+    // Early termination: if the closest candidate is worse than the worst
+    // result in a full topk heap, we won't find anything better.
     if (topk_heap.full() && current_dist > topk_heap[0].second) {
       break;
     }
 
     candidates.pop();
 
+    // Expand neighbors using typed access (no virtual dispatch)
     const auto neighbors = entity.get_neighbors_typed(current_node);
     ailego_prefetch(neighbors.data);
 
+    // Resize buffers if this node has more neighbors than expected
     if (neighbors.size() > buf_capacity) {
       buf_capacity = neighbors.size();
       neighbor_ids.resize(buf_capacity);
@@ -254,6 +267,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
       neighbor_vecs.resize(buf_capacity);
     }
 
+    // Collect unvisited neighbors (reuse pre-allocated buffer)
     uint32_t unvisited_count = 0;
     for (uint32_t i = 0; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
@@ -263,6 +277,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
     }
     if (unvisited_count == 0) continue;
 
+    // Batch fetch vectors using typed access (reuse pre-allocated buffer)
     neighbor_vec_blocks.clear();
     int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
                                       neighbor_vec_blocks);
@@ -273,6 +288,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
       ailego_prefetch(neighbor_vec_blocks[i].data());
     }
 
+    // Batch distance computation (reuse pre-allocated buffers).
     for (uint32_t i = 0; i < unvisited_count; ++i) {
       neighbor_vecs[i] = neighbor_vec_blocks[i].data();
     }
@@ -294,8 +310,11 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
 // ============================================================================
 // greedy_search: Beam search from entry_point.
 //
-// Dispatches to pool_greedy_search (single-heap) or dual_heap_greedy_search
-// (dual-heap) based on use_pool flag and filter presence.
+// Maintains a candidate min-heap (ordered by distance) and a visited set.
+// At each step, pops the closest unvisited candidate, expands its neighbors,
+// and adds unvisited neighbors to both the candidate heap and the topk heap.
+// Stops when the closest candidate is farther than the worst in topk, or
+// when the scan limit is reached.
 // ============================================================================
 template <typename EntityType>
 void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
@@ -307,11 +326,24 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
+  // Number of cache lines per vector (e.g. 2 for dim=128).
+  // Used by both the fallback candidates/filter path and the fast helpers.
+  uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
+  if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
+    // Contiguous flat array stride is already 64B-aligned.  Use it so that
+    // prefetch does not overshoot into the next vector.
+    size_t stride = entity.vector_stride();
+    if (stride > 0) {
+      prefetch_lines = static_cast<uint32_t>(stride / 64);
+    }
+  }
+
   if (!use_pool || index_filter.is_valid()) {
-    // Fallback path: add_node (use_pool=false) or filtered search.
+    // Fallback path used by add_node (use_pool=false) and filtered search.
+    // Dispatched to dual_heap_greedy_search (plain batch_dist).
     auto run_with_filter = [&](auto &&filter) {
       dual_heap_greedy_search<EntityType, MemBlockType>(
-          entity, ctx, dc, entry_point,
+          entity, ctx, dc, entry_point, prefetch_lines,
           std::forward<decltype(filter)>(filter));
     };
 
@@ -325,24 +357,33 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       run_with_filter(filter);
     }
   } else {
-    // Pool-based path: single-heap for unfiltered search.
-    // BlockHeap (AVX2) or LinearPool (scalar) selected at runtime.
-    const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
-    const uint32_t ef_v = ctx->ef();
-    const bool avx2_ok =
-        zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-    auto &topk_heap = ctx->topk_heap();
+    // Fast pool-based path for mmap/contiguous entities that support
+    // direct pointer access. BlockHeap (AVX2) or LinearPool (scalar)
+    // are used for top-k tracking. BufferPool entities fall back to
+    // dual_heap_greedy_search since they lack direct pointer access.
+    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
+      const uint32_t ef_v = ctx->ef();
+      const bool avx2_ok =
+          zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+      auto &topk_heap = ctx->topk_heap();
 
-    if (avx2_ok) {
-      auto &bpool = ctx->block_pool();
-      pool_greedy_search<EntityType, MemBlockType>(entity, bpool, dc, topk_v,
-                                                   ef_v, entry_point);
-      copy_pool_to_topk(bpool, topk_heap);
+      if (avx2_ok) {
+        auto &bpool = ctx->block_pool();
+        fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
+        copy_pool_to_topk(bpool, topk_heap);
+      } else {
+        auto &lpool = ctx->pool();
+        fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
+        copy_pool_to_topk(lpool, topk_heap);
+      }
     } else {
-      auto &lpool = ctx->pool();
-      pool_greedy_search<EntityType, MemBlockType>(entity, lpool, dc, topk_v,
-                                                   ef_v, entry_point);
-      copy_pool_to_topk(lpool, topk_heap);
+      // BufferPool entities: fallback to dual-heap path.
+      auto filter = [](node_id_t) { return false; };
+      dual_heap_greedy_search<EntityType, MemBlockType>(
+          entity, ctx, dc, entry_point, prefetch_lines, filter);
     }
   }
 }
