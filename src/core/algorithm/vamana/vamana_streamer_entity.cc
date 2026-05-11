@@ -17,6 +17,7 @@
 #endif
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_stats.h>
 
 namespace zvec {
@@ -326,6 +327,124 @@ void VamanaStreamerEntity::update_entry_point(node_id_t ep) {
   flush_header();
 }
 
+// ============================================================================
+// calculate_medoid: Compute the medoid (entry point) following DiskANN's
+// standard approach:
+//   1. Compute the centroid (component-wise mean) of all vectors in float
+//   space.
+//   2. Find the data point closest to this centroid using squared L2 distance
+//      in float space.
+//   3. Return that point's node ID as the medoid.
+//
+// Called at dump time to set the optimal entry point for the persisted index.
+// data_type uses IndexMeta::DataType values: DT_FP16=1, DT_FP32=2, DT_INT8=4.
+// ============================================================================
+node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
+                                                 uint32_t data_type) {
+  uint32_t n = doc_cnt();
+  if (n == 0) return kInvalidNodeId;
+  if (dimension == 0) return kInvalidNodeId;
+
+  // data_type constants matching IndexMeta::DataType
+  constexpr uint32_t DT_FP16 = 1;
+  constexpr uint32_t DT_FP32 = 2;
+  constexpr uint32_t DT_INT8 = 4;
+
+  if (data_type != DT_FP32 && data_type != DT_INT8 && data_type != DT_FP16) {
+    LOG_WARN("calculate_medoid: unsupported data_type=%u, skip", data_type);
+    return entry_point();
+  }
+
+  // Step 1: Compute centroid (mean) of all vectors in float space.
+  std::vector<float> centroid(dimension, 0.0f);
+  uint32_t valid_count = 0;
+
+  for (node_id_t i = 0; i < n; ++i) {
+    if (get_key(i) == kInvalidKey) continue;
+    const void *vec = get_vector(i);
+    if (vec == nullptr) continue;
+
+    switch (data_type) {
+      case DT_FP32: {
+        const float *fv = static_cast<const float *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) centroid[d] += fv[d];
+        break;
+      }
+      case DT_INT8: {
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d)
+          centroid[d] += static_cast<float>(iv[d]);
+        break;
+      }
+      case DT_FP16: {
+        const uint16_t *hv = static_cast<const uint16_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d)
+          centroid[d] += ailego::FloatHelper::ToFP32(hv[d]);
+        break;
+      }
+    }
+    valid_count++;
+  }
+
+  if (valid_count == 0) return kInvalidNodeId;
+  if (valid_count == 1) {
+    for (node_id_t i = 0; i < n; ++i) {
+      if (get_key(i) != kInvalidKey && get_vector(i) != nullptr) return i;
+    }
+    return kInvalidNodeId;
+  }
+
+  float inv = 1.0f / static_cast<float>(valid_count);
+  for (uint32_t d = 0; d < dimension; ++d) centroid[d] *= inv;
+
+  // Step 2: Find the data point closest to the centroid (squared L2).
+  node_id_t medoid = kInvalidNodeId;
+  float min_dist = std::numeric_limits<float>::max();
+
+  for (node_id_t i = 0; i < n; ++i) {
+    if (get_key(i) == kInvalidKey) continue;
+    const void *vec = get_vector(i);
+    if (vec == nullptr) continue;
+
+    float dist = 0.0f;
+    switch (data_type) {
+      case DT_FP32: {
+        const float *fv = static_cast<const float *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = fv[d] - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+      case DT_INT8: {
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = static_cast<float>(iv[d]) - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+      case DT_FP16: {
+        const uint16_t *hv = static_cast<const uint16_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = ailego::FloatHelper::ToFP32(hv[d]) - centroid[d];
+          dist += diff * diff;
+        }
+        break;
+      }
+    }
+
+    if (dist < min_dist) {
+      min_dist = dist;
+      medoid = i;
+    }
+  }
+
+  LOG_INFO("Calculated medoid: node_id=%u, min_sq_dist=%.4f, valid_docs=%u",
+           medoid, min_dist, valid_count);
+  return medoid;
+}
+
 int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
                                uint64_t max_index_size, bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -534,8 +653,12 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   }
 
   // Share contiguous memory with the clone (zero-copy)
-  entity->node_memory_ = node_memory_;
-  entity->node_base_ = node_base_;
+  entity->vector_memory_ = vector_memory_;
+  entity->vector_base_ = vector_base_;
+  entity->vector_stride_ = vector_stride_;
+  entity->graph_memory_ = graph_memory_;
+  entity->graph_base_ = graph_base_;
+  entity->graph_stride_ = graph_stride_;
 
   return VamanaEntity::Pointer(entity);
 }
@@ -581,21 +704,51 @@ char *VamanaContiguousStreamerEntity::allocate_contiguous(size_t size) {
 }
 
 int VamanaContiguousStreamerEntity::build_contiguous_memory() {
-  node_memory_.reset();
-  node_base_ = nullptr;
+  vector_memory_.reset();
+  vector_base_ = nullptr;
+  vector_stride_ = 0;
+  graph_memory_.reset();
+  graph_base_ = nullptr;
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
 
   const size_t per_node = node_size();
-  const size_t total_node_data = static_cast<size_t>(total_docs) * per_node;
-  size_t node_memory_size = AlignHugePageSize(total_node_data);
-  char *raw_node = allocate_contiguous(node_memory_size);
-  if (!raw_node) return IndexError_Runtime;
-  node_memory_.reset(raw_node, ContiguousDeleter{node_memory_size});
-  node_base_ = raw_node;
+  const size_t vec_size = vector_size();
 
-  // Copy node data from chunks into contiguous memory
+  // Pad per-vector stride up to kVectorAlignment (64B) so every vector
+  // starts on a cache-line boundary.
+  vector_stride_ =
+      (vec_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
+  // graph_stride = key + neighbors (everything except vector)
+  graph_stride_ = sizeof(key_t) + neighbors_size();
+
+  // Allocate flat vector array (stride = vector_stride_, padded for 64B)
+  const size_t total_vec_data =
+      static_cast<size_t>(total_docs) * vector_stride_;
+  size_t vector_memory_size = AlignHugePageSize(total_vec_data);
+  char *raw_vec = allocate_contiguous(vector_memory_size);
+  if (!raw_vec) return IndexError_Runtime;
+  vector_memory_.reset(raw_vec, ContiguousDeleter{vector_memory_size});
+  vector_base_ = raw_vec;
+
+  // Allocate graph array (stride = sizeof(key_t) + neighbors_size)
+  const size_t total_graph_data =
+      static_cast<size_t>(total_docs) * graph_stride_;
+  size_t graph_memory_size = AlignHugePageSize(total_graph_data);
+  char *raw_graph = allocate_contiguous(graph_memory_size);
+  if (!raw_graph) {
+    vector_memory_.reset();
+    vector_base_ = nullptr;
+    vector_stride_ = 0;
+    return IndexError_Runtime;
+  }
+  graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
+  graph_base_ = raw_graph;
+
+  // Split node data from chunks into vector / graph arrays.
+  // Original node layout: [vector (vec_size) | key (8B) | neighbors]
+  // Padding bytes in vector_base_ are left zero (anon mmap is zero-filled).
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
@@ -607,14 +760,27 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
     uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
 
     const char *src = static_cast<const char *>(chunk_data);
-    char *dst = node_base_ + static_cast<size_t>(base_id) * per_node;
-    std::memcpy(dst, src, static_cast<size_t>(count_in_chunk) * per_node);
+    for (uint32_t i = 0; i < count_in_chunk; ++i) {
+      const char *node_src = src + static_cast<size_t>(i) * per_node;
+      size_t global_id = static_cast<size_t>(base_id + i);
+
+      // Copy vector to flat vector array at padded stride
+      std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
+                  vec_size);
+
+      // Copy key + neighbors to graph array
+      std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
+                  graph_stride_);
+    }
   }
 
   LOG_INFO(
-      "Built Vamana contiguous memory: node_size=%zu total_docs=%u "
-      "node_chunks=%zu",
-      node_memory_size, total_docs, chunks.size());
+      "Built Vamana contiguous memory: "
+      "vector_mem=%zu graph_mem=%zu total_docs=%u "
+      "node_chunks=%zu vector_size=%zu vector_stride=%zu "
+      "(cache-line aligned to %zuB)",
+      vector_memory_size, graph_memory_size, total_docs, chunks.size(),
+      vec_size, vector_stride_, kVectorAlignment);
 
   return 0;
 }
@@ -767,123 +933,6 @@ void VamanaStreamerEntity::set_neighbor_dist(node_id_t id, uint32_t idx,
 
   uint32_t offset = loc.second + idx * sizeof(dist_t);
   dist_chunks_[loc.first]->write(offset, &dist, sizeof(dist_t));
-}
-
-// calculate_medoid: Compute the medoid (entry point) following DiskANN's
-// standard approach:
-//   1. Compute the centroid (component-wise mean) of all vectors in float
-//   space.
-//   2. Find the data point closest to this centroid using squared L2 distance
-//      in float space.
-//   3. Return that point's node ID as the medoid.
-//
-// Called at dump time to set the optimal entry point for the persisted index.
-// data_type uses IndexMeta::DataType values: DT_FP16=1, DT_FP32=2, DT_INT8=4.
-// ============================================================================
-node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
-                                                 uint32_t data_type) {
-  uint32_t n = doc_cnt();
-  if (n == 0) return kInvalidNodeId;
-  if (dimension == 0) return kInvalidNodeId;
-
-  // data_type constants matching IndexMeta::DataType
-  constexpr uint32_t DT_FP16 = 1;
-  constexpr uint32_t DT_FP32 = 2;
-  constexpr uint32_t DT_INT8 = 4;
-
-  if (data_type != DT_FP32 && data_type != DT_INT8 && data_type != DT_FP16) {
-    LOG_WARN("calculate_medoid: unsupported data_type=%u, skip", data_type);
-    return entry_point();
-  }
-
-  // Step 1: Compute centroid (mean) of all vectors in float space.
-  std::vector<float> centroid(dimension, 0.0f);
-  uint32_t valid_count = 0;
-
-  for (node_id_t i = 0; i < n; ++i) {
-    if (get_key(i) == kInvalidKey) continue;
-    const void *vec = get_vector(i);
-    if (vec == nullptr) continue;
-
-    switch (data_type) {
-      case DT_FP32: {
-        const float *fv = static_cast<const float *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d) centroid[d] += fv[d];
-        break;
-      }
-      case DT_INT8: {
-        const int8_t *iv = static_cast<const int8_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d)
-          centroid[d] += static_cast<float>(iv[d]);
-        break;
-      }
-      case DT_FP16: {
-        const uint16_t *hv = static_cast<const uint16_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d)
-          centroid[d] += ailego::FloatHelper::ToFP32(hv[d]);
-        break;
-      }
-    }
-    valid_count++;
-  }
-
-  if (valid_count == 0) return kInvalidNodeId;
-  if (valid_count == 1) {
-    for (node_id_t i = 0; i < n; ++i) {
-      if (get_key(i) != kInvalidKey && get_vector(i) != nullptr) return i;
-    }
-    return kInvalidNodeId;
-  }
-
-  float inv = 1.0f / static_cast<float>(valid_count);
-  for (uint32_t d = 0; d < dimension; ++d) centroid[d] *= inv;
-
-  // Step 2: Find the data point closest to the centroid (squared L2).
-  node_id_t medoid = kInvalidNodeId;
-  float min_dist = std::numeric_limits<float>::max();
-
-  for (node_id_t i = 0; i < n; ++i) {
-    if (get_key(i) == kInvalidKey) continue;
-    const void *vec = get_vector(i);
-    if (vec == nullptr) continue;
-
-    float dist = 0.0f;
-    switch (data_type) {
-      case DT_FP32: {
-        const float *fv = static_cast<const float *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d) {
-          float diff = fv[d] - centroid[d];
-          dist += diff * diff;
-        }
-        break;
-      }
-      case DT_INT8: {
-        const int8_t *iv = static_cast<const int8_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d) {
-          float diff = static_cast<float>(iv[d]) - centroid[d];
-          dist += diff * diff;
-        }
-        break;
-      }
-      case DT_FP16: {
-        const uint16_t *hv = static_cast<const uint16_t *>(vec);
-        for (uint32_t d = 0; d < dimension; ++d) {
-          float diff = ailego::FloatHelper::ToFP32(hv[d]) - centroid[d];
-          dist += diff * diff;
-        }
-        break;
-      }
-    }
-
-    if (dist < min_dist) {
-      min_dist = dist;
-      medoid = i;
-    }
-  }
-
-  LOG_INFO("Calculated medoid: node_id=%u, min_sq_dist=%.4f, valid_docs=%u",
-           medoid, min_dist, valid_count);
-  return medoid;
 }
 
 }  // namespace core
