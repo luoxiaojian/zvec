@@ -18,7 +18,6 @@
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
-#include "avx512_vnni/unit_scale_int8/squared_euclidean.h"
 
 namespace zvec::turbo {
 
@@ -39,13 +38,6 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
         if (metric_type == MetricType::kSquaredEuclidean) {
           return avx512_vnni::uniform_squared_euclidean_int8_distance;
-        }
-      }
-    }
-    if (quantize_type == QuantizeType::kUnitScale) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
-        if (metric_type == MetricType::kSquaredEuclidean) {
-          return avx512_vnni::unit_scale_squared_euclidean_int8_distance;
         }
       }
     }
@@ -74,13 +66,6 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
         }
       }
     }
-    if (quantize_type == QuantizeType::kUnitScale) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
-        if (metric_type == MetricType::kSquaredEuclidean) {
-          return avx512_vnni::unit_scale_squared_euclidean_int8_batch_distance;
-        }
-      }
-    }
   }
   return nullptr;
 }
@@ -99,14 +84,6 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
         }
       }
     }
-    if (quantize_type == QuantizeType::kUnitScale) {
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
-        if (metric_type == MetricType::kSquaredEuclidean) {
-          return avx512_vnni::
-              unit_scale_squared_euclidean_int8_query_preprocess;
-        }
-      }
-    }
   }
   return nullptr;
 }
@@ -118,44 +95,6 @@ QuantizeFunc get_quantize_func(DataType data_type, QuantizeType quantize_type) {
     // directory and is compiled with the same march flag.
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
       return avx512_vnni::uniform_int8_quantize;
-    }
-  }
-  return nullptr;
-}
-
-DistanceFunc get_pairwise_distance_func(MetricType metric_type,
-                                        DataType data_type,
-                                        QuantizeType quantize_type) {
-  if (data_type == DataType::kInt8 &&
-      quantize_type == QuantizeType::kUnitScale &&
-      metric_type == MetricType::kSquaredEuclidean) {
-    // Use the symmetric int8×int8 L2 kernel (kUniform) with dim-4 adjustment
-    // to skip the sq_sum_half tail.
-    auto kernel =
-        get_distance_func(metric_type, data_type, QuantizeType::kUniform);
-    if (kernel) {
-      return [kernel](const void *a, const void *b, size_t dim, float *out) {
-        kernel(a, b, dim > sizeof(float) ? dim - sizeof(float) : dim, out);
-      };
-    }
-  }
-  return nullptr;
-}
-
-BatchDistanceFunc get_pairwise_batch_distance_func(MetricType metric_type,
-                                                   DataType data_type,
-                                                   QuantizeType quantize_type) {
-  if (data_type == DataType::kInt8 &&
-      quantize_type == QuantizeType::kUnitScale &&
-      metric_type == MetricType::kSquaredEuclidean) {
-    auto kernel =
-        get_batch_distance_func(metric_type, data_type, QuantizeType::kUniform);
-    if (kernel) {
-      return [kernel](const void **vectors, const void *q, size_t num,
-                      size_t dim, float *out) {
-        kernel(vectors, q, num, dim > sizeof(float) ? dim - sizeof(float) : dim,
-               out);
-      };
     }
   }
   return nullptr;

@@ -120,10 +120,6 @@ struct QuantizerParam : public SerializableBase {
   int num_subquantizers = 8;  // M
   int num_bits = 8;           // bits per subquantizer
 
-  // For kUniformInt8: "auto" (default) detects unit-scale conditions and
-  // switches transparently; "uniform" forces the standard uniform path.
-  std::string mode = "auto";
-
   // Constructors
   // QuantizerParam() = default;
   QuantizerParam(QuantizerType t = QuantizerType::kNone, int subquantizers = 8,

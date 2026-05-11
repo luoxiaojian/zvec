@@ -47,7 +47,6 @@ enum class DataType {
 enum class QuantizeType {
   kDefault,
   kUniform,
-  kUnitScale,
 };
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
@@ -60,17 +59,6 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
                                               DataType data_type,
                                               QuantizeType quantize_type);
-
-// Pairwise (data-to-data) distance: symmetric kernel for inter-candidate
-// distance computation (e.g., robust_prune). Does not require query
-// preprocessing.
-DistanceFunc get_pairwise_distance_func(MetricType metric_type,
-                                        DataType data_type,
-                                        QuantizeType quantize_type);
-
-BatchDistanceFunc get_pairwise_batch_distance_func(MetricType metric_type,
-                                                   DataType data_type,
-                                                   QuantizeType quantize_type);
 
 // Returns a vectorized quantize kernel for (data_type, quantize_type), or
 // nullptr if no SIMD implementation is available on the current CPU

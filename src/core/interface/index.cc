@@ -174,10 +174,6 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
           return 0;
         case QuantizerType::kUniformInt8:
           converter_name = "UniformInt8StreamingConverter";
-          if (param.mode == "uniform") {
-            converter_params.set("uniform_int8.converter.mode",
-                                 std::string("uniform"));
-          }
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");

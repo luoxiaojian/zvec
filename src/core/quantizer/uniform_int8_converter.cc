@@ -31,13 +31,6 @@ namespace core {
  * this converter computes a single global scale/bias from the entire dataset.
  * All vectors share the same quantization parameters, enabling direct int8
  * L2 distance computation without per-vector reconstruction.
- *
- * Unit-scale fast-path: If the training data is purely non-negative integers
- * that already fit within [0, 255] (e.g. SIFT-like datasets), this converter
- * automatically delegates to `UnitScaleInt8StreamingConverter`, which uses
- * scale=1 and an asymmetric dpbusd-based distance kernel for higher QPS.
- * The user only needs to select `kUniformInt8`; the best path is chosen
- * transparently.
  */
 class UniformInt8StreamingConverter : public IndexConverter {
  public:
@@ -53,20 +46,12 @@ class UniformInt8StreamingConverter : public IndexConverter {
   //! Initialize Converter
   int init(const IndexMeta &index_meta, const ailego::Params &params) override {
     meta_ = index_meta;
-    original_meta_ = index_meta;
-    original_params_ = params;
     original_dimension_ = index_meta.dimension();
 
     // Reset stats so a re-init() call does not leak counters from a
     // previous lifecycle.
     *stats_.mutable_trained_count() = 0;
     *stats_.mutable_transformed_count() = 0;
-    fast_path_delegate_.reset();
-
-    // Read mode: "auto" (default) or "uniform" (force standard path).
-    std::string mode;
-    params.get(UNIFORM_INT8_CONVERTER_MODE, &mode);
-    force_uniform_ = (mode == "uniform");
 
     // Store converter info in meta
     meta_.set_converter("UniformInt8StreamingConverter", 0, params);
@@ -92,11 +77,6 @@ class UniformInt8StreamingConverter : public IndexConverter {
   int cleanup(void) override {
     *stats_.mutable_trained_count() = 0;
     *stats_.mutable_transformed_count() = 0;
-    if (fast_path_delegate_) {
-      int ret = fast_path_delegate_->cleanup();
-      fast_path_delegate_.reset();
-      return ret;
-    }
     return 0;
   }
 
@@ -147,46 +127,6 @@ class UniformInt8StreamingConverter : public IndexConverter {
       return IndexError_InvalidArgument;
     }
 
-    // Unit-scale fast-path: when the data is non-negative integers in
-    // [0, 255], delegate to UnitScaleInt8StreamingConverter for higher QPS
-    // via asymmetric dpbusd kernel. Note the unit-scale query path clamps
-    // to [0, 255], so negative values are not supported on that path even
-    // though Uniform could encode them losslessly via
-    // `scale=1, bias=-global_min-127`.
-    if (!force_uniform_ && all_integer && global_min >= 0.0f &&
-        global_max <= 255.0f) {
-      auto delegate =
-          IndexFactory::CreateConverter("UnitScaleInt8StreamingConverter");
-      if (delegate) {
-        int ret = delegate->init(original_meta_, original_params_);
-        if (ret != 0) {
-          LOG_ERROR(
-              "UniformInt8StreamingConverter: unit-scale delegate init "
-              "failed (ret=%d), falling back to uniform path",
-              ret);
-        } else {
-          ret = delegate->train(holder);
-          if (ret != 0) {
-            LOG_ERROR(
-                "UniformInt8StreamingConverter: unit-scale delegate train "
-                "failed (ret=%d), falling back to uniform path",
-                ret);
-          } else {
-            LOG_INFO(
-                "UniformInt8StreamingConverter: switched to unit-scale "
-                "fast-path (global_min=%f, global_max=%f, all_integer)",
-                global_min, global_max);
-            fast_path_delegate_ = std::move(delegate);
-            // Copy stats from delegate so our own trained_count mirrors it.
-            *stats_.mutable_trained_count() =
-                fast_path_delegate_->stats().trained_count();
-            stats_.set_trained_costtime(timer.milli_seconds());
-            return 0;
-          }
-        }
-      }
-    }
-
     // Compute global scale and bias:
     //   forward:  int8 = clip(round(float * scale + bias), 0, 127)
     //   inverse:  float ≈ (int8 - bias) / scale
@@ -229,12 +169,6 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
   //! Transform: wrap holder to produce quantized int8 data
   int transform(IndexHolder::Pointer holder) override {
-    if (fast_path_delegate_) {
-      int ret = fast_path_delegate_->transform(holder);
-      *stats_.mutable_transformed_count() =
-          fast_path_delegate_->stats().transformed_count();
-      return ret;
-    }
     if (holder->data_type() != IndexMeta::DataType::DT_FP32 ||
         holder->dimension() != original_dimension_) {
       return IndexError_Mismatch;
@@ -248,9 +182,6 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
   //! Dump index into storage
   int dump(const IndexDumper::Pointer &dumper) override {
-    if (fast_path_delegate_) {
-      return fast_path_delegate_->dump(dumper);
-    }
     (void)dumper;
     return 0;
   }
@@ -262,17 +193,11 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
   //! Retrieve a holder as result
   IndexHolder::Pointer result(void) const override {
-    if (fast_path_delegate_) {
-      return fast_path_delegate_->result();
-    }
     return holder_;
   }
 
   //! Retrieve Index Meta
   const IndexMeta &meta(void) const override {
-    if (fast_path_delegate_) {
-      return fast_path_delegate_->meta();
-    }
     return meta_;
   }
 
@@ -384,18 +309,11 @@ class UniformInt8StreamingConverter : public IndexConverter {
 
   //! Members
   IndexMeta meta_{};
-  IndexMeta original_meta_{};
-  ailego::Params original_params_{};
   Stats stats_{};
   IndexHolder::Pointer holder_{};
-  //! Non-null when the unit-scale fast-path is selected during train(); all
-  //! subsequent converter methods are forwarded to it.
-  IndexConverter::Pointer fast_path_delegate_{};
   size_t original_dimension_{0};
   float scale_{0.0f};
   float bias_{0.0f};
-  //! When true, disable unit-scale auto-switch (mode="uniform").
-  bool force_uniform_{false};
 };
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformInt8StreamingConverter,

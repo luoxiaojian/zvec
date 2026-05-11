@@ -640,10 +640,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
   //! Direct vector pointer from flat vector array.
   //! Stride is padded up to kVectorAlignment (64B) to preserve cache-line
-  //! alignment even when vector_size is not a multiple of 64 (e.g. unit-scale
-  //! int8 on SIFT stores 128B int8 + 4B extra field = 132B per vector, which
-  //! would otherwise straddle cache lines). The padding is purely in-memory
-  //! and does NOT affect the on-disk index file layout.
+  //! alignment even when vector_size is not a multiple of 64.  The padding is
+  //! purely in-memory and does NOT affect the on-disk index file layout.
   inline __attribute__((always_inline)) const void *get_vector_ptr(
       node_id_t id) const {
     if (ailego_likely(vector_base_ != nullptr)) {
