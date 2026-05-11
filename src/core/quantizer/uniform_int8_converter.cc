@@ -267,8 +267,8 @@ class UniformInt8StreamingConverter : public IndexConverter {
           original_dim_(original_dim),
           scale_(scale),
           bias_(bias),
-          quantize_func_(turbo::get_quantize_func(
-              turbo::DataType::kInt8, turbo::QuantizeType::kUniform)) {}
+          quantize_func_(
+              turbo::get_uniform_quantize_func(turbo::DataType::kInt8)) {}
 
     size_t count(void) const override {
       return front_->count();
@@ -304,7 +304,7 @@ class UniformInt8StreamingConverter : public IndexConverter {
     float scale_{0.0f};
     float bias_{0.0f};
     //! Resolved once at Holder construction; nullptr → use scalar fallback.
-    turbo::QuantizeFunc quantize_func_{nullptr};
+    turbo::UniformQuantizeFunc quantize_func_{nullptr};
   };
 
   //! Members

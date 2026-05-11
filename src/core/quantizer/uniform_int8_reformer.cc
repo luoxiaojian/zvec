@@ -72,8 +72,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
 
     // Resolve the SIMD quantize kernel once; falls back to scalar when the
     // current CPU lacks AVX-512 (turbo returns nullptr on those builds).
-    quantize_func_ = turbo::get_quantize_func(turbo::DataType::kInt8,
-                                              turbo::QuantizeType::kUniform);
+    quantize_func_ = turbo::get_uniform_quantize_func(turbo::DataType::kInt8);
 
     LOG_INFO("UniformInt8StreamingReformer init: scale=%f, bias=%f, simd=%s",
              scale_, bias_, quantize_func_ != nullptr ? "avx512" : "scalar");
@@ -224,7 +223,7 @@ class UniformInt8StreamingReformer : public IndexReformer {
   float bias_{0.0f};
   float scale_reciprocal_sq_{1.0f};
   bool initialized_{false};
-  turbo::QuantizeFunc quantize_func_{nullptr};
+  turbo::UniformQuantizeFunc quantize_func_{nullptr};
 };
 
 INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformInt8StreamingReformer,

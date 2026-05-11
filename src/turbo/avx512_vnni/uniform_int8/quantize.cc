@@ -74,8 +74,8 @@ namespace zvec::turbo::avx512_vnni {
 void uniform_int8_quantize(const float * /*in*/, std::size_t /*dim*/,
                            float /*scale*/, float /*bias*/,
                            std::int8_t * /*out*/) {
-  // Intentionally empty; turbo::get_quantize_func will return nullptr on
-  // CPUs without AVX-512 support and the caller will use its scalar path.
+  // Intentionally empty; turbo::get_uniform_quantize_func will return nullptr
+  // on CPUs without AVX-512 support and the caller will use its scalar path.
 }
 
 }  // namespace zvec::turbo::avx512_vnni

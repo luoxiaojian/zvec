@@ -88,8 +88,8 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
   return nullptr;
 }
 
-QuantizeFunc get_quantize_func(DataType data_type, QuantizeType quantize_type) {
-  if (data_type == DataType::kInt8 && quantize_type == QuantizeType::kUniform) {
+UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
+  if (data_type == DataType::kInt8) {
     // Quantize uses AVX-512F (no VNNI required), but we gate on the same
     // AVX512_VNNI flag for now since the kernel lives in the avx512_vnni
     // directory and is compiled with the same march flag.
