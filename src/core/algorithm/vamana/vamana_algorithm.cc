@@ -123,6 +123,423 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 }
 
 // ============================================================================
+// greedy_search helper templates
+//
+// Three specialized inner loops, dispatched from greedy_search():
+//
+//   fast_greedy_search_split: contiguous entity + split layout (side scalar
+//                             like sq_sum_half stored in a flat side array).
+//                             Gathers sq_sums and calls batch_dist_split.
+//   fast_greedy_search:       mmap/contiguous with direct vector pointers.
+//                             Uses batch_dist on a pointer array.
+//   slow_greedy_search:       BufferPool-backed storage: must fetch MemBlock
+//                             wrappers via get_vector_typed to pin pages.
+//
+// All three accept either BlockHeap or LinearPool as `HeapType` because the
+// two expose the same reset(n, ef, block_size) / push_block(dists, ids, n)
+// surface (LinearPool adapts via push_block and ignores the block_size hint).
+// ============================================================================
+
+// contiguous + split-layout variant: gather per-vector sq_sums from the
+// flat side-data array and dispatch to batch_dist_split.
+template <typename HeapType>
+void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
+                              HeapType &pool, VamanaDistCalculator &dc,
+                              uint32_t topk, uint32_t ef, node_id_t entry_point,
+                              uint32_t prefetch_lines) {
+  const uint32_t max_deg = entity.max_degree();
+  const uint32_t cap = std::max(topk, ef);
+  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
+             static_cast<int32_t>(max_deg));
+
+  dist_t ep_dist = dc.batch_dist(entry_point);
+  pool.set_visited(entry_point);
+  pool.push_block(&ep_dist, &entry_point, 1);
+
+  static constexpr uint32_t GRAPH_PO = 8;
+
+  uint32_t buf_capacity = max_deg;
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+  std::vector<float> sq_sums(buf_capacity);
+
+  const size_t side_stride = entity.side_data_stride();
+  const char *side_base = entity.side_data_base();
+
+  while (pool.has_next()) {
+    auto current_node = pool.pop();
+
+    const auto neighbors = entity.get_neighbors_typed(current_node);
+    ailego_prefetch(neighbors.data);
+
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+      sq_sums.resize(buf_capacity);
+    }
+
+    const uint32_t po =
+        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+    uint32_t unvisited_count = 0;
+    uint32_t i = 0;
+
+    for (; i < po; ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      const void *vec_ptr = entity.get_vector_ptr(node);
+      const char *p = reinterpret_cast<const char *>(vec_ptr);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        _mm_prefetch(p + cl * 64, _MM_HINT_T0);
+      }
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = vec_ptr;
+      sq_sums[unvisited_count] =
+          *reinterpret_cast<const float *>(side_base + side_stride * node);
+      unvisited_count++;
+    }
+    for (; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+      sq_sums[unvisited_count] =
+          *reinterpret_cast<const float *>(side_base + side_stride * node);
+      unvisited_count++;
+    }
+
+    if (unvisited_count == 0) continue;
+    dc.batch_dist_split(neighbor_vecs.data(), sq_sums.data(), unvisited_count,
+                        dists.data());
+    pool.push_block(dists.data(), neighbor_ids.data(),
+                    static_cast<int32_t>(unvisited_count));
+  }
+}
+
+// mmap/contiguous variant (no split): resolve vectors via get_vector_ptr
+// and dispatch to the classic pointer-array batch_dist.
+template <typename EntityType, typename HeapType>
+void fast_greedy_search(const EntityType &entity, HeapType &pool,
+                        VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
+                        node_id_t entry_point, uint32_t prefetch_lines) {
+  const uint32_t max_deg = entity.max_degree();
+  const uint32_t cap = std::max(topk, ef);
+  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
+             static_cast<int32_t>(max_deg));
+
+  dist_t ep_dist = dc.batch_dist(entry_point);
+  pool.set_visited(entry_point);
+  pool.push_block(&ep_dist, &entry_point, 1);
+
+  static constexpr uint32_t GRAPH_PO = 8;
+
+  uint32_t buf_capacity = max_deg;
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+
+  while (pool.has_next()) {
+    auto current_node = pool.pop();
+
+    const auto neighbors = entity.get_neighbors_typed(current_node);
+    ailego_prefetch(neighbors.data);
+
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+    }
+
+    const uint32_t po =
+        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+    uint32_t unvisited_count = 0;
+    uint32_t i = 0;
+
+    for (; i < po; ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      const void *vec_ptr = entity.get_vector_ptr(node);
+      const char *p = reinterpret_cast<const char *>(vec_ptr);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        _mm_prefetch(p + cl * 64, _MM_HINT_T0);
+      }
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = vec_ptr;
+      unvisited_count++;
+    }
+    for (; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
+      unvisited_count++;
+    }
+
+    if (unvisited_count == 0) continue;
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    pool.push_block(dists.data(), neighbor_ids.data(),
+                    static_cast<int32_t>(unvisited_count));
+  }
+}
+
+// BufferPool variant: vectors must be fetched through get_vector_typed
+// (pinning cache pages).  Uses the existing MemoryBlock wrapper and the
+// pointer-array batch_dist.
+template <typename EntityType, typename HeapType, typename MemBlockType>
+int slow_greedy_search(const EntityType &entity, HeapType &pool,
+                       VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
+                       node_id_t entry_point) {
+  const uint32_t max_deg = entity.max_degree();
+  const uint32_t cap = std::max(topk, ef);
+  pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
+             static_cast<int32_t>(max_deg));
+
+  dist_t ep_dist = dc.batch_dist(entry_point);
+  pool.set_visited(entry_point);
+  pool.push_block(&ep_dist, &entry_point, 1);
+
+  static constexpr uint32_t PREFETCH_BATCH = 2;
+  static constexpr uint32_t PREFETCH_STEP = 2;
+
+  uint32_t buf_capacity = max_deg;
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(buf_capacity);
+
+  while (pool.has_next()) {
+    auto current_node = pool.pop();
+
+    const auto neighbors = entity.get_neighbors_typed(current_node);
+    ailego_prefetch(neighbors.data);
+
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+    }
+
+    uint32_t unvisited_count = 0;
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (pool.check_visited(node)) continue;
+      pool.set_visited(node);
+      neighbor_ids[unvisited_count++] = node;
+    }
+    if (unvisited_count == 0) continue;
+
+    neighbor_vec_blocks.clear();
+    int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                      neighbor_vec_blocks);
+    if (ailego_unlikely(ret != 0)) return ret;
+
+    for (uint32_t i = 0;
+         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
+      ailego_prefetch(neighbor_vec_blocks[i].data());
+    }
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    }
+    dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    pool.push_block(dists.data(), neighbor_ids.data(),
+                    static_cast<int32_t>(unvisited_count));
+  }
+  return 0;
+}
+
+// Copy a BlockHeap/LinearPool's retained results into the topk heap.
+template <typename HeapType>
+void copy_pool_to_topk(const HeapType &pool, TopkHeap &topk_heap) {
+  const int32_t n = static_cast<int32_t>(pool.size());
+  for (int32_t i = 0; i < n; ++i) {
+    topk_heap.emplace(pool.id(i), pool.dist(i));
+  }
+}
+
+// ============================================================================
+// dual_heap_greedy_search_impl: shared core for the two dual-heap variants.
+//
+// Maintains a candidate min-heap + topk heap + VisitFilter.  `DoSplit` is a
+// compile-time flag: when true the per-batch distance uses gather(sq_sums) +
+// batch_dist_split; when false it uses plain batch_dist.  All branching on
+// split is resolved at compile time so the inner loop contains a single
+// straight-line batch-distance call.  Do not call this directly; use the
+// two thin wrappers declared below.
+// ============================================================================
+template <bool DoSplit, typename EntityType, typename MemBlockType,
+          typename FilterFn>
+void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
+                                  VamanaDistCalculator &dc,
+                                  node_id_t entry_point,
+                                  uint32_t prefetch_lines, FilterFn &&filter) {
+  static constexpr uint32_t PREFETCH_BATCH = 2;
+  static constexpr uint32_t PREFETCH_STEP = 2;
+
+  uint32_t buf_capacity = entity.max_degree();
+  std::vector<node_id_t> neighbor_ids(buf_capacity);
+  std::vector<MemBlockType> neighbor_vec_blocks;
+  neighbor_vec_blocks.reserve(buf_capacity);
+  std::vector<float> dists(buf_capacity);
+  std::vector<const void *> neighbor_vecs(buf_capacity);
+
+  // Per-vector sq_sums gather buffer; only allocated on the split path.
+  std::vector<float> sq_sums;
+  const char *side_base = nullptr;
+  size_t side_stride = 0;
+  if constexpr (DoSplit) {
+    sq_sums.resize(buf_capacity);
+    side_base = entity.side_data_base();
+    side_stride = entity.side_data_stride();
+  }
+
+  VisitFilter &visit = ctx->visit_filter();
+  CandidateHeap &candidates = ctx->candidates();
+  auto &topk_heap = ctx->topk_heap();
+  (void)prefetch_lines;  // reserved for future get_vector_ptr specialization
+
+  candidates.clear();
+  visit.clear();
+
+  // Initialize with entry point using batch_dist (single-element batch).
+  // We must NOT use dc.dist(entry_point) here because dist() calls
+  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
+  // expects two raw int8 inputs), but query_ has been preprocessed by
+  // reset_query (+128 shift to uint8). batch_dist() correctly calls
+  // batch_distance_() which expects the preprocessed uint8 query.
+  dist_t entry_dist = dc.batch_dist(entry_point);
+  if (ailego_unlikely(dc.error())) {
+    return;
+  }
+  visit.set_visited(entry_point);
+  if (!filter(entry_point)) {
+    topk_heap.emplace(entry_point, entry_dist);
+  }
+  candidates.emplace(entry_point, entry_dist);
+
+  while (!candidates.empty() && !ctx->reach_scan_limit()) {
+    auto top = candidates.begin();
+    node_id_t current_node = top->first;
+    dist_t current_dist = top->second;
+
+    // Early termination: if the closest candidate is worse than the worst
+    // result in a full topk heap, we won't find anything better.
+    if (topk_heap.full() && current_dist > topk_heap[0].second) {
+      break;
+    }
+
+    candidates.pop();
+
+    // Expand neighbors using typed access (no virtual dispatch)
+    const auto neighbors = entity.get_neighbors_typed(current_node);
+    ailego_prefetch(neighbors.data);
+
+    // Resize buffers if this node has more neighbors than expected
+    if (neighbors.size() > buf_capacity) {
+      buf_capacity = neighbors.size();
+      neighbor_ids.resize(buf_capacity);
+      dists.resize(buf_capacity);
+      neighbor_vecs.resize(buf_capacity);
+      if constexpr (DoSplit) {
+        sq_sums.resize(buf_capacity);
+      }
+    }
+
+    // Collect unvisited neighbors (reuse pre-allocated buffer)
+    uint32_t unvisited_count = 0;
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      node_id_t node = neighbors[i];
+      if (visit.visited(node)) continue;
+      visit.set_visited(node);
+      neighbor_ids[unvisited_count++] = node;
+    }
+    if (unvisited_count == 0) continue;
+
+    // Batch fetch vectors using typed access (reuse pre-allocated buffer)
+    neighbor_vec_blocks.clear();
+    int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
+                                      neighbor_vec_blocks);
+    if (ailego_unlikely(ret != 0)) break;
+
+    for (uint32_t i = 0;
+         i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
+      ailego_prefetch(neighbor_vec_blocks[i].data());
+    }
+
+    // Batch distance computation (reuse pre-allocated buffers).
+    // Exactly one straight-line kernel call; the split/non-split choice is
+    // resolved at compile time via DoSplit.
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      neighbor_vecs[i] = neighbor_vec_blocks[i].data();
+    }
+    if constexpr (DoSplit) {
+      for (uint32_t k = 0; k < unvisited_count; ++k) {
+        sq_sums[k] = *reinterpret_cast<const float *>(
+            side_base + static_cast<size_t>(neighbor_ids[k]) * side_stride);
+      }
+      dc.batch_dist_split(neighbor_vecs.data(), sq_sums.data(), unvisited_count,
+                          dists.data());
+    } else {
+      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
+    }
+
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      node_id_t node = neighbor_ids[i];
+      dist_t node_dist = dists[i];
+      if ((!topk_heap.full()) || node_dist < topk_heap[0].second) {
+        candidates.emplace(node, node_dist);
+        if (!filter(node)) {
+          topk_heap.emplace(node, node_dist);
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// dual_heap_greedy_search_split: split-layout variant.
+//
+// Used only for VamanaContiguousStreamerEntity with split side-data (e.g.
+// UnitScaleInt8's sq_sum_half extracted to a flat array).  The inner loop
+// gathers per-neighbor sq_sums and dispatches to batch_dist_split; no
+// runtime branching on split is required.
+// ============================================================================
+template <typename MemBlockType, typename FilterFn>
+void dual_heap_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
+                                   VamanaContext *ctx, VamanaDistCalculator &dc,
+                                   node_id_t entry_point,
+                                   uint32_t prefetch_lines, FilterFn &&filter) {
+  dual_heap_greedy_search_impl<true, VamanaContiguousStreamerEntity,
+                               MemBlockType>(entity, ctx, dc, entry_point,
+                                             prefetch_lines,
+                                             std::forward<FilterFn>(filter));
+}
+
+// ============================================================================
+// dual_heap_greedy_search: non-split variant.
+//
+// Used for every other case (contiguous without split side-data, mmap,
+// buffer-pool).  The inner loop dispatches to plain batch_dist; no runtime
+// branching on split is required.
+// ============================================================================
+template <typename EntityType, typename MemBlockType, typename FilterFn>
+void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
+                             VamanaDistCalculator &dc, node_id_t entry_point,
+                             uint32_t prefetch_lines, FilterFn &&filter) {
+  dual_heap_greedy_search_impl<false, EntityType, MemBlockType>(
+      entity, ctx, dc, entry_point, prefetch_lines,
+      std::forward<FilterFn>(filter));
+}
+
+// ============================================================================
 // greedy_search: Beam search from entry_point.
 //
 // Maintains a candidate min-heap (ordered by distance) and a visited set.
@@ -141,311 +558,116 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  // Pre-allocate temporary vectors outside the hot loop to avoid
-  // per-iteration heap allocations. Sized to max_degree initially;
-  // resized inside the loop if actual neighbor count exceeds this.
-  uint32_t buf_capacity = entity.max_degree();
-  std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<MemBlockType> neighbor_vec_blocks;
-  neighbor_vec_blocks.reserve(buf_capacity);
-  std::vector<float> dists(buf_capacity);
-  std::vector<const void *> neighbor_vecs(buf_capacity);
-
   // Number of cache lines per vector (e.g. 2 for dim=128).
-  static constexpr uint32_t PREFETCH_BATCH = 2;
-  static constexpr uint32_t PREFETCH_STEP = 2;
-  const uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
+  // Used by both the fallback candidates/filter path and the fast helpers.
+  uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
+  if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
+    // Contiguous flat array stride is already 64B-aligned and, when side
+    // data is split out, represents exactly the core body length.  Use it
+    // so that prefetch does not overshoot into the next vector.
+    size_t stride = entity.vector_stride();
+    if (stride > 0) {
+      prefetch_lines = static_cast<uint32_t>(stride / 64);
+    }
+  }
 
   if (!use_pool || index_filter.is_valid()) {
-    VisitFilter &visit = ctx->visit_filter();
-    CandidateHeap &candidates = ctx->candidates();
-    auto &topk_heap = ctx->topk_heap();
+    // Fallback path used by add_node (use_pool=false) and filtered search.
+    // Dispatched to one of two dual-heap helpers based on whether the entity
+    // exposes split side-data (e.g. UnitScaleInt8's sq_sum_half flat array):
+    //   - dual_heap_greedy_search_split: gather sq_sums + batch_dist_split
+    //   - dual_heap_greedy_search:       plain batch_dist
+    // The split/non-split decision is resolved once here; the inner loops
+    // contain a single straight-line kernel call.
+    bool use_split = false;
+    if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
+      use_split = dc.has_split_batch() && entity.has_side_data();
+    }
 
-    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
+    auto run_with_filter = [&](auto &&filter) {
+      if constexpr (std::is_same_v<EntityType,
+                                   VamanaContiguousStreamerEntity>) {
+        if (use_split) {
+          dual_heap_greedy_search_split<MemBlockType>(
+              entity, ctx, dc, entry_point, prefetch_lines,
+              std::forward<decltype(filter)>(filter));
+          return;
+        }
+      }
+      dual_heap_greedy_search<EntityType, MemBlockType>(
+          entity, ctx, dc, entry_point, prefetch_lines,
+          std::forward<decltype(filter)>(filter));
+    };
+
     if (index_filter.is_valid()) {
-      filter = [&](node_id_t id) {
+      auto filter = [&](node_id_t id) {
         return index_filter(entity.get_key_typed(id));
       };
-    }
-
-    candidates.clear();
-    visit.clear();
-
-    // Initialize with entry point using batch_dist (single-element batch).
-    // We must NOT use dc.dist(entry_point) here because dist() calls
-    // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
-    // expects two raw int8 inputs), but query_ has been preprocessed by
-    // reset_query (+128 shift to uint8). batch_dist() correctly calls
-    // batch_distance_() which expects the preprocessed uint8 query.
-    dist_t entry_dist = dc.batch_dist(entry_point);
-    if (ailego_unlikely(dc.error())) {
-      return;
-    }
-    visit.set_visited(entry_point);
-    if (!filter(entry_point)) {
-      topk_heap.emplace(entry_point, entry_dist);
-    }
-    candidates.emplace(entry_point, entry_dist);
-
-    while (!candidates.empty() && !ctx->reach_scan_limit()) {
-      auto top = candidates.begin();
-      node_id_t current_node = top->first;
-      dist_t current_dist = top->second;
-
-      // Early termination: if the closest candidate is worse than the worst
-      // result in a full topk heap, we won't find anything better.
-      if (topk_heap.full() && current_dist > topk_heap[0].second) {
-        break;
-      }
-
-      candidates.pop();
-
-      // Expand neighbors using typed access (no virtual dispatch)
-      const auto neighbors = entity.get_neighbors_typed(current_node);
-      ailego_prefetch(neighbors.data);
-
-      // Resize buffers if this node has more neighbors than expected
-      if (neighbors.size() > buf_capacity) {
-        buf_capacity = neighbors.size();
-        neighbor_ids.resize(buf_capacity);
-        dists.resize(buf_capacity);
-        neighbor_vecs.resize(buf_capacity);
-      }
-
-      // Collect unvisited neighbors (reuse pre-allocated buffer)
-      uint32_t unvisited_count = 0;
-      for (uint32_t i = 0; i < neighbors.size(); ++i) {
-        node_id_t node = neighbors[i];
-        if (visit.visited(node)) continue;
-        visit.set_visited(node);
-        neighbor_ids[unvisited_count++] = node;
-      }
-      if (unvisited_count == 0) continue;
-
-      // Batch fetch vectors using typed access (reuse pre-allocated buffer)
-      neighbor_vec_blocks.clear();
-      int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
-                                        neighbor_vec_blocks);
-      if (ailego_unlikely(ret != 0)) break;
-
-      for (uint32_t i = 0;
-           i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
-        ailego_prefetch(neighbor_vec_blocks[i].data());
-      }
-
-      // Batch distance computation (reuse pre-allocated buffers)
-      for (uint32_t i = 0; i < unvisited_count; ++i) {
-        neighbor_vecs[i] = neighbor_vec_blocks[i].data();
-      }
-      dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
-
-      for (uint32_t i = 0; i < unvisited_count; ++i) {
-        node_id_t node = neighbor_ids[i];
-        dist_t node_dist = dists[i];
-        if ((!topk_heap.full()) || node_dist < topk_heap[0].second) {
-          candidates.emplace(node, node_dist);
-          if (!filter(node)) {
-            topk_heap.emplace(node, node_dist);
-          }
-        }
-      }
+      run_with_filter(filter);
+    } else {
+      auto filter = [](node_id_t) { return false; };
+      run_with_filter(filter);
     }
   } else {
-    uint32_t cap = std::max(static_cast<uint32_t>(ctx->topk()), ctx->ef());
-
-    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-      // AVX2-gated BlockHeap fast path. Binaries compiled on an AVX2 host
-      // may run on lower-arch machines, so we must runtime-check before
-      // invoking BlockHeap::push_block (which is compiled with AVX2 when
-      // the toolchain supports it; see src/core/CMakeLists.txt and
-      // src/core/utility/CMakeLists.txt).
-      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX2) {
-        BlockHeap &bpool = ctx->block_pool();
-        const uint32_t max_deg = entity.max_degree();
-        bpool.reset(static_cast<int32_t>(entity.doc_cnt()),
-                    static_cast<int32_t>(cap), static_cast<int32_t>(max_deg));
-
-        // Seed with the entry point (block-of-one push).
-        dist_t ep_dist = dc.batch_dist(entry_point);
-        bpool.set_visited(entry_point);
-        bpool.push_block(&ep_dist, &entry_point, 1);
-
-        static constexpr uint32_t GRAPH_PO = 8;  // prefetch window
-
-        while (bpool.has_next()) {
-          auto current_node = bpool.pop();
-
-          const auto neighbors = entity.get_neighbors_typed(current_node);
-          ailego_prefetch(neighbors.data);
-
-          if (neighbors.size() > buf_capacity) {
-            buf_capacity = neighbors.size();
-            neighbor_ids.resize(buf_capacity);
-            dists.resize(buf_capacity);
-            neighbor_vecs.resize(buf_capacity);
-          }
-
-          const uint32_t po =
-              std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
-          uint32_t unvisited_count = 0;
-          uint32_t i = 0;
-
-          for (; i < po; ++i) {
-            node_id_t node = neighbors[i];
-            if (bpool.check_visited(node)) continue;
-            bpool.set_visited(node);
-            const void *vec_ptr = entity.get_vector_ptr(node);
-            const char *p = reinterpret_cast<const char *>(vec_ptr);
-            for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-              _mm_prefetch(p + cl * 64, _MM_HINT_T0);
-            }
-            neighbor_ids[unvisited_count] = node;
-            neighbor_vecs[unvisited_count] = vec_ptr;
-            unvisited_count++;
-          }
-          for (; i < neighbors.size(); ++i) {
-            node_id_t node = neighbors[i];
-            if (bpool.check_visited(node)) continue;
-            bpool.set_visited(node);
-            neighbor_ids[unvisited_count] = node;
-            neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
-            unvisited_count++;
-          }
-
-          if (unvisited_count == 0) continue;
-          dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
-
-          // Single block-insert — amortized O(k) bookkeeping per batch.
-          bpool.push_block(dists.data(), neighbor_ids.data(),
-                           static_cast<int32_t>(unvisited_count));
-        }
-
-        auto &topk_heap = ctx->topk_heap();
-        const int32_t n = bpool.size();
-        for (int32_t i = 0; i < n; ++i) {
-          topk_heap.emplace(bpool.id(i), bpool.dist(i));
-        }
-        return;
-      }
-      // Fall through to the existing LinearPool fast path when the runtime
-      // CPU lacks AVX2.
-    }
-
-    auto &pool = ctx->pool();
-    pool.reset(entity.doc_cnt(), cap, cap);
-
-    dist_t entry_dist = dc.batch_dist(entry_point);
-    pool.set_visited(entry_point);
-    pool.insert(entry_point, entry_dist);
-
-    if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
-      // Optimized path for Mmap/Contiguous: merged neighbor scan + vector
-      // pointer collection + prefetch in a single loop (like pyglass).
-      // Eliminates get_vector_typed overhead and gives prefetch lead time.
-      static constexpr uint32_t GRAPH_PO = 8;  // prefetch window
-
-      while (pool.has_next()) {
-        auto current_node = pool.pop();
-
-        const auto neighbors = entity.get_neighbors_typed(current_node);
-        ailego_prefetch(neighbors.data);
-
-        if (neighbors.size() > buf_capacity) {
-          buf_capacity = neighbors.size();
-          neighbor_ids.resize(buf_capacity);
-          dists.resize(buf_capacity);
-          neighbor_vecs.resize(buf_capacity);
-        }
-
-        const uint32_t po =
-            std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
-        uint32_t unvisited_count = 0;
-        uint32_t i = 0;
-
-        // Phase 1: scan first `po` neighbors with prefetch.
-        // Prefetch is issued here, and the remaining neighbor scan
-        // below provides the lead time before batch_dist is called.
-        for (; i < po; ++i) {
-          node_id_t node = neighbors[i];
-          if (pool.check_visited(node)) continue;
-          pool.set_visited(node);
-          const void *vec_ptr = entity.get_vector_ptr(node);
-          const char *p = reinterpret_cast<const char *>(vec_ptr);
-          for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-            _mm_prefetch(p + cl * 64, _MM_HINT_T0);
-          }
-          neighbor_ids[unvisited_count] = node;
-          neighbor_vecs[unvisited_count] = vec_ptr;
-          unvisited_count++;
-        }
-
-        // Phase 2: scan remaining neighbors (no prefetch — they will be
-        // prefetched by the batch kernel's internal prefetch logic).
-        for (; i < neighbors.size(); ++i) {
-          node_id_t node = neighbors[i];
-          if (pool.check_visited(node)) continue;
-          pool.set_visited(node);
-          neighbor_ids[unvisited_count] = node;
-          neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
-          unvisited_count++;
-        }
-
-        if (unvisited_count == 0) continue;
-        dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
-
-        for (uint32_t j = 0; j < unvisited_count; ++j) {
-          pool.insert(neighbor_ids[j], dists[j]);
-        }
-      }
-    } else {
-      // Fallback path for BufferPool: uses MemoryBlock wrappers to pin pages.
-      while (pool.has_next()) {
-        auto current_node = pool.pop();
-
-        const auto neighbors = entity.get_neighbors_typed(current_node);
-        ailego_prefetch(neighbors.data);
-
-        if (neighbors.size() > buf_capacity) {
-          buf_capacity = neighbors.size();
-          neighbor_ids.resize(buf_capacity);
-          dists.resize(buf_capacity);
-          neighbor_vecs.resize(buf_capacity);
-        }
-
-        uint32_t unvisited_count = 0;
-        for (uint32_t i = 0; i < neighbors.size(); ++i) {
-          node_id_t node = neighbors[i];
-          if (pool.check_visited(node)) continue;
-          pool.set_visited(node);
-          neighbor_ids[unvisited_count++] = node;
-        }
-
-        if (unvisited_count == 0) continue;
-
-        neighbor_vec_blocks.clear();
-        int ret = entity.get_vector_typed(neighbor_ids.data(), unvisited_count,
-                                          neighbor_vec_blocks);
-        if (ailego_unlikely(ret != 0)) break;
-
-        for (uint32_t i = 0;
-             i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count);
-             ++i) {
-          ailego_prefetch(neighbor_vec_blocks[i].data());
-        }
-        for (uint32_t i = 0; i < unvisited_count; ++i) {
-          neighbor_vecs[i] = neighbor_vec_blocks[i].data();
-        }
-        dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
-
-        for (uint32_t i = 0; i < unvisited_count; ++i) {
-          pool.insert(neighbor_ids[i], dists[i]);
-        }
-      }
-    }
-
+    // Fast pool-based path.  Three specialized inner loops are dispatched
+    // based on:
+    //   (1) contiguous + split side data  -> fast_greedy_search_split
+    //   (2) mmap/contiguous pointer read  -> fast_greedy_search
+    //   (3) BufferPool block read         -> slow_greedy_search
+    // Orthogonally, the pool type is selected at runtime:
+    //   AVX2 available -> BlockHeap (amortized O(k) block-insert)
+    //   otherwise      -> LinearPool (one-by-one sorted insert)
+    // BlockHeap's AVX2 intrinsics require a runtime CpuFeatures check
+    // because binaries may be compiled on a higher-arch host than the
+    // runtime CPU.
+    const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
+    const uint32_t ef_v = ctx->ef();
+    // const bool avx2_ok =
+    //     zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
+    const bool avx2_ok = false;
     auto &topk_heap = ctx->topk_heap();
-    for (uint32_t i = 0; i < pool.size(); ++i) {
-      topk_heap.emplace(pool.id(i), pool.dist(i));
+
+    if (avx2_ok) {
+      auto &bpool = ctx->block_pool();
+      if constexpr (std::is_same_v<EntityType,
+                                   VamanaContiguousStreamerEntity>) {
+        if (dc.has_split_batch() && entity.has_side_data()) {
+          fast_greedy_search_split(entity, bpool, dc, topk_v, ef_v, entry_point,
+                                   prefetch_lines);
+        } else {
+          fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
+                             prefetch_lines);
+        }
+      } else if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+        fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
+      } else {
+        slow_greedy_search<EntityType, BlockHeap, MemBlockType>(
+            entity, bpool, dc, topk_v, ef_v, entry_point);
+      }
+
+      copy_pool_to_topk(bpool, topk_heap);
+    } else {
+      auto &lpool = ctx->pool();
+
+      if constexpr (std::is_same_v<EntityType,
+                                   VamanaContiguousStreamerEntity>) {
+        if (dc.has_split_batch() && entity.has_side_data()) {
+          fast_greedy_search_split(entity, lpool, dc, topk_v, ef_v, entry_point,
+                                   prefetch_lines);
+        } else {
+          fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
+                             prefetch_lines);
+        }
+      } else if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+        fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
+                           prefetch_lines);
+      } else {
+        slow_greedy_search<EntityType, LinearPool<dist_t>, MemBlockType>(
+            entity, lpool, dc, topk_v, ef_v, entry_point);
+      }
+
+      copy_pool_to_topk(lpool, topk_heap);
     }
   }
 }

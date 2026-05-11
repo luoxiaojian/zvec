@@ -175,13 +175,19 @@ struct LinearPool {
     return *this;
   }
 
-  void reset(int32_t n, int ef, int32_t cap) {
+  // reset() mirrors BlockHeap::reset(n, ef, block_size): `n` is the visit-set
+  // capacity, `ef` is both the retained top-k and the internal capacity, and
+  // the third argument is the per-batch push upper bound.  LinearPool uses a
+  // sorted array with capacity == ef and therefore ignores the `block_size`
+  // hint.  The signature is kept identical to BlockHeap so templated
+  // greedy-search bodies can call either pool uniformly.
+  void reset(int32_t n, int32_t ef, int32_t /*block_size_ignored*/) {
     nb = n;
     size_ = cur_ = 0;
     ef_ = ef;
-    capacity_ = cap;
-    if (data_.size() < cap + 1) {
-      data_.resize(cap + 1);
+    capacity_ = ef;
+    if (data_.size() < static_cast<size_t>(ef + 1)) {
+      data_.resize(ef + 1);
     }
     vis.reset(n);
   }
@@ -205,6 +211,17 @@ struct LinearPool {
     //   len -= half;
     // }
     // return loc;
+  }
+
+  // Block-insert interface matching BlockHeap::push_block: insert each
+  // (node, distance) pair via the one-by-one sorted insert().  Used by the
+  // templated greedy_search helpers so that LinearPool can be plugged in
+  // when AVX2 is unavailable.
+  void push_block(const float *distances, const uint32_t *nodes,
+                  int32_t block_size) {
+    for (int32_t i = 0; i < block_size; ++i) {
+      insert(static_cast<int>(nodes[i]), static_cast<dist_t>(distances[i]));
+    }
   }
 
   __attribute__((always_inline)) bool insert(int u, dist_t dist) {

@@ -28,6 +28,7 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
+        batch_distance_split_(metric->batch_distance_split()),
         pairwise_distance_(metric->pairwise_distance()),
         query_(nullptr),
         dim_(dim),
@@ -39,6 +40,7 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
+        batch_distance_split_(metric->batch_distance_split()),
         pairwise_distance_(metric->pairwise_distance()),
         query_(query),
         dim_(dim),
@@ -49,6 +51,7 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
+        batch_distance_split_(metric->batch_distance_split()),
         pairwise_distance_(metric->pairwise_distance()),
         query_(nullptr),
         dim_(0),
@@ -58,6 +61,7 @@ class VamanaDistCalculator {
     entity_ = entity;
     distance_ = metric->distance();
     batch_distance_ = metric->batch_distance();
+    batch_distance_split_ = metric->batch_distance_split();
   }
 
   void update(const VamanaEntity *entity, const IndexMetric::Pointer &metric,
@@ -65,6 +69,7 @@ class VamanaDistCalculator {
     entity_ = entity;
     distance_ = metric->distance();
     batch_distance_ = metric->batch_distance();
+    batch_distance_split_ = metric->batch_distance_split();
     dim_ = dim;
   }
 
@@ -115,6 +120,19 @@ class VamanaDistCalculator {
   inline void batch_dist(const void **vecs, uint32_t count, float *dists) {
     compare_cnt_ += count;
     batch_distance_(vecs, query_, count, dim_, dists);
+  }
+
+  // Split-layout batch distance. Valid only when has_split_batch() is true.
+  // The caller is responsible for gathering per-vector side data (e.g.
+  // sq_sum_half) into the sq_sums array, whose layout matches `vecs`.
+  inline bool has_split_batch() const {
+    return batch_distance_split_ != nullptr;
+  }
+
+  inline void batch_dist_split(const void **vecs, const float *sq_sums,
+                               uint32_t count, float *dists) {
+    compare_cnt_ += count;
+    batch_distance_split_(vecs, query_, sq_sums, count, dim_, dists);
   }
 
   // Single-node batch distance: compute distance between query and a stored
@@ -202,6 +220,7 @@ class VamanaDistCalculator {
   const VamanaEntity *entity_;
   IndexMetric::MatrixDistance distance_;
   IndexMetric::MatrixBatchDistance batch_distance_;
+  IndexMetric::MatrixBatchDistanceSplit batch_distance_split_;
   IndexMetric::MatrixDistance pairwise_distance_;
   const void *query_;
   uint32_t dim_;

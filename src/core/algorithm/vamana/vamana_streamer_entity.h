@@ -568,6 +568,15 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
+  // Build contiguous memory with an optional per-vector side-data split:
+  // the last `side_data_size_per_vector` bytes of every stored vector are
+  // copied into a separate flat array (`side_data_base_`) with stride
+  // `side_data_size_per_vector`, while `vector_base_` only retains the
+  // leading core bytes with 64B-aligned stride.  This matches the
+  // pyglass MyQuant layout and is enabled only when the metric declares
+  // `side_data_size_per_vector() > 0` and a split batch kernel exists.
+  int build_contiguous_memory(size_t side_data_size_per_vector);
+
   //! Degrade to mmap mode by releasing contiguous memory and falling back
   //! to chunk-based access.
   void degrade_to_mmap() {
@@ -576,11 +585,44 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     vector_stride_ = 0;
     graph_memory_.reset();
     graph_base_ = nullptr;
+    side_data_memory_.reset();
+    side_data_base_ = nullptr;
+    side_data_stride_ = 0;
     LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
   }
 
   bool is_contiguous() const {
     return vector_base_ != nullptr;
+  }
+
+  //! Whether the tail side-data (e.g. sq_sum_half) has been split out into
+  //! its own flat array.
+  bool has_side_data() const {
+    return side_data_base_ != nullptr;
+  }
+
+  //! Per-entry stride of the flat vector array (0 if no contiguous build).
+  //! Padded up to kVectorAlignment (64B), so it is also the amount that
+  //! should be prefetched per vector.
+  size_t vector_stride() const {
+    return vector_stride_;
+  }
+
+  //! Base pointer of the flat side-data array (nullptr if no split).
+  const char *side_data_base() const {
+    return side_data_base_;
+  }
+
+  //! Per-entry stride of the side-data flat array (0 if no split).
+  size_t side_data_stride() const {
+    return side_data_stride_;
+  }
+
+  //! Direct side-data pointer for a given node (caller must check
+  //! has_side_data() first).
+  inline __attribute__((always_inline)) const void *get_side_data_ptr(
+      node_id_t id) const {
+    return side_data_base_ + static_cast<size_t>(id) * side_data_stride_;
   }
 
   int add_vector(key_t key, const void *vec, node_id_t *id) override {
@@ -673,6 +715,16 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   std::shared_ptr<char> graph_memory_{};
   char *graph_base_{nullptr};
   size_t graph_stride_{0};  // sizeof(key_t) + neighbors_size()
+
+  //! Optional flat side-data array.  When the metric declares a non-zero
+  //! `side_data_size_per_vector()`, the trailing bytes of every stored
+  //! vector are split here so that the vector body in vector_base_ stays
+  //! tightly packed and cache-line aligned (e.g. 128B for SIFT+unit-scale
+  //! instead of 192B).  `side_data_stride_` equals the side size (no
+  //! padding).
+  std::shared_ptr<char> side_data_memory_{};
+  char *side_data_base_{nullptr};
+  size_t side_data_stride_{0};
 
   //! Cache-line alignment used for per-vector stride in the flat array.
   static constexpr size_t kVectorAlignment = 64;
