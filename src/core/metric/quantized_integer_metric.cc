@@ -317,13 +317,16 @@ class QuantizedIntegerMetric : public IndexMetric {
   //! never read side_data_size_per_vector() (see vamana_streamer.cc, HNSW
   //! and non-contiguous Vamana entities), so enabling split here does not
   //! leak into those paths.
+  //!
+  //! NOTE: currently disabled.  On large-dim datasets (e.g. GIST-960) the
+  //! body is already a multiple of 64B, so peeling the 20B tail saves at
+  //! most one cache line while introducing a second independent memory
+  //! region (extra TLB footprint, prefetcher can no longer train a single
+  //! stream).  The net effect on GIST was a ~6% QPS regression, so we
+  //! keep the tail embedded until the activation policy is refined to
+  //! only trigger when the cache-line savings are large enough (e.g.
+  //! SIFT-128 where stride drops from 192B to 128B).
   MatrixBatchDistanceSplit batch_distance_split(void) const override {
-    if (origin_metric_type_ == MetricType::kSquaredEuclidean &&
-        meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-      return turbo::get_batch_distance_split_func(
-          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kDefault);
-    }
     return nullptr;
   }
 

@@ -622,9 +622,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     // runtime CPU.
     const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());
     const uint32_t ef_v = ctx->ef();
-    // const bool avx2_ok =
-    //     zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
-    const bool avx2_ok = false;
+    const bool avx2_ok =
+        zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
     auto &topk_heap = ctx->topk_heap();
 
     if (avx2_ok) {
