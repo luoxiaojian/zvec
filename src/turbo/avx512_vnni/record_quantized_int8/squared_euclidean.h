@@ -33,6 +33,24 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
                                            const void *query, size_t n,
                                            size_t dim, float *distances);
 
+// Split-layout batch kernel.
+//
+// Used when the streamer (e.g. VamanaContiguousStreamerEntity) has split the
+// 20-byte record-quantizer metadata tail (scale, bias, sum, sum2, int8_sum)
+// into a separate flat array.  `vectors[i]` therefore points to the pure
+// int8 body of length (dim - 20), and `side_data[i]` points to the 20-byte
+// metadata block of vector i (layout identical to the embedded tail).  The
+// query still has the 20-byte metadata appended after its original_dim
+// uint8 bytes (same as the non-split path); the query is prepared via
+// squared_euclidean_int8_query_preprocess.  `dim` includes the 20-byte
+// tail (matches the non-split variant), so the kernel derives
+// original_dim = dim - 20 internally.
+void squared_euclidean_int8_batch_distance_split(const void *const *vectors,
+                                                 const void *query,
+                                                 const void *const *side_data,
+                                                 size_t n, size_t dim,
+                                                 float *distances);
+
 // Preprocess the query vector in-place (shift int8 -> uint8 by adding 128)
 // for the batch path. Only the original_dim bytes are shifted; the metadata
 // tail is left intact. `dim` includes the 20-byte metadata tail.

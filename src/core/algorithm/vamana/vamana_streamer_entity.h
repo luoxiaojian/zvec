@@ -720,8 +720,10 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! `side_data_size_per_vector()`, the trailing bytes of every stored
   //! vector are split here so that the vector body in vector_base_ stays
   //! tightly packed and cache-line aligned (e.g. 128B for SIFT+unit-scale
-  //! instead of 192B).  `side_data_stride_` equals the side size (no
-  //! padding).
+  //! instead of 192B).  `side_data_stride_` equals the side size exactly
+  //! (no cache-line padding): the tail is accessed together with the
+  //! neighbor inner-product result in the split kernel and benefits more
+  //! from tight packing than from per-entry alignment.
   std::shared_ptr<char> side_data_memory_{};
   char *side_data_base_{nullptr};
   size_t side_data_stride_{0};

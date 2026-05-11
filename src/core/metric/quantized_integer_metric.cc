@@ -308,6 +308,39 @@ class QuantizedIntegerMetric : public IndexMetric {
     return nullptr;
   }
 
+  //! Split-layout batch kernel for INT8 SquaredEuclidean.
+  //! The 20-byte RecordQuantizer metadata tail (scale, bias, sum, sum2,
+  //! int8_sum) is consumed from a separate flat array rather than from
+  //! `vectors[i] + original_dim`.  Other metric/data-type combinations keep
+  //! the default nullptr (no split), so the legacy embedded-tail path is
+  //! unchanged.  Storage backends other than VamanaContiguousStreamerEntity
+  //! never read side_data_size_per_vector() (see vamana_streamer.cc, HNSW
+  //! and non-contiguous Vamana entities), so enabling split here does not
+  //! leak into those paths.
+  MatrixBatchDistanceSplit batch_distance_split(void) const override {
+    if (origin_metric_type_ == MetricType::kSquaredEuclidean &&
+        meta_.data_type() == IndexMeta::DataType::DT_INT8) {
+      return turbo::get_batch_distance_split_func(
+          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+          turbo::QuantizeType::kDefault);
+    }
+    return nullptr;
+  }
+
+  //! RecordQuantizer INT8 layout appends a 20-byte metadata tail after the
+  //! `original_dim` int8 body (4 floats: inv_scale, neg_bias_over_scale, sum,
+  //! squared_sum, plus an int32 int8_sum).  When a matching split kernel is
+  //! available, the Vamana contiguous entity is free to peel this tail into
+  //! a separate flat array (kVectorAlignment-aligned bodies -> tighter stride
+  //! and better cache locality for the int8 body scan).
+  //!
+  //! Gated on batch_distance_split() != nullptr to guarantee symmetric
+  //! activation: if no split kernel exists, the builder must keep the tail
+  //! embedded so the non-split batch_distance kernel still reads it.
+  size_t side_data_size_per_vector(void) const override {
+    return batch_distance_split() ? kRecordQuantizerInt8TailSize : 0;
+  }
+
 
  private:
   //! Returns m x n distance matrix compute function.
@@ -347,6 +380,11 @@ class QuantizedIntegerMetric : public IndexMetric {
     kNormalizedCosine = 3,
     kCosine = 4
   };
+
+  //! RecordQuantizer INT8 metadata tail: 4 floats + 1 int = 20 bytes.
+  //! Must match the layout documented in
+  //! src/turbo/avx512_vnni/record_quantized_int8/squared_euclidean.cc.
+  static constexpr size_t kRecordQuantizerInt8TailSize = 20;
 
   //! Members
   IndexMeta meta_{};

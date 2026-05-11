@@ -112,7 +112,8 @@ class UnitScaleInt8Metric : public IndexMetric {
   }
 
   //! Split-layout batch kernel: vectors are pure int8 (length = original_dim),
-  //! sq_sum_half values are supplied via the `sq_sums` array.
+  //! per-vector side data (here a single 4-byte `sq_sum_half`) is supplied
+  //! through the `side_data` pointer array.
   MatrixBatchDistanceSplit batch_distance_split(void) const override {
     return turbo::get_batch_distance_split_func(
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,

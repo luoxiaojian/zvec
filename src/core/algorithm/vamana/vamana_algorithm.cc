@@ -162,7 +162,7 @@ void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
   std::vector<node_id_t> neighbor_ids(buf_capacity);
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
-  std::vector<float> sq_sums(buf_capacity);
+  std::vector<const void *> side_ptrs(buf_capacity);
 
   const size_t side_stride = entity.side_data_stride();
   const char *side_base = entity.side_data_base();
@@ -178,7 +178,7 @@ void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
       neighbor_ids.resize(buf_capacity);
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
-      sq_sums.resize(buf_capacity);
+      side_ptrs.resize(buf_capacity);
     }
 
     const uint32_t po =
@@ -197,8 +197,7 @@ void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
       }
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
-      sq_sums[unvisited_count] =
-          *reinterpret_cast<const float *>(side_base + side_stride * node);
+      side_ptrs[unvisited_count] = side_base + side_stride * node;
       unvisited_count++;
     }
     for (; i < neighbors.size(); ++i) {
@@ -207,13 +206,12 @@ void fast_greedy_search_split(const VamanaContiguousStreamerEntity &entity,
       pool.set_visited(node);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = entity.get_vector_ptr(node);
-      sq_sums[unvisited_count] =
-          *reinterpret_cast<const float *>(side_base + side_stride * node);
+      side_ptrs[unvisited_count] = side_base + side_stride * node;
       unvisited_count++;
     }
 
     if (unvisited_count == 0) continue;
-    dc.batch_dist_split(neighbor_vecs.data(), sq_sums.data(), unvisited_count,
+    dc.batch_dist_split(neighbor_vecs.data(), side_ptrs.data(), unvisited_count,
                         dists.data());
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
@@ -391,12 +389,14 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
   std::vector<float> dists(buf_capacity);
   std::vector<const void *> neighbor_vecs(buf_capacity);
 
-  // Per-vector sq_sums gather buffer; only allocated on the split path.
-  std::vector<float> sq_sums;
+  // Per-vector side-data pointer gather buffer; only allocated on the
+  // split path.  Each entry points to the side-data block of the
+  // corresponding neighbor (layout decided by the metric).
+  std::vector<const void *> side_ptrs;
   const char *side_base = nullptr;
   size_t side_stride = 0;
   if constexpr (DoSplit) {
-    sq_sums.resize(buf_capacity);
+    side_ptrs.resize(buf_capacity);
     side_base = entity.side_data_base();
     side_stride = entity.side_data_stride();
   }
@@ -449,7 +449,7 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
       dists.resize(buf_capacity);
       neighbor_vecs.resize(buf_capacity);
       if constexpr (DoSplit) {
-        sq_sums.resize(buf_capacity);
+        side_ptrs.resize(buf_capacity);
       }
     }
 
@@ -482,11 +482,11 @@ void dual_heap_greedy_search_impl(const EntityType &entity, VamanaContext *ctx,
     }
     if constexpr (DoSplit) {
       for (uint32_t k = 0; k < unvisited_count; ++k) {
-        sq_sums[k] = *reinterpret_cast<const float *>(
-            side_base + static_cast<size_t>(neighbor_ids[k]) * side_stride);
+        side_ptrs[k] =
+            side_base + static_cast<size_t>(neighbor_ids[k]) * side_stride;
       }
-      dc.batch_dist_split(neighbor_vecs.data(), sq_sums.data(), unvisited_count,
-                          dists.data());
+      dc.batch_dist_split(neighbor_vecs.data(), side_ptrs.data(),
+                          unvisited_count, dists.data());
     } else {
       dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data());
     }

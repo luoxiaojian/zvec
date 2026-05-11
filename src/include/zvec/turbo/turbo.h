@@ -26,12 +26,14 @@ using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
 // Split-layout batch distance: vectors contain the core feature only,
-// any per-vector side scalar (e.g. sq_sum_half) is provided via the
-// separate `sq_sums` array.  Returns nullptr if no split-layout kernel
-// is available for the given (metric, data_type, quantize_type).
-using BatchDistanceSplitFunc =
-    std::function<void(const void **m, const void *q, const float *sq_sums,
-                       size_t num, size_t dim, float *out)>;
+// any per-vector side data (e.g. sq_sum_half, or multiple extra scalars)
+// is provided via the `side_data` array, where `side_data[i]` points to
+// the side-data block of vector i.  This allows kernels to consume one
+// or more extra values per vector.  Returns nullptr if no split-layout
+// kernel is available for the given (metric, data_type, quantize_type).
+using BatchDistanceSplitFunc = std::function<void(
+    const void **m, const void *q, const void *const *side_data, size_t num,
+    size_t dim, float *out)>;
 
 // Quantize fp32 -> int8 with a global affine transform:
 //   out[i] = clip(round(in[i] * scale + bias), -127, 127)

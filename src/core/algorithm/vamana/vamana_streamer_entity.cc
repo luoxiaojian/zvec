@@ -765,7 +765,12 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
   graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
   graph_base_ = raw_graph;
 
-  // Optional: allocate side-data flat array (stride = side_data_size).
+  // Optional: allocate side-data flat array.
+  // NOTE: side-data stride is intentionally kept tight (== side_data_size,
+  // no cache-line padding).  The tail metadata is touched together with
+  // the accumulated inner-product in the split kernel and is accessed
+  // sequentially per neighbor; padding each entry up to 64B would only
+  // waste memory bandwidth without improving locality.
   size_t side_data_memory_size = 0;
   if (side_data_size_per_vector > 0) {
     side_data_stride_ = side_data_size_per_vector;
@@ -825,11 +830,12 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory(
   LOG_INFO(
       "Built Vamana contiguous memory (split layout): "
       "vector_mem=%zu graph_mem=%zu side_mem=%zu total_docs=%u "
-      "node_chunks=%zu vector_size=%zu core_vec_size=%zu vector_stride=%zu "
-      "side_data_size=%zu (cache-line aligned to %zuB)",
+      "node_chunks=%zu vector_size=%zu core_vec_size=%zu "
+      "vector_stride=%zu (cache-line aligned to %zuB) "
+      "side_data_size=%zu side_data_stride=%zu (unaligned, tight)",
       vector_memory_size, graph_memory_size, side_data_memory_size, total_docs,
-      chunks.size(), vec_size, core_vec_size, vector_stride_,
-      side_data_size_per_vector, kVectorAlignment);
+      chunks.size(), vec_size, core_vec_size, vector_stride_, kVectorAlignment,
+      side_data_size_per_vector, side_data_stride_);
 
   return 0;
 }

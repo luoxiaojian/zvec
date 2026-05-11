@@ -126,11 +126,15 @@ QuantizeFunc get_quantize_func(DataType data_type, QuantizeType quantize_type) {
 BatchDistanceSplitFunc get_batch_distance_split_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type) {
   if (data_type == DataType::kInt8 &&
-      quantize_type == QuantizeType::kUnitScale &&
       metric_type == MetricType::kSquaredEuclidean) {
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
-      return avx512_vnni::
-          unit_scale_squared_euclidean_int8_batch_distance_split;
+      if (quantize_type == QuantizeType::kUnitScale) {
+        return avx512_vnni::
+            unit_scale_squared_euclidean_int8_batch_distance_split;
+      }
+      if (quantize_type == QuantizeType::kDefault) {
+        return avx512_vnni::squared_euclidean_int8_batch_distance_split;
+      }
     }
   }
   return nullptr;

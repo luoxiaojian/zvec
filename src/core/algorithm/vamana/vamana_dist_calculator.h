@@ -123,16 +123,18 @@ class VamanaDistCalculator {
   }
 
   // Split-layout batch distance. Valid only when has_split_batch() is true.
-  // The caller is responsible for gathering per-vector side data (e.g.
-  // sq_sum_half) into the sq_sums array, whose layout matches `vecs`.
+  // The caller is responsible for gathering per-vector side-data pointers
+  // into `side_data`, whose layout matches `vecs`.  Each pointer targets
+  // the side-data block of the corresponding vector; the kernel decides
+  // how to interpret that block (layout is metric-specific).
   inline bool has_split_batch() const {
     return batch_distance_split_ != nullptr;
   }
 
-  inline void batch_dist_split(const void **vecs, const float *sq_sums,
+  inline void batch_dist_split(const void **vecs, const void *const *side_data,
                                uint32_t count, float *dists) {
     compare_cnt_ += count;
-    batch_distance_split_(vecs, query_, sq_sums, count, dim_, dists);
+    batch_distance_split_(vecs, query_, side_data, count, dim_, dists);
   }
 
   // Single-node batch distance: compute distance between query and a stored
