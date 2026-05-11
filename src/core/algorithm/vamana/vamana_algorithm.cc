@@ -61,24 +61,9 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 
   greedy_search(entry_point, ctx, /*use_pool=*/false);
 
-  // Step 2: Recompute candidate distances using pairwise L2 for robust_prune.
-  // This is only needed when pairwise_distance differs from the search kernel.
-  // When pairwise_distance is null, the search kernel IS the true symmetric
-  // distance, so greedy_search already produces correct values.
   auto &topk_heap = ctx->topk_heap();
-  {
-    VamanaDistCalculator &dc = ctx->dist_calculator();
-    if (dc.has_pairwise_distance()) {
-      for (size_t i = 0; i < topk_heap.size(); ++i) {
-        const void *cand_vec = entity_.get_vector(topk_heap[i].first);
-        if (ailego_likely(cand_vec != nullptr)) {
-          topk_heap[i].second = dc.pairwise_dist(query_vec, cand_vec);
-        }
-      }
-    }
-  }
 
-  // Step 3: RobustPrune to select diverse neighbors
+  // Step 2: RobustPrune to select diverse neighbors
   robust_prune(id, topk_heap, entity_.alpha(), entity_.max_degree(), ctx);
   // Copy result before reverse updates (which also call robust_prune)
   auto pruned_neighbors = ctx->prune_result();
@@ -575,9 +560,11 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
       }
 
       if (batch_count > 0) {
-        // Batch compute distances from selected candidate to remaining
-        dc.batch_dist_pair(selected_vec, batch_vecs.data(), batch_count,
-                           batch_dists.data());
+        // Compute distances from selected candidate to remaining candidates.
+        // distance_ is the symmetric data-to-data kernel (no pairwise split).
+        for (uint32_t k = 0; k < batch_count; ++k) {
+          batch_dists[k] = dc.dist(selected_vec, batch_vecs[k]);
+        }
 
         // DiskANN (L2/Cosine):
         //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /
@@ -688,7 +675,7 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
       node_id_t nbr = current_neighbors[i];
       const void *nbr_vec = entity_.get_vector(nbr);
       if (ailego_unlikely(nbr_vec == nullptr)) continue;
-      dist_t nbr_dist = dc.pairwise_dist(neighbor_vec, nbr_vec);
+      dist_t nbr_dist = dc.dist(neighbor_vec, nbr_vec);
       prune_candidates.emplace(nbr, nbr_dist);
     }
   }

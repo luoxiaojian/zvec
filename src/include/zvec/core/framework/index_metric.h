@@ -91,18 +91,6 @@ struct IndexMetric : public IndexModule {
     return nullptr;
   }
 
-  //! Retrieve pairwise (data-to-data) distance function.
-  //! Used for inter-candidate distance computation (e.g., robust_prune).
-  //! Default returns nullptr, meaning distance() will be used as fallback.
-  virtual MatrixDistance pairwise_distance(void) const {
-    return nullptr;
-  }
-
-  //! Retrieve pairwise (data-to-data) batch distance function.
-  virtual MatrixBatchDistance pairwise_batch_distance(void) const {
-    return nullptr;
-  }
-
   //! Retrieve params of Metric
   virtual const ailego::Params &params(void) const = 0;
 

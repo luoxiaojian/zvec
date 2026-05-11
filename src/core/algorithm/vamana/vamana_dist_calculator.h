@@ -28,7 +28,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        pairwise_distance_(metric->pairwise_distance()),
         query_(nullptr),
         dim_(dim),
         compare_cnt_(0) {}
@@ -39,7 +38,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        pairwise_distance_(metric->pairwise_distance()),
         query_(query),
         dim_(dim),
         compare_cnt_(0) {}
@@ -49,7 +47,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        pairwise_distance_(metric->pairwise_distance()),
         query_(nullptr),
         dim_(0),
         compare_cnt_(0) {}
@@ -132,41 +129,6 @@ class VamanaDistCalculator {
     return score;
   }
 
-  // Returns true if a dedicated pairwise distance kernel is available.
-  // When true, the search kernel differs from the pairwise kernel and
-  // candidate distances from greedy_search need recomputation.
-  inline bool has_pairwise_distance() const {
-    return pairwise_distance_ != nullptr;
-  }
-
-  // Single pairwise distance: compute data-to-data distance between two
-  // stored vectors. Uses pairwise_distance_ (symmetric kernel) if available,
-  // otherwise falls back to distance_.
-  inline dist_t pairwise_dist(const void *vec_lhs, const void *vec_rhs) {
-    if (ailego_unlikely(vec_lhs == nullptr || vec_rhs == nullptr)) {
-      LOG_ERROR("Nullptr of dense vector in pairwise_dist");
-      error_ = true;
-      return 0.0f;
-    }
-    auto fn = pairwise_distance_ ? pairwise_distance_ : distance_;
-    float score{0.0f};
-    fn(vec_lhs, vec_rhs, dim_, &score);
-    return score;
-  }
-
-  // Batch pairwise distance computation between a base vector and multiple
-  // target vectors. Does NOT use query_ and does NOT increment compare_cnt.
-  // Used for inter-candidate distance computation in robust_prune.
-  // Uses pairwise_distance_ (symmetric data-to-data kernel) if available,
-  // otherwise falls back to distance_.
-  inline void batch_dist_pair(const void *base_vec, const void **vecs,
-                              uint32_t count, float *dists) {
-    auto pairwise = pairwise_distance_ ? pairwise_distance_ : distance_;
-    for (uint32_t i = 0; i < count; ++i) {
-      pairwise(vecs[i], base_vec, dim_, &dists[i]);
-    }
-  }
-
   dist_t operator()(const void *vec) {
     return dist(vec);
   }
@@ -202,7 +164,6 @@ class VamanaDistCalculator {
   const VamanaEntity *entity_;
   IndexMetric::MatrixDistance distance_;
   IndexMetric::MatrixBatchDistance batch_distance_;
-  IndexMetric::MatrixDistance pairwise_distance_;
   const void *query_;
   uint32_t dim_;
   uint32_t compare_cnt_;
