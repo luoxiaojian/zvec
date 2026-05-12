@@ -7,20 +7,20 @@
 #
 # Instead, the official amalgamation produced by CRoaring's release pipeline
 # (https://github.com/RoaringBitmap/CRoaring/releases/tag/v2.0.4) is checked
-# into amalgamation/:
+# into CRoaring-2.0.4/:
 #
-#   amalgamation/roaring.c          - single C TU containing the entire library
-#   amalgamation/roaring.h          - public C API (from official release)
-#   amalgamation/roaring.hh         - public C++ wrapper (from official release)
-#   amalgamation/roaring64map.hh    - 64-bit C++ wrapper (from cpp/ in tarball)
-#   amalgamation/include/roaring/roaring.h
+#   CRoaring-2.0.4/roaring.c          - single C TU containing the entire library
+#   CRoaring-2.0.4/roaring.h          - public C API (from official release)
+#   CRoaring-2.0.4/roaring.hh         - public C++ wrapper (from official release)
+#   CRoaring-2.0.4/roaring64map.hh    - 64-bit C++ wrapper (from cpp/ in tarball)
+#   CRoaring-2.0.4/include/roaring/roaring.h
 #                                   - identical to roaring.h, exposed under the
 #                                     historical <roaring/roaring.h> path so
 #                                     existing callers keep working.
 #
 # To upgrade, replace these files with the assets from a newer release tag
 # (and grab cpp/roaring64map.hh from the source tarball if it is still split).
-set(_ROARING_AMAL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/amalgamation)
+set(_ROARING_AMAL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/CRoaring-2.0.4)
 
 add_library(roaring STATIC ${_ROARING_AMAL_DIR}/roaring.c)
 set_target_properties(roaring PROPERTIES
@@ -29,8 +29,8 @@ set_target_properties(roaring PROPERTIES
 )
 
 # Two include roots:
-#   - amalgamation/         -> <roaring.h>, <roaring.hh>, <roaring64map.hh>
-#   - amalgamation/include/ -> <roaring/roaring.h>  (legacy path used in code)
+#   - CRoaring-2.0.4/         -> <roaring.h>, <roaring.hh>, <roaring64map.hh>
+#   - CRoaring-2.0.4/include/ -> <roaring/roaring.h>  (legacy path used in code)
 target_include_directories(roaring PUBLIC
     $<BUILD_INTERFACE:${_ROARING_AMAL_DIR}>
     $<BUILD_INTERFACE:${_ROARING_AMAL_DIR}/include>
