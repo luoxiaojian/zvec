@@ -24,10 +24,10 @@ namespace core {
 
 /*! Index Metric for Uniform Int8 Quantization (Global Scale)
  *
- * Uses direct int8 L2 distance computation. Since all vectors share
- * a single global scale/bias, no per-vector reconstruction is needed.
- * This is the key benefit: distance = sum((a[i] - b[i])^2) on raw int8
- * values, with optional post-scaling by 1/scale^2 for real L2 distances.
+ * Supports both SquaredEuclidean and Cosine distances. Since all vectors
+ * share a single global scale/bias, no per-vector reconstruction is needed.
+ *   SquaredEuclidean: distance = sum((a[i] - b[i])^2)
+ *   Cosine:           distance = -sum(a[i] * b[i])
  */
 class UniformInt8Metric : public IndexMetric {
  public:
@@ -46,16 +46,23 @@ class UniformInt8Metric : public IndexMetric {
       return IndexError_InvalidArgument;
     }
 
-    if (metric_name != "SquaredEuclidean") {
-      LOG_ERROR("UniformInt8Metric: only SquaredEuclidean supported, got %s",
-                metric_name.c_str());
+    if (metric_name == "SquaredEuclidean") {
+      turbo_metric_type_ = turbo::MetricType::kSquaredEuclidean;
+    } else if (metric_name == "Cosine") {
+      turbo_metric_type_ = turbo::MetricType::kCosine;
+    } else {
+      LOG_ERROR(
+          "UniformInt8Metric: only SquaredEuclidean and Cosine supported, "
+          "got %s",
+          metric_name.c_str());
       return IndexError_Unsupported;
     }
 
     meta_ = meta;
     params_ = index_params;
 
-    LOG_INFO("UniformInt8Metric initialized: dimension=%u", meta_.dimension());
+    LOG_INFO("UniformInt8Metric initialized: dimension=%u metric=%s",
+             meta_.dimension(), metric_name.c_str());
     return 0;
   }
 
@@ -84,34 +91,41 @@ class UniformInt8Metric : public IndexMetric {
   }
 
   //! Retrieve matrix distance function
-  //! Uses direct int8 L2: sum((a[i]-b[i])^2) — no reconstruction needed
+  //! Dispatches to the appropriate turbo kernel based on the configured metric.
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (m == 1 && n == 1) {
       auto turbo_ret = turbo::get_distance_func(
-          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+          turbo_metric_type_, turbo::DataType::kInt8,
           turbo::QuantizeType::kUniform);
       if (turbo_ret) {
         return turbo_ret;
       }
-      return reinterpret_cast<MatrixDistanceHandle>(
-          ailego::SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute);
+      // Scalar fallback only available for SquaredEuclidean
+      if (turbo_metric_type_ == turbo::MetricType::kSquaredEuclidean) {
+        return reinterpret_cast<MatrixDistanceHandle>(
+            ailego::SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute);
+      }
     }
-    // Only 1x1 is available for int8 in ailego
     return nullptr;
   }
 
   //! Retrieve batch distance function
-  //! Uses direct int8 batch L2 with prefetching
+  //! Dispatches to the appropriate turbo batch kernel based on the configured
+  //! metric.
   MatrixBatchDistance batch_distance(void) const override {
     auto turbo_ret = turbo::get_batch_distance_func(
-        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo_metric_type_, turbo::DataType::kInt8,
         turbo::QuantizeType::kUniform);
     if (turbo_ret) {
       return turbo_ret;
     }
-    return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-        ailego::DistanceBatch::SquaredEuclideanDistanceBatch<int8_t, 12,
-                                                             2>::ComputeBatch);
+    // Scalar fallback only available for SquaredEuclidean
+    if (turbo_metric_type_ == turbo::MetricType::kSquaredEuclidean) {
+      return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
+          ailego::DistanceBatch::SquaredEuclideanDistanceBatch<
+              int8_t, 12, 2>::ComputeBatch);
+    }
+    return nullptr;
   }
 
   //! Retrieve params of Metric
@@ -150,6 +164,7 @@ class UniformInt8Metric : public IndexMetric {
  private:
   IndexMeta meta_{};
   ailego::Params params_{};
+  turbo::MetricType turbo_metric_type_{turbo::MetricType::kSquaredEuclidean};
 };
 
 INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformInt8, UniformInt8Metric);
