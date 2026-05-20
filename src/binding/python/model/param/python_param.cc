@@ -865,10 +865,12 @@ Examples:
     {"type":"HNSW", "ef":300}
 )pbdoc");
   hnsw_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init<int, float, bool, bool, int, int>(),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("prefetch_offset") = 0,
+           py::arg("prefetch_lines") = 0,
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -878,10 +880,28 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+    prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
+        HNSW fast path. ``0`` disables prefetching (default). Values are
+        clamped to ``256``.
+    prefetch_lines (int, optional): Number of 64B cache lines to prefetch
+        per neighbour vector (PL). ``0`` (default) uses the auto-derived
+        value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
           "int: Size of the dynamic candidate list during HNSW search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const HnswQueryParams &self) -> int {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the HNSW fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const HnswQueryParams &self) -> int {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const HnswQueryParams &self) -> std::string {
              return "{"
@@ -891,20 +911,32 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const HnswQueryParams &self) {
             return py::make_tuple(self.ef(), self.radius(), self.is_linear(),
-                                  self.is_using_refiner());
+                                  self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for HnswQueryParams");
             auto obj = std::make_shared<HnswQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<int>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<int>());
+            }
             return obj;
           }));
 
@@ -1058,10 +1090,12 @@ Examples:
     200
 )pbdoc");
   vamana_query_params
-      .def(py::init<int, float, bool, bool>(),
+      .def(py::init<int, float, bool, bool, int, int>(),
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
+           py::arg("prefetch_offset") = 0,
+           py::arg("prefetch_lines") = 0,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1072,11 +1106,29 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
+        Vamana fast path. ``0`` disables prefetching (default). Values are
+        clamped to ``256``.
+    prefetch_lines (int, optional): Number of 64B cache lines to prefetch
+        per neighbour vector (PL). ``0`` (default) uses the auto-derived
+        value ``ceil(dim/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
           [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
           "int: Size of the dynamic candidate list during Vamana search.")
+      .def_property_readonly(
+          "prefetch_offset",
+          [](const VamanaQueryParams &self) -> int {
+            return self.prefetch_offset();
+          },
+          "int: Graph prefetch offset used by the Vamana fast path.")
+      .def_property_readonly(
+          "prefetch_lines",
+          [](const VamanaQueryParams &self) -> int {
+            return self.prefetch_lines();
+          },
+          "int: Override of prefetch cache lines per vector (0=auto).")
       .def("__repr__",
            [](const VamanaQueryParams &self) -> std::string {
              return "{"
@@ -1086,20 +1138,32 @@ Args:
                     ", \"radius\":" + std::to_string(self.radius()) +
                     ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
-                    std::to_string(self.is_using_refiner()) + "}";
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"prefetch_offset\":" +
+                    std::to_string(self.prefetch_offset()) +
+                    ", \"prefetch_lines\":" +
+                    std::to_string(self.prefetch_lines()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
-                                  self.is_linear(), self.is_using_refiner());
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.prefetch_offset(),
+                                  self.prefetch_lines());
           },
           [](py::tuple t) {
-            if (t.size() != 4)
+            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
+            if (t.size() >= 5) {
+              obj->set_prefetch_offset(t[4].cast<int>());
+            }
+            if (t.size() >= 6) {
+              obj->set_prefetch_lines(t[5].cast<int>());
+            }
             return obj;
           }));
 }

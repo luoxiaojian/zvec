@@ -190,15 +190,13 @@ template <typename EntityType>
 void fast_search_neighbors(const EntityType &entity, LinearPool<dist_t> &pool,
                            HnswDistCalculator &dc, uint32_t topk, uint32_t ef,
                            node_id_t entry_point, dist_t entry_dist,
-                           uint32_t prefetch_lines) {
+                           uint32_t prefetch_lines, uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree(0);  // level 0 only
   const uint32_t cap = std::max(topk, ef);
   pool.reset(entity.doc_cnt(), cap, cap);
 
   pool.set_visited(entry_point);
   pool.insert(entry_point, entry_dist);
-
-  static constexpr uint32_t GRAPH_PO = 8;
 
   uint32_t buf_capacity = max_deg;
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -219,7 +217,7 @@ void fast_search_neighbors(const EntityType &entity, LinearPool<dist_t> &pool,
     }
 
     const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
     uint32_t i = 0;
 
@@ -396,7 +394,11 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  const uint32_t prefetch_lines = (entity.vector_size() + 63) / 64;
+  uint32_t prefetch_lines = (entity.vector_size() + 63) / 64;
+    // User-configured PL overrides the auto-derived value when non-zero.
+    if (ctx->pl() > 0) {
+      prefetch_lines = ctx->pl();
+    }
 
   if (!use_pool || ctx->filter().is_valid() || level != 0) {
     // Dual-heap path: add_node, filtered search, or upper-level scan.
@@ -422,7 +424,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
       auto &pool = ctx->pool();
       fast_search_neighbors(entity, pool, dc,
                             static_cast<uint32_t>(ctx->topk()), ctx->ef(),
-                            *entry_point, *dist, prefetch_lines);
+                            *entry_point, *dist, prefetch_lines, ctx->po());
       copy_pool_to_topk(pool, topk);
     } else {
       // BufferPool entities: fallback to dual-heap path.

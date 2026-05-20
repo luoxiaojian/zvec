@@ -125,7 +125,8 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 template <typename EntityType, typename HeapType>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VamanaDistCalculator &dc, uint32_t topk, uint32_t ef,
-                        node_id_t entry_point, uint32_t prefetch_lines) {
+                        node_id_t entry_point, uint32_t prefetch_lines,
+                        uint32_t prefetch_offset) {
   const uint32_t max_deg = entity.max_degree();
   const uint32_t cap = std::max(topk, ef);
   pool.reset(static_cast<int32_t>(entity.doc_cnt()), static_cast<int32_t>(cap),
@@ -134,8 +135,6 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
   dist_t ep_dist = dc.batch_dist(entry_point);
   pool.set_visited(entry_point);
   pool.push_block(&ep_dist, &entry_point, 1);
-
-  static constexpr uint32_t GRAPH_PO = 8;
 
   uint32_t buf_capacity = max_deg;
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -156,7 +155,7 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
     }
 
     const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), GRAPH_PO);
+        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
     uint32_t i = 0;
 
@@ -337,6 +336,10 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       prefetch_lines = static_cast<uint32_t>(stride / 64);
     }
   }
+  // User-configured PL overrides the auto-derived value when non-zero.
+  if (ctx->pl() > 0) {
+    prefetch_lines = ctx->pl();
+  }
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
@@ -371,12 +374,12 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       if (avx2_ok) {
         auto &bpool = ctx->block_pool();
         fast_greedy_search(entity, bpool, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+                           prefetch_lines, ctx->po());
         copy_pool_to_topk(bpool, topk_heap);
       } else {
         auto &lpool = ctx->pool();
         fast_greedy_search(entity, lpool, dc, topk_v, ef_v, entry_point,
-                           prefetch_lines);
+                           prefetch_lines, ctx->po());
         copy_pool_to_topk(lpool, topk_heap);
       }
     } else {

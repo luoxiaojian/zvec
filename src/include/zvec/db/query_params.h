@@ -72,8 +72,12 @@ class HnswQueryParams : public QueryParams {
  public:
   HnswQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                   float radius = 0.0f, bool is_linear = false,
-                  bool is_using_refiner = false)
-      : QueryParams(IndexType::HNSW), ef_(ef) {
+                  bool is_using_refiner = false, int prefetch_offset = 0,
+                  int prefetch_lines = 0)
+      : QueryParams(IndexType::HNSW),
+        ef_(ef),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -89,8 +93,26 @@ class HnswQueryParams : public QueryParams {
     ef_ = ef;
   }
 
+  int prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(int prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  int prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(int prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_;
+  int prefetch_offset_{0};
+  int prefetch_lines_{0};
 };
 
 class IVFQueryParams : public QueryParams {
@@ -130,7 +152,8 @@ class HnswRabitqQueryParams : public QueryParams {
   HnswRabitqQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                         float radius = 0.0f, bool is_linear = false,
                         bool is_using_refiner = false)
-      : QueryParams(IndexType::HNSW_RABITQ), ef_(ef) {
+      : QueryParams(IndexType::HNSW_RABITQ),
+        ef_(ef) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -176,8 +199,12 @@ class VamanaQueryParams : public QueryParams {
  public:
   VamanaQueryParams(int ef_search = core_interface::kDefaultVamanaEfSearch,
                     float radius = 0.0f, bool is_linear = false,
-                    bool is_using_refiner = false)
-      : QueryParams(IndexType::VAMANA), ef_search_(ef_search) {
+                    bool is_using_refiner = false, int prefetch_offset = 0,
+                    int prefetch_lines = 0)
+      : QueryParams(IndexType::VAMANA),
+        ef_search_(ef_search),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -193,8 +220,26 @@ class VamanaQueryParams : public QueryParams {
     ef_search_ = ef_search;
   }
 
+  int prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(int prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  int prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(int prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_search_;
+  int prefetch_offset_{0};
+  int prefetch_lines_{0};
 };
 
 }  // namespace zvec
