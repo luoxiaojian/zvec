@@ -83,7 +83,7 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
     return;
   }
   static constexpr size_t batch_size = 2;
-  static constexpr size_t prefetch_step = 2;
+  const size_t prefetch_step = original_dim > 256 ? 2 : 4;
   size_t i = 0;
   float *dist_ptr = distances;
   const int8_t *const *data_ptrs_ptr =

@@ -86,10 +86,8 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
     return;
   }
 
-  // Compute raw inner products for all vectors. The query has been preprocessed
-  // (int8 + 128 -> uint8) so dpbusd can be used via ip_int8_batch_avx512_vnni.
-  internal::ip_int8_batch_avx512_vnni(vectors, query, n, original_dim,
-                                      distances);
+  static constexpr size_t batch_size = 2;
+  const size_t prefetch_step = original_dim > 256 ? 2 : 4;
 
   const float *q_tail = reinterpret_cast<const float *>(
       reinterpret_cast<const int8_t *>(query) + original_dim);
@@ -97,26 +95,62 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
   float qb = q_tail[1];
   float qs = q_tail[2];
 
-  for (int i = 0; i < n; ++i) {
+  size_t i = 0;
+  for (; i + batch_size <= n; i+= batch_size) {
+    std::array<const void *, batch_size> prefetch_ptrs;
+    std::array<float, batch_size> distance_chunk;
+    for (size_t j = 0; j < batch_size; ++j) {
+      if (i + j + batch_size * prefetch_step < n) {
+        prefetch_ptrs[j] = vectors[i + j + batch_size * prefetch_step];
+      } else {
+        prefetch_ptrs[j] = nullptr;
+      }
+    }
+    internal::ip_int8_batch_avx512_vnni_impl<batch_size>(
+        query, &vectors[i], prefetch_ptrs, original_dim, distance_chunk.data());
+    for (size_t j = 0; j < batch_size; ++j) {
+      const float *m_tail = reinterpret_cast<const float *>(
+          reinterpret_cast<const int8_t *>(vectors[i + j]) + original_dim);
+      float ma = m_tail[0];
+      float mb = m_tail[1];
+      float ms = m_tail[2];
+      // Correct for the +128 shift applied to the query during preprocessing:
+      //   dpbusd computes sum(uint8_query[i] * int8_data[i])
+      //         = sum((int8_query[i] + 128) * int8_data[i])
+      //         = true_ip + 128 * sum(int8_data[i])
+      // int8_sum is stored as the 5th int-sized field after the 4 floats.
+      int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
+      float result = distance_chunk[j];
+      result -= 128.0f * static_cast<float>(int8_sum);
+
+      // Dequantize and compute cosine distance:
+      //   cosine_dist = -(ma * qa * ip + mb * qa * qs + qb * ma * ms
+      //                   + original_dim * qb * mb)
+      result = -(ma * qa * result + mb * qa * qs + qb * ma * ms +
+                 static_cast<float>(original_dim) * qb * mb);
+      distances[i + j] = result;
+    }
+  }
+  for (; i < n; ++i) {
+    std::array<const void *, 1> prefetch_ptrs{nullptr};
+    float dist;
+    internal::ip_int8_batch_avx512_vnni_impl<1>(query, &vectors[i], prefetch_ptrs, original_dim, &dist);
+
     const float *m_tail = reinterpret_cast<const float *>(
         reinterpret_cast<const int8_t *>(vectors[i]) + original_dim);
     float ma = m_tail[0];
     float mb = m_tail[1];
     float ms = m_tail[2];
-    // Correct for the +128 shift applied to the query during preprocessing:
-    //   dpbusd computes sum(uint8_query[i] * int8_data[i])
-    //         = sum((int8_query[i] + 128) * int8_data[i])
-    //         = true_ip + 128 * sum(int8_data[i])
-    // int8_sum is stored as the 5th int-sized field after the 4 floats.
+
     int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
-    float &result = distances[i];
-    result -= 128.0f * static_cast<float>(int8_sum);
+    dist -= 128.0f * static_cast<float>(int8_sum);
 
     // Dequantize and compute cosine distance:
     //   cosine_dist = -(ma * qa * ip + mb * qa * qs + qb * ma * ms
     //                   + original_dim * qb * mb)
-    result = -(ma * qa * result + mb * qa * qs + qb * ma * ms +
+    dist = -(ma * qa * dist + mb * qa * qs + qb * ma * ms +
                static_cast<float>(original_dim) * qb * mb);
+    distances[i] = dist;
   }
 #else
   (void)vectors;
