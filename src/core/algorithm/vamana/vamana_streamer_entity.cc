@@ -148,7 +148,10 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
     }
     node_chunk = p.second;
     chunk_offset = 0UL;
-    node_chunks_.emplace_back(node_chunk);
+    {
+      std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+      node_chunks_.emplace_back(node_chunk);
+    }
   } else {
     node_chunk = node_chunks_[chunk_index];
     chunk_offset = node_chunk->data_size();
@@ -212,7 +215,10 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
         return p.first;
       }
       node_chunk = p.second;
-      node_chunks_.emplace_back(node_chunk);
+      {
+        std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+        node_chunks_.emplace_back(node_chunk);
+      }
     }
     node_chunk = node_chunks_[chunk_idx];
     chunk_offset = (node_id & node_index_mask_) * node_size();
@@ -797,6 +803,11 @@ int VamanaStreamerEntity::ensure_dist_storage() {
 
   dist_entry_size_ = static_cast<uint32_t>(max_degree() * sizeof(dist_t));
 
+  // Pre-reserve dist_chunks_ to match node_chunks_ capacity so that
+  // subsequent emplace_back in ensure_dist_chunk_for never triggers
+  // reallocation while concurrent add_node threads read dist_chunks_.
+  dist_chunks_.reserve(node_chunks_.capacity());
+
   // Calculate how many dist chunks we need for existing nodes
   uint32_t total_docs = doc_cnt();
   if (total_docs == 0) {
@@ -848,10 +859,17 @@ int VamanaStreamerEntity::ensure_dist_chunk_for(uint32_t chunk_index) {
     return dp.first;
   }
   dp.second->resize(dist_chunk_data_size);
-  while (dist_chunks_.size() <= chunk_index) {
-    dist_chunks_.emplace_back(nullptr);
+  {
+    // Protect dist_chunks_ modification against concurrent readers in
+    // get_neighbor_dists/update_neighbor_dists (called from add_node without
+    // mutex_). Uses node_chunks_mutex_ which is the same lock used by
+    // sync_chunks for CHUNK_TYPE_NEIGHBOR_DIST.
+    std::lock_guard<std::mutex> chunks_lock(node_chunks_mutex_);
+    while (dist_chunks_.size() <= chunk_index) {
+      dist_chunks_.emplace_back(nullptr);
+    }
+    dist_chunks_[chunk_index] = std::move(dp.second);
   }
-  dist_chunks_[chunk_index] = std::move(dp.second);
   return 0;
 }
 
