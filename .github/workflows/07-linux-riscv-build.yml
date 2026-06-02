@@ -24,6 +24,7 @@ jobs:
         with:
           ref: main
           submodules: recursive
+          fetch-depth: 1
 
       - name: Install build dependencies
         run: |

@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ''
+      run_examples:
+        description: 'Whether to build and run examples'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -39,6 +44,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -99,6 +105,14 @@ jobs:
             setuptools_scm
         shell: bash
 
+      - name: Cache thirdparty build
+        uses: actions/cache@v5
+        with:
+          path: build/cp*/build/thirdparty
+          key: thirdparty-${{ inputs.platform }}-${{ inputs.os }}-${{ inputs.compiler || 'gcc' }}-${{ hashFiles('thirdparty/CMakeLists.txt', '.gitmodules') }}
+          restore-keys: |
+            thirdparty-${{ inputs.platform }}-${{ inputs.os }}-${{ inputs.compiler || 'gcc' }}-
+
       - name: Build from source
         run: |
           cd "$GITHUB_WORKSPACE"
@@ -126,6 +140,7 @@ jobs:
         shell: bash
 
       - name: Run C++ Examples
+        if: inputs.run_examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c++"
           mkdir build && cd build
@@ -139,6 +154,7 @@ jobs:
         shell: bash
 
       - name: Run C Examples
+        if: inputs.run_examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
           mkdir build && cd build

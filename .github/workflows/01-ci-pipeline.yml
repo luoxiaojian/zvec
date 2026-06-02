@@ -59,6 +59,7 @@ jobs:
     with:
       platform: macos-arm64
       os: macos-15
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-and-test-macos-26-arm64:
     name: Build & Test (macos-26-arm64)
@@ -67,6 +68,7 @@ jobs:
     with:
       platform: macos-arm64
       os: macos-26
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-and-test-linux-arm64:
     name: Build & Test (linux-arm64)
@@ -75,6 +77,7 @@ jobs:
     with:
       platform: linux-arm64
       os: ubuntu-24.04-arm
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-and-test-linux-x64:
     name: Build & Test (linux-x64)
@@ -83,6 +86,7 @@ jobs:
     with:
       platform: linux-x64
       os: ubuntu-24.04
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-and-test-linux-x64-clang:
     name: Build & Test (linux-x64-clang)
@@ -92,6 +96,7 @@ jobs:
       platform: linux-x64-clang
       os: ubuntu-24.04
       compiler: clang
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-android:
     name: Build & Test (android)
@@ -102,6 +107,8 @@ jobs:
     name: Build & Test (Windows)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/05-windows-build.yml
+    with:
+      run_examples: ${{ github.event_name != 'pull_request' }}
 
   build-ios:
     name: Build & Test (iOS)
