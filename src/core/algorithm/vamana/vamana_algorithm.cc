@@ -199,7 +199,7 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     if (ailego_unlikely(ret != 0)) break;
 
     // Prefetch for better cache performance
-    static constexpr uint32_t PREFETCH_BATCH = 2;
+    static constexpr uint32_t PREFETCH_BATCH = 4;
     static constexpr uint32_t PREFETCH_STEP = 2;
     for (uint32_t i = 0;
          i < std::min(PREFETCH_BATCH * PREFETCH_STEP, unvisited_count); ++i) {
