@@ -35,6 +35,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - name: Cleanup left marker files
         run: |
@@ -73,6 +74,24 @@ jobs:
             pytest-xdist `
             scikit-build-core `
             setuptools_scm
+        shell: powershell
+
+      - name: Cache thirdparty build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/thirdparty
+            build/external
+          key: ${{ matrix.platform }}-thirdparty-${{ hashFiles('thirdparty/**/CMakeLists.txt', '.gitmodules') }}
+
+      - name: Restore thirdparty build timestamps
+        run: |
+          if (Test-Path "build/thirdparty") {
+            Write-Host "Touching thirdparty build artifacts to prevent spurious rebuilds..."
+            $future = (Get-Date).AddDays(1)
+            Get-ChildItem -Path "build/thirdparty","build/external" -Recurse -File -ErrorAction SilentlyContinue |
+              ForEach-Object { $_.LastWriteTime = $future }
+          }
         shell: powershell
 
       - name: Build from source
