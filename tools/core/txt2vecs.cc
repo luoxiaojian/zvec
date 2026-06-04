@@ -33,7 +33,7 @@ DEFINE_string(method, "L2", "available method: L2, IP");
 DEFINE_int32(dimension, 256, "data dimension");
 DEFINE_string(vector_type, "dense", "available type: dense, hybrid, sparse");
 
-bool write_header_output(VecsHeader header, const IndexMeta &meta,
+bool write_header_output(VecsHeader &header, const IndexMeta &meta,
                          size_t &total_writes, FILE *wfp) {
   // write header
   std::cout << "Begin to Write Header Section..." << std::endl;
@@ -69,7 +69,7 @@ bool write_header_output(VecsHeader header, const IndexMeta &meta,
   return true;
 }
 
-bool write_header_output_sparse(VecsHeader header, const IndexMeta &meta,
+bool write_header_output_sparse(VecsHeader &header, const IndexMeta &meta,
                                 size_t &total_writes, FILE *wfp) {
   // write header
   std::cout << "Begin to Write Header Section..." << std::endl;
@@ -587,7 +587,7 @@ bool process(void) {
                           key_offset, sparse_offset, taglist_offset, key_size,
                           sparse_size, taglist_size);
 
-    VecsHeader header;
+    VecsHeader header{};
     header.num_vecs = keys.size();
     header.meta_size_v1 = 0;
     header.version = 1;
@@ -650,7 +650,7 @@ bool process(void) {
                    key_offset, features_offset, sparse_offset, taglist_offset,
                    key_size, feature_size, sparse_size, taglist_size);
 
-    VecsHeader header;
+    VecsHeader header{};
     header.num_vecs = num_vecs;
     header.meta_size_v1 = 0;
     header.version = 1;
