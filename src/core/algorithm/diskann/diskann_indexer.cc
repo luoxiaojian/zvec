@@ -402,8 +402,6 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime cpu_timer;
 
-  [[maybe_unused]] uint32_t num_ios = 0;
-
   std::vector<diskann_id_t> frontier;
   frontier.reserve(2 * beam_width_);
 
@@ -462,7 +460,6 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
         stats.disk_page_reads++;
         stats.io_num++;
-        num_ios++;
       }
 
       io_timer.reset();
@@ -540,8 +537,6 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   ailego::ElapsedTime io_timer;
   ailego::ElapsedTime cpu_timer;
 
-  [[maybe_unused]] uint32_t num_ios = 0;
-
   std::vector<diskann_id_t> frontier;
   frontier.reserve(2 * beam_width_);
 
@@ -602,7 +597,6 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
         stats.disk_page_reads++;
         stats.io_num++;
-        num_ios++;
       }
 
       io_timer.reset();
@@ -675,8 +669,6 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
   ailego::ElapsedTime io_timer;
   ailego::ElapsedTime cpu_timer;
 
-  [[maybe_unused]] uint32_t num_ios = 0;
-
   std::vector<diskann_id_t> frontier;
   frontier.reserve(2 * beam_width_);
 
@@ -714,7 +706,6 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 
     stats.disk_page_reads++;
     stats.io_num++;
-    num_ios++;
 
     io_timer.reset();
 
@@ -798,8 +789,6 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
   candidates.insert(Neighbor(best_medoid, dist));
   visit_filter.set_visited(best_medoid);
 
-  [[maybe_unused]] uint32_t cmps = 0;
-  [[maybe_unused]] uint32_t hops = 0;
   uint32_t num_ios = 0;
 
   std::vector<diskann_id_t> frontier;
@@ -907,7 +896,6 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
       for (uint64_t m = 0; m < neighbor_num; ++m) {
         diskann_id_t id = node_neighbors[m];
         visit_filter.set_visited(id);
-        cmps++;
 
         Neighbor nn(id, distances[m]);
         candidates.insert(nn);
@@ -949,7 +937,6 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
       for (uint64_t m = 0; m < neighbor_num; ++m) {
         diskann_id_t id = node_neighbors[m];
         visit_filter.set_visited(id);
-        cmps++;
         stats.dist_num++;
 
         Neighbor nn(id, distances[m]);
@@ -958,8 +945,6 @@ int DiskAnnIndexer::cached_beam_search(DiskAnnContext *ctx) {
 
       stats.cpu_us += cpu_timer.micro_seconds();
     }
-
-    hops++;
   }
 
   stats.total_us += query_timer.micro_seconds();
@@ -1034,8 +1019,6 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
     pq_table_->preprocess_pq_dist_table(ctx->query_rotated(),
                                         ctx->pq_table_dist_buffer());
 
-    [[maybe_unused]] uint32_t cmps = 0;
-    [[maybe_unused]] uint32_t hops = 0;
     uint32_t num_ios = 0;
 
     std::vector<diskann_id_t> frontier;
@@ -1149,7 +1132,6 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
         for (uint64_t m = 0; m < neighbor_num; ++m) {
           diskann_id_t id = node_neighbors[m];
           visit_filter.set_visited(id);
-          cmps++;
 
           Neighbor nn(id, distances[m]);
           candidates.insert(nn);
@@ -1203,7 +1185,6 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
         for (uint64_t m = 0; m < neighbor_num; ++m) {
           diskann_id_t id = node_neighbors[m];
           visit_filter.set_visited(id);
-          cmps++;
           stats.dist_num++;
 
           Neighbor nn(id, distances[m]);
@@ -1212,8 +1193,6 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         stats.cpu_us += cpu_timer.micro_seconds();
       }
-
-      hops++;
     }
 
     stats.total_us += query_timer.micro_seconds();

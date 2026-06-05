@@ -77,7 +77,6 @@ class AlignedFileReader {
 
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
-  [[maybe_unused]] uint64_t file_sz;
   int file_desc;
 
   IOContext bad_ctx = (IOContext)-1;
