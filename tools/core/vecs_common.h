@@ -42,7 +42,6 @@ struct VecsHeader {
   uint64_t partition_size;    // size for partition
   uint64_t taglist_offset;    // offset for taglist
   uint64_t taglist_size;      // size for taglist
-  uint8_t meta_buf[0];
 };
 #pragma pack()
 

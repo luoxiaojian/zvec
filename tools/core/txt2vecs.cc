@@ -587,7 +587,7 @@ bool process(void) {
                           key_offset, sparse_offset, taglist_offset, key_size,
                           sparse_size, taglist_size);
 
-    VecsHeader header{};
+    VecsHeader header;
     header.num_vecs = keys.size();
     header.meta_size_v1 = 0;
     header.version = 1;
@@ -650,7 +650,7 @@ bool process(void) {
                    key_offset, features_offset, sparse_offset, taglist_offset,
                    key_size, feature_size, sparse_size, taglist_size);
 
-    VecsHeader header{};
+    VecsHeader header;
     header.num_vecs = num_vecs;
     header.meta_size_v1 = 0;
     header.version = 1;

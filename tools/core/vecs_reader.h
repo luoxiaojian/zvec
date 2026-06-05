@@ -65,7 +65,8 @@ class VecsReader {
     num_vecs_ = header->num_vecs;
 
     // deserialize
-    bool bret = index_meta_.deserialize(&header->meta_buf, header->meta_size);
+    bool bret = index_meta_.deserialize(
+        reinterpret_cast<const uint8_t *>(header + 1), header->meta_size);
     if (!bret) {
       std::cerr << "deserialize index meta error." << std::endl;
       return false;
@@ -250,7 +251,8 @@ class SparseVecsReader {
     num_vecs_ = header->num_vecs;
 
     // deserialize
-    bool bret = index_meta_.deserialize(&header->meta_buf, header->meta_size);
+    bool bret = index_meta_.deserialize(
+        reinterpret_cast<const uint8_t *>(header + 1), header->meta_size);
     if (!bret) {
       std::cerr << "deserialize index meta error." << std::endl;
       return false;
