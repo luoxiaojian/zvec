@@ -73,8 +73,12 @@ class HnswQueryParams : public QueryParams {
  public:
   HnswQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
                   float radius = 0.0f, bool is_linear = false,
-                  bool is_using_refiner = false)
-      : QueryParams(IndexType::HNSW), ef_(ef) {
+                  bool is_using_refiner = false, uint32_t prefetch_offset = 8,
+                  uint32_t prefetch_lines = 0)
+      : QueryParams(IndexType::HNSW),
+        ef_(ef),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -90,8 +94,26 @@ class HnswQueryParams : public QueryParams {
     ef_ = ef;
   }
 
+  uint32_t prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(uint32_t prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  uint32_t prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(uint32_t prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_;
+  uint32_t prefetch_offset_{8};
+  uint32_t prefetch_lines_{0};
 };
 
 class IVFQueryParams : public QueryParams {
@@ -199,8 +221,12 @@ class VamanaQueryParams : public QueryParams {
  public:
   VamanaQueryParams(int ef_search = core_interface::kDefaultVamanaEfSearch,
                     float radius = 0.0f, bool is_linear = false,
-                    bool is_using_refiner = false)
-      : QueryParams(IndexType::VAMANA), ef_search_(ef_search) {
+                    bool is_using_refiner = false, uint32_t prefetch_offset = 8,
+                    uint32_t prefetch_lines = 0)
+      : QueryParams(IndexType::VAMANA),
+        ef_search_(ef_search),
+        prefetch_offset_(prefetch_offset),
+        prefetch_lines_(prefetch_lines) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -216,8 +242,26 @@ class VamanaQueryParams : public QueryParams {
     ef_search_ = ef_search;
   }
 
+  uint32_t prefetch_offset() const {
+    return prefetch_offset_;
+  }
+
+  void set_prefetch_offset(uint32_t prefetch_offset) {
+    prefetch_offset_ = prefetch_offset;
+  }
+
+  uint32_t prefetch_lines() const {
+    return prefetch_lines_;
+  }
+
+  void set_prefetch_lines(uint32_t prefetch_lines) {
+    prefetch_lines_ = prefetch_lines;
+  }
+
  private:
   int ef_search_;
+  uint32_t prefetch_offset_{8};
+  uint32_t prefetch_lines_{0};
 };
 
 class FtsQueryParams : public QueryParams {

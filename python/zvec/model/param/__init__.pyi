@@ -267,6 +267,12 @@ class HnswQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+        prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
+            HNSW fast path. ``0`` disables prefetching. Default is ``8``.
+            Values are clamped to ``256``.
+        prefetch_lines (int, optional): Number of 64B cache lines to prefetch
+            per neighbour vector (PL). ``0`` (default) uses the auto-derived
+            value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 
     Examples:
         >>> params = HnswQueryParam(ef=300)
@@ -282,6 +288,8 @@ class HnswQueryParam(QueryParam):
         radius: typing.SupportsFloat = 0.0,
         is_linear: bool = False,
         is_using_refiner: bool = False,
+        prefetch_offset: typing.SupportsInt = 8,
+        prefetch_lines: typing.SupportsInt = 0,
     ) -> None:
         """
         Constructs an HnswQueryParam instance.
@@ -292,6 +300,10 @@ class HnswQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
+            prefetch_offset (int, optional): Graph prefetch offset (PO) used by
+                the HNSW fast path. ``0`` disables prefetching. Defaults to 8.
+            prefetch_lines (int, optional): Override of prefetch cache lines per
+                vector. ``0`` (default) means auto-derive from vector size.
         """
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -299,6 +311,18 @@ class HnswQueryParam(QueryParam):
     def ef(self) -> int:
         """
         int: Size of the dynamic candidate list during HNSW search.
+        """
+
+    @property
+    def prefetch_offset(self) -> int:
+        """
+        int: Graph prefetch offset used by the HNSW fast path.
+        """
+
+    @property
+    def prefetch_lines(self) -> int:
+        """
+        int: Override of prefetch cache lines per vector (0=auto).
         """
 
 class HnswRabitqIndexParam(VectorIndexParam):
