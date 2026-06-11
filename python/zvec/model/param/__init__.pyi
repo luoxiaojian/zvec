@@ -593,14 +593,14 @@ class VamanaIndexParam(VectorIndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        metric_type: MetricType = ...,
+        metric_type: _zvec.typing.MetricType = ...,
         max_degree: typing.SupportsInt = 64,
         search_list_size: typing.SupportsInt = 100,
         alpha: typing.SupportsFloat = 1.2,
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
-        quantize_type: QuantizeType = ...,
+        quantize_type: _zvec.typing.QuantizeType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
