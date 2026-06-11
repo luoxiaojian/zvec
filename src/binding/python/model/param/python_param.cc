@@ -1060,8 +1060,9 @@ Examples:
       .def(py::init<int, float, bool, bool, uint32_t, uint32_t>(),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("prefetch_offset") = 8u,
-           py::arg("prefetch_lines") = 0u,
+           py::arg("is_using_refiner") = false,
+           py::arg("prefetch_offset") = core_interface::kDefaultPrefetchOffset,
+           py::arg("prefetch_lines") = core_interface::kDefaultPrefetchLines,
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -1332,8 +1333,9 @@ Examples:
       .def(py::init<int, float, bool, bool, uint32_t, uint32_t>(),
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("prefetch_offset") = 8u,
-           py::arg("prefetch_lines") = 0u,
+           py::arg("is_using_refiner") = false,
+           py::arg("prefetch_offset") = core_interface::kDefaultPrefetchOffset,
+           py::arg("prefetch_lines") = core_interface::kDefaultPrefetchLines,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
