@@ -392,12 +392,6 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  uint32_t prefetch_lines = (entity.vector_size() + 63) / 64;
-  // User-configured PL overrides the auto-derived value when non-zero.
-  if (ctx->pl() > 0) {
-    prefetch_lines = ctx->pl();
-  }
-
   if (!use_pool || ctx->filter().is_valid() || level != 0) {
     // Dual-heap path: add_node, filtered search, or upper-level scan.
     auto run_with_filter = [&](auto &&filter) {
@@ -418,6 +412,9 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   } else {
     // Pool-based path for level-0 unfiltered search.
     if constexpr (std::is_same_v<MemBlockType, MmapMemoryBlock>) {
+      const uint32_t prefetch_lines =
+          ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+
       // Fast path: direct pointer access via get_vector_ptr.
       // BlockHeap (AVX2) or LinearPool (scalar) for top-k tracking.
       const uint32_t topk_v = static_cast<uint32_t>(ctx->topk());

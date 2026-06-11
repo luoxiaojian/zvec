@@ -200,7 +200,7 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
   const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (dc.dimension() + 63) / 64;
+      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
 
   uint32_t buf_capacity = entity.max_degree();
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -318,21 +318,8 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  // Number of cache lines per vector (e.g. 2 for dim=128).
-  // Used by both the fallback candidates/filter path and the fast helpers.
-  uint32_t prefetch_lines = (dc.dimension() + 63) / 64;
-  if constexpr (std::is_same_v<EntityType, VamanaContiguousStreamerEntity>) {
-    // Contiguous flat array stride is already 64B-aligned.  Use it so that
-    // prefetch does not overshoot into the next vector.
-    size_t stride = entity.vector_stride();
-    if (stride > 0) {
-      prefetch_lines = static_cast<uint32_t>(stride / 64);
-    }
-  }
-  // User-configured PL overrides the auto-derived value when non-zero.
-  if (ctx->pl() > 0) {
-    prefetch_lines = ctx->pl();
-  }
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.

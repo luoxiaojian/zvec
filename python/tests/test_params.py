@@ -334,8 +334,10 @@ class TestHnswQueryParam:
             is_using_refiner=True,
             radius=30,
             is_linear=True,
-            prefetch_offset=16,
-            prefetch_lines=4,
+            extra_params={
+                "prefetch_offset": 16,
+                "prefetch_lines": 4,
+            },
         )
         assert param.ef == 10
         assert param.is_using_refiner == True

@@ -283,8 +283,10 @@ class TestVamanaQueryParamSurface:
             radius=0.5,
             is_linear=True,
             is_using_refiner=True,
-            prefetch_offset=8,
-            prefetch_lines=2,
+            extra_params={
+                "prefetch_offset": 8,
+                "prefetch_lines": 2,
+            },
         )
         assert q.type == IndexType.VAMANA
         assert q.ef_search == 300
@@ -315,8 +317,10 @@ class TestVamanaQueryParamSurface:
             radius=0.3,
             is_linear=False,
             is_using_refiner=True,
-            prefetch_offset=4,
-            prefetch_lines=3,
+            extra_params={
+                "prefetch_offset": 4,
+                "prefetch_lines": 3,
+            },
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA

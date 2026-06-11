@@ -1057,12 +1057,24 @@ Examples:
     {"type":"HNSW", "ef":300}
 )pbdoc");
   hnsw_params
-      .def(py::init<int, float, bool, bool, uint32_t, uint32_t>(),
+      .def(py::init([](int ef, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<HnswQueryParams>(ef, radius, is_linear,
+                                                          is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef") = core_interface::kDefaultHnswEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
-           py::arg("prefetch_offset") = core_interface::kDefaultPrefetchOffset,
-           py::arg("prefetch_lines") = core_interface::kDefaultPrefetchLines,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
@@ -1072,12 +1084,13 @@ Args:
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
-    prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
-        HNSW fast path. ``0`` disables prefetching. Default is ``8``.
-        Values are clamped to ``256``.
-    prefetch_lines (int, optional): Number of 64B cache lines to prefetch
-        per neighbour vector (PL). ``0`` (default) uses the auto-derived
-        value ``ceil(vector_size/64)``. Values are clamped to ``256``.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(vector_size/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
@@ -1330,12 +1343,24 @@ Examples:
     200
 )pbdoc");
   vamana_query_params
-      .def(py::init<int, float, bool, bool, uint32_t, uint32_t>(),
+      .def(py::init([](int ef_search, float radius, bool is_linear,
+                       bool is_using_refiner, py::dict extra_params) {
+             auto obj = std::make_shared<VamanaQueryParams>(
+                 ef_search, radius, is_linear, is_using_refiner);
+             if (extra_params.contains("prefetch_offset")) {
+               obj->set_prefetch_offset(
+                   extra_params["prefetch_offset"].cast<uint32_t>());
+             }
+             if (extra_params.contains("prefetch_lines")) {
+               obj->set_prefetch_lines(
+                   extra_params["prefetch_lines"].cast<uint32_t>());
+             }
+             return obj;
+           }),
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
-           py::arg("prefetch_offset") = core_interface::kDefaultPrefetchOffset,
-           py::arg("prefetch_lines") = core_interface::kDefaultPrefetchLines,
+           py::arg("extra_params") = py::dict(),
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1346,12 +1371,13 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
-    prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
-        Vamana fast path. ``0`` disables prefetching. Default is ``8``.
-        Values are clamped to ``256``.
-    prefetch_lines (int, optional): Number of 64B cache lines to prefetch
-        per neighbour vector (PL). ``0`` (default) uses the auto-derived
-        value ``ceil(dim/64)``. Values are clamped to ``256``.
+    extra_params (dict, optional): Additional search parameters. Supported keys:
+        - ``prefetch_offset`` (int): Graph prefetch offset (PO).
+          ``0`` disables prefetching. Default is ``8``.
+          Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
+          per neighbour vector (PL). ``0`` (default) uses the auto-derived
+          value ``ceil(dim/64)``. Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
