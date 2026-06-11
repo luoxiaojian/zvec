@@ -279,8 +279,12 @@ class TestVamanaQueryParamSurface:
 
     def test_custom_construction(self):
         q = VamanaQueryParam(
-            ef_search=300, radius=0.5, is_linear=True, is_using_refiner=True,
-            prefetch_offset=8, prefetch_lines=2
+            ef_search=300,
+            radius=0.5,
+            is_linear=True,
+            is_using_refiner=True,
+            prefetch_offset=8,
+            prefetch_lines=2,
         )
         assert q.type == IndexType.VAMANA
         assert q.ef_search == 300
@@ -307,8 +311,12 @@ class TestVamanaQueryParamSurface:
 
     def test_pickle_roundtrip(self):
         original = VamanaQueryParam(
-            ef_search=256, radius=0.3, is_linear=False, is_using_refiner=True,
-            prefetch_offset=4, prefetch_lines=3
+            ef_search=256,
+            radius=0.3,
+            is_linear=False,
+            is_using_refiner=True,
+            prefetch_offset=4,
+            prefetch_lines=3,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
