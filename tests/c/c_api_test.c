@@ -3695,20 +3695,6 @@ void test_query_params_functions(void) {
   is_using_refiner = zvec_query_params_flat_get_is_using_refiner(flat_params);
   TEST_ASSERT(is_using_refiner == true);
 
-  // Test HNSW prefetch parameters
-  err = zvec_query_params_hnsw_set_prefetch_offset(hnsw_params, 16);
-  TEST_ASSERT(err == ZVEC_OK);
-  TEST_ASSERT(zvec_query_params_hnsw_get_prefetch_offset(hnsw_params) == 16);
-
-  err = zvec_query_params_hnsw_set_prefetch_lines(hnsw_params, 4);
-  TEST_ASSERT(err == ZVEC_OK);
-  TEST_ASSERT(zvec_query_params_hnsw_get_prefetch_lines(hnsw_params) == 4);
-
-  // Test HNSW prefetch offset=0 disables prefetching
-  err = zvec_query_params_hnsw_set_prefetch_offset(hnsw_params, 0);
-  TEST_ASSERT(err == ZVEC_OK);
-  TEST_ASSERT(zvec_query_params_hnsw_get_prefetch_offset(hnsw_params) == 0);
-
   // Test Vamana query parameters
   zvec_vamana_query_params_t *vamana_params =
       zvec_query_params_vamana_create(256, 0.3f, false, true);
@@ -3719,10 +3705,6 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == false);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
               true);
-
-  // Vamana default prefetch values
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_offset(vamana_params) == 8);
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_lines(vamana_params) == 0);
 
   // Vamana set/get all parameters
   err = zvec_query_params_vamana_set_ef_search(vamana_params, 512);
@@ -3741,15 +3723,6 @@ void test_query_params_functions(void) {
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
               false);
-
-  err = zvec_query_params_vamana_set_prefetch_offset(vamana_params, 12);
-  TEST_ASSERT(err == ZVEC_OK);
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_offset(vamana_params) ==
-              12);
-
-  err = zvec_query_params_vamana_set_prefetch_lines(vamana_params, 8);
-  TEST_ASSERT(err == ZVEC_OK);
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_lines(vamana_params) == 8);
 
   // Test destruction of valid parameters
   zvec_query_params_hnsw_destroy(hnsw_params);
@@ -3772,10 +3745,6 @@ void test_query_params_functions(void) {
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
   err = zvec_query_params_vamana_set_ef_search(NULL, 100);
   TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-  err = zvec_query_params_vamana_set_prefetch_offset(NULL, 8);
-  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
-  err = zvec_query_params_hnsw_set_prefetch_offset(NULL, 8);
-  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
 
   // Test default values for getters with NULL
   TEST_ASSERT(zvec_query_params_hnsw_get_radius(NULL) == 0.0f);
@@ -3787,14 +3756,10 @@ void test_query_params_functions(void) {
   TEST_ASSERT(zvec_query_params_hnsw_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_ivf_get_is_using_refiner(NULL) == false);
   TEST_ASSERT(zvec_query_params_flat_get_is_using_refiner(NULL) == false);
-  TEST_ASSERT(zvec_query_params_hnsw_get_prefetch_offset(NULL) == 8);
-  TEST_ASSERT(zvec_query_params_hnsw_get_prefetch_lines(NULL) == 0);
   TEST_ASSERT(zvec_query_params_vamana_get_ef_search(NULL) == 200);
   TEST_ASSERT(zvec_query_params_vamana_get_radius(NULL) == 0.0f);
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(NULL) == false);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(NULL) == false);
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_offset(NULL) == 8);
-  TEST_ASSERT(zvec_query_params_vamana_get_prefetch_lines(NULL) == 0);
 
   TEST_END();
 }

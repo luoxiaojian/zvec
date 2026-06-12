@@ -4794,44 +4794,6 @@ bool zvec_query_params_hnsw_get_is_using_refiner(
   return ptr->is_using_refiner();
 }
 
-zvec_error_code_t zvec_query_params_hnsw_set_prefetch_offset(
-    zvec_hnsw_query_params_t *params, uint32_t prefetch_offset) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "HNSW query params pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *ptr = reinterpret_cast<zvec::HnswQueryParams *>(params);
-  ptr->set_prefetch_offset(prefetch_offset);
-  return ZVEC_OK;
-}
-
-uint32_t zvec_query_params_hnsw_get_prefetch_offset(
-    const zvec_hnsw_query_params_t *params) {
-  if (!params) return zvec::core_interface::kDefaultPrefetchOffset;
-  auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
-  return ptr->prefetch_offset();
-}
-
-zvec_error_code_t zvec_query_params_hnsw_set_prefetch_lines(
-    zvec_hnsw_query_params_t *params, uint32_t prefetch_lines) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "HNSW query params pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *ptr = reinterpret_cast<zvec::HnswQueryParams *>(params);
-  ptr->set_prefetch_lines(prefetch_lines);
-  return ZVEC_OK;
-}
-
-uint32_t zvec_query_params_hnsw_get_prefetch_lines(
-    const zvec_hnsw_query_params_t *params) {
-  if (!params) return zvec::core_interface::kDefaultPrefetchLines;
-  auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
-  return ptr->prefetch_lines();
-}
-
 // =============================================================================
 // IVFQueryParams implementation - wrapper around zvec::IVFQueryParams
 // =============================================================================
@@ -5339,44 +5301,6 @@ bool zvec_query_params_vamana_get_is_using_refiner(
   if (!params) return false;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->is_using_refiner();
-}
-
-zvec_error_code_t zvec_query_params_vamana_set_prefetch_offset(
-    zvec_vamana_query_params_t *params, uint32_t prefetch_offset) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Vamana query params pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *ptr = reinterpret_cast<zvec::VamanaQueryParams *>(params);
-  ptr->set_prefetch_offset(prefetch_offset);
-  return ZVEC_OK;
-}
-
-uint32_t zvec_query_params_vamana_get_prefetch_offset(
-    const zvec_vamana_query_params_t *params) {
-  if (!params) return zvec::core_interface::kDefaultPrefetchOffset;
-  auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
-  return ptr->prefetch_offset();
-}
-
-zvec_error_code_t zvec_query_params_vamana_set_prefetch_lines(
-    zvec_vamana_query_params_t *params, uint32_t prefetch_lines) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Vamana query params pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *ptr = reinterpret_cast<zvec::VamanaQueryParams *>(params);
-  ptr->set_prefetch_lines(prefetch_lines);
-  return ZVEC_OK;
-}
-
-uint32_t zvec_query_params_vamana_get_prefetch_lines(
-    const zvec_vamana_query_params_t *params) {
-  if (!params) return zvec::core_interface::kDefaultPrefetchLines;
-  auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
-  return ptr->prefetch_lines();
 }
 
 // =============================================================================

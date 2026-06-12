@@ -1294,43 +1294,6 @@ zvec_query_params_hnsw_set_is_using_refiner(zvec_hnsw_query_params_t *params,
 ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_hnsw_get_is_using_refiner(
     const zvec_hnsw_query_params_t *params);
 
-/**
- * @brief Set graph prefetch offset (PO)
- * @param params HNSW query parameters pointer
- * @param prefetch_offset Prefetch offset (0 disables prefetching, default 8)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_query_params_hnsw_set_prefetch_offset(zvec_hnsw_query_params_t *params,
-                                           uint32_t prefetch_offset);
-
-/**
- * @brief Get graph prefetch offset (PO)
- * @param params HNSW query parameters pointer
- * @return uint32_t Prefetch offset
- */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_query_params_hnsw_get_prefetch_offset(
-    const zvec_hnsw_query_params_t *params);
-
-/**
- * @brief Set prefetch cache lines per vector (PL)
- * @param params HNSW query parameters pointer
- * @param prefetch_lines Cache lines to prefetch (0 = auto-derive from vector
- *                       size, default 0)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_query_params_hnsw_set_prefetch_lines(zvec_hnsw_query_params_t *params,
-                                          uint32_t prefetch_lines);
-
-/**
- * @brief Get prefetch cache lines per vector (PL)
- * @param params HNSW query parameters pointer
- * @return uint32_t Prefetch lines
- */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_query_params_hnsw_get_prefetch_lines(
-    const zvec_hnsw_query_params_t *params);
-
 // -----------------------------------------------------------------------------
 // zvec_ivf_query_params_t (IVF Query Parameters)
 // -----------------------------------------------------------------------------
@@ -1660,42 +1623,6 @@ zvec_query_params_vamana_set_is_using_refiner(
  * @return bool Whether to use refiner
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_query_params_vamana_get_is_using_refiner(
-    const zvec_vamana_query_params_t *params);
-
-/**
- * @brief Set graph prefetch offset (PO)
- * @param params Vamana query parameters pointer
- * @param prefetch_offset Prefetch offset (0 disables prefetching, default 8)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_query_params_vamana_set_prefetch_offset(zvec_vamana_query_params_t *params,
-                                             uint32_t prefetch_offset);
-
-/**
- * @brief Get graph prefetch offset (PO)
- * @param params Vamana query parameters pointer
- * @return uint32_t Prefetch offset
- */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_query_params_vamana_get_prefetch_offset(
-    const zvec_vamana_query_params_t *params);
-
-/**
- * @brief Set prefetch cache lines per vector (PL)
- * @param params Vamana query parameters pointer
- * @param prefetch_lines Cache lines to prefetch (0 = auto-derive, default 0)
- * @return zvec_error_code_t Error code
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_query_params_vamana_set_prefetch_lines(zvec_vamana_query_params_t *params,
-                                            uint32_t prefetch_lines);
-
-/**
- * @brief Get prefetch cache lines per vector (PL)
- * @param params Vamana query parameters pointer
- * @return uint32_t Prefetch lines
- */
-ZVEC_EXPORT uint32_t ZVEC_CALL zvec_query_params_vamana_get_prefetch_lines(
     const zvec_vamana_query_params_t *params);
 
 // -----------------------------------------------------------------------------
