@@ -224,10 +224,29 @@ class VamanaContext : public IndexContext {
   }
 
   void set_filter_mode(VisitFilter::Mode mode) {
+    if (filter_mode_ != mode && visit_filter_.is_allocated()) {
+      visit_filter_.destroy();
+    }
     filter_mode_ = mode;
   }
   void set_filter_negative_probability(float prob) {
     filter_negative_prob_ = prob;
+  }
+
+  // Visit storage is mutually exclusive between VisitFilter (slow path) and
+  // BlockHeap/LinearPool bitsets (fast path).
+  void prepare_fast_search_visit();
+  void prepare_slow_search_visit();
+
+  inline ContextType context_type() const {
+    return static_cast<ContextType>(type_);
+  }
+
+  inline uint64_t visit_doc_capacity() const {
+    if (type_ == kStreamerContext && reserve_max_doc_cnt_ > 0) {
+      return reserve_max_doc_cnt_;
+    }
+    return entity_->doc_cnt();
   }
 
   void reset(void) override {
@@ -252,7 +271,9 @@ class VamanaContext : public IndexContext {
       }
       uint32_t max_scan_cnt = compute_max_scan_num(reserve_max_doc_cnt_);
       max_scan_num_ = max_scan_cnt;
-      visit_filter_.reset(reserve_max_doc_cnt_, max_scan_cnt);
+      if (visit_filter_.is_allocated()) {
+        visit_filter_.reset(reserve_max_doc_cnt_, max_scan_cnt);
+      }
       candidates_.clear();
       candidates_.limit(max_scan_num_);
     }
@@ -283,6 +304,8 @@ class VamanaContext : public IndexContext {
 
  private:
   void fill_random_to_topk_full(void);
+  void release_pool_visit_storage();
+  VisitFilter::Mode slow_path_filter_mode() const;
 
   inline size_t compute_reserve_cnt(uint32_t cur_doc) const {
     if (cur_doc > kMaxReserveDocCnt) return kMaxReserveDocCnt;

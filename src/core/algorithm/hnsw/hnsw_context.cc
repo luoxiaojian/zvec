@@ -33,50 +33,25 @@ HnswContext::~HnswContext() {
 }
 
 int HnswContext::init(ContextType type) {
-  int ret;
   uint32_t doc_cnt;
 
   type_ = type;
 
   switch (type) {
     case kBuilderContext:
-      ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
-                               max_scan_num_, negative_probability_);
-      if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
-        return ret;
-      }
-      candidates_.limit(max_scan_num_);
-      update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
-      break;
-
     case kSearcherContext:
-      ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(), max_scan_num_,
-                               negative_probability_);
-      if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
-        return ret;
-      }
       candidates_.limit(max_scan_num_);
+      if (type == kBuilderContext) {
+        update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
+      }
       break;
 
     case kStreamerContext:
-      // maxScanNum is unknown if inited from streamer, so the docCnt may
-      // change. we need to compute maxScanNum by scan ratio, and preserve
-      // max_doc_cnt space from visit filter
       doc_cnt = entity_->doc_cnt();
       max_scan_num_ = compute_max_scan_num(doc_cnt);
       reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
-      ret = visit_filter_.init(filter_mode_, reserve_max_doc_cnt_,
-                               max_scan_num_, negative_probability_);
-      if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
-        return ret;
-      }
-
       update_heap_.limit(entity_->l0_neighbor_cnt() + 1);
       candidates_.limit(max_scan_num_);
-
       check_need_adjuct_ctx();
       break;
 
@@ -86,6 +61,49 @@ int HnswContext::init(ContextType type) {
   }
 
   return 0;
+}
+
+void HnswContext::release_pool_visit_storage() {
+  block_pool_.release_visit();
+  pool_.release_visit();
+}
+
+VisitFilter::Mode HnswContext::slow_path_filter_mode() const {
+  if (type_ == kBuilderContext) {
+    return VisitFilter::ByteMap;
+  }
+  return static_cast<VisitFilter::Mode>(filter_mode_);
+}
+
+void HnswContext::prepare_fast_search_visit() {
+  if (visit_filter_.is_allocated()) {
+    visit_filter_.destroy();
+  }
+}
+
+void HnswContext::prepare_slow_search_visit() {
+  release_pool_visit_storage();
+
+  const uint64_t doc_cap = visit_doc_capacity();
+  const VisitFilter::Mode mode = slow_path_filter_mode();
+
+  if (visit_filter_.is_allocated()) {
+    if (visit_filter_.get_mode() != mode) {
+      visit_filter_.destroy();
+    } else {
+      if (!visit_filter_.reset(doc_cap, max_scan_num_)) {
+        LOG_ERROR("Reset visit filter failed, mode %d", mode);
+        return;
+      }
+      visit_filter_.clear();
+      return;
+    }
+  }
+
+  if (visit_filter_.init(mode, doc_cap, max_scan_num_, negative_probability_) !=
+      0) {
+    LOG_ERROR("Create visit filter failed, mode %d", mode);
+  }
 }
 
 int HnswContext::update(const ailego::Params &params) {
@@ -127,18 +145,9 @@ int HnswContext::update(const ailego::Params &params) {
       need_update = true;
     }
     if (need_update) {
-      visit_filter_.destroy();
-      int max_doc_cnt = 0;
-      if (type_ == kSearcherContext) {
-        max_doc_cnt = entity_->doc_cnt();
-      } else {
-        max_doc_cnt = reserve_max_doc_cnt_;
-      }
-      int ret = visit_filter_.init(filter_mode_, max_doc_cnt, max_scan_num_,
-                                   negative_probability_);
-      if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
-        return ret;
+      negative_probability_ = prob;
+      if (visit_filter_.is_allocated()) {
+        visit_filter_.destroy();
       }
     }
     return 0;
@@ -225,16 +234,17 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
 
   magic_ = kInvalidMgic;
 
-  // TODO: support change filter mode?
   switch (type) {
     case kBuilderContext:
       LOG_ERROR("BuildContext doesn't support update");
       return IndexError_NotImplemented;
 
     case kSearcherContext:
-      if (!visit_filter_.reset(entity->doc_cnt(), max_scan_num_)) {
-        LOG_ERROR("Reset filter failed, mode %d", visit_filter_.get_mode());
-        return IndexError_Runtime;
+      if (visit_filter_.is_allocated()) {
+        if (!visit_filter_.reset(entity->doc_cnt(), max_scan_num_)) {
+          LOG_ERROR("Reset filter failed, mode %d", visit_filter_.get_mode());
+          return IndexError_Runtime;
+        }
       }
 
       candidates_.limit(max_scan_num_);
@@ -245,9 +255,11 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
       doc_cnt = entity->doc_cnt();
       max_scan_num_ = compute_max_scan_num(doc_cnt);
       reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
-      if (!visit_filter_.reset(reserve_max_doc_cnt_, max_scan_num_)) {
-        LOG_ERROR("Reset filter failed, mode %d", visit_filter_.get_mode());
-        return IndexError_Runtime;
+      if (visit_filter_.is_allocated()) {
+        if (!visit_filter_.reset(reserve_max_doc_cnt_, max_scan_num_)) {
+          LOG_ERROR("Reset filter failed, mode %d", visit_filter_.get_mode());
+          return IndexError_Runtime;
+        }
       }
 
       update_heap_.limit(entity->l0_neighbor_cnt() + 1);
@@ -269,6 +281,11 @@ int HnswContext::update_context(ContextType type, const IndexMeta &meta,
 }
 
 void HnswContext::fill_random_to_topk_full(void) {
+  prepare_slow_search_visit();
+  if (!visit_filter_.is_allocated()) {
+    return;
+  }
+
   static std::mt19937 mt(
       std::chrono::system_clock::now().time_since_epoch().count());
   std::uniform_int_distribution<node_id_t> dt(0, entity_->doc_cnt() - 1);
@@ -284,7 +301,6 @@ void HnswContext::fill_random_to_topk_full(void) {
   if (topk_heap_.limit() < entity_->doc_cnt() / 2) {
     gen = [&](void) { return dt(mt); };
   } else {
-    // If topk limit is big value, gen sequential id from an random initial
     seqid = dt(mt);
     gen = [&](void) {
       seqid = seqid == (entity_->doc_cnt() - 1) ? 0 : (seqid + 1);
@@ -299,7 +315,6 @@ void HnswContext::fill_random_to_topk_full(void) {
       topk_heap_.emplace(id, dc_.dist(id));
     }
   }
-  return;
 }
 
 }  // namespace core

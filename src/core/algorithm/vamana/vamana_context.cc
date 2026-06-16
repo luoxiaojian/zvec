@@ -46,7 +46,6 @@ VamanaContext::~VamanaContext() {
 }
 
 int VamanaContext::init(ContextType type) {
-  int ret;
   uint32_t doc_cnt;
 
   type_ = type;
@@ -56,22 +55,7 @@ int VamanaContext::init(ContextType type) {
 
   switch (type) {
     case kBuilderContext:
-      ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
-                               max_scan_num_, filter_negative_prob_);
-      if (ret != 0) {
-        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
-        return ret;
-      }
-      candidates_.limit(max_scan_num_);
-      break;
-
     case kSearcherContext:
-      ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(), max_scan_num_,
-                               filter_negative_prob_);
-      if (ret != 0) {
-        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
-        return ret;
-      }
       candidates_.limit(max_scan_num_);
       break;
 
@@ -79,12 +63,6 @@ int VamanaContext::init(ContextType type) {
       doc_cnt = entity_->doc_cnt();
       max_scan_num_ = compute_max_scan_num(doc_cnt);
       reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
-      ret = visit_filter_.init(filter_mode_, reserve_max_doc_cnt_,
-                               max_scan_num_, filter_negative_prob_);
-      if (ret != 0) {
-        LOG_ERROR("Create visit filter failed, mode %d", filter_mode_);
-        return ret;
-      }
       candidates_.limit(max_scan_num_);
       check_need_adjuct_ctx();
       break;
@@ -94,6 +72,49 @@ int VamanaContext::init(ContextType type) {
   }
 
   return 0;
+}
+
+void VamanaContext::release_pool_visit_storage() {
+  block_pool_.release_visit();
+  pool_.release_visit();
+}
+
+VisitFilter::Mode VamanaContext::slow_path_filter_mode() const {
+  if (type_ == kBuilderContext) {
+    return VisitFilter::ByteMap;
+  }
+  return filter_mode_;
+}
+
+void VamanaContext::prepare_fast_search_visit() {
+  if (visit_filter_.is_allocated()) {
+    visit_filter_.destroy();
+  }
+}
+
+void VamanaContext::prepare_slow_search_visit() {
+  release_pool_visit_storage();
+
+  const uint64_t doc_cap = visit_doc_capacity();
+  const VisitFilter::Mode mode = slow_path_filter_mode();
+
+  if (visit_filter_.is_allocated()) {
+    if (visit_filter_.get_mode() != mode) {
+      visit_filter_.destroy();
+    } else {
+      if (!visit_filter_.reset(doc_cap, max_scan_num_)) {
+        LOG_ERROR("Reset visit filter failed, mode %d", mode);
+        return;
+      }
+      visit_filter_.clear();
+      return;
+    }
+  }
+
+  if (visit_filter_.init(mode, doc_cap, max_scan_num_, filter_negative_prob_) !=
+      0) {
+    LOG_ERROR("Create visit filter failed, mode %d", mode);
+  }
 }
 
 int VamanaContext::update_context(ContextType type, const IndexMeta &meta,

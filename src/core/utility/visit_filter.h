@@ -398,9 +398,24 @@ class VisitFilter {
   }
 
   inline void destroy() {
-    if (ctx_ != nullptr) {
-      PROXIMA_HNSW_VISITFILTER_CALL_IMPL(destroy);
+    if (ctx_ == nullptr) {
+      return;
     }
+    switch (mode_) {
+      case VisitBloomFilter::mode:
+        VisitBloomFilter::destroy(
+            static_cast<VisitBloomFilter::Context *>(ctx_));
+        break;
+      case VisitBitMap::mode:
+        VisitBitMap::destroy(static_cast<VisitBitMap::Context *>(ctx_));
+        break;
+      case VisitByteMap::mode:
+        VisitByteMap::destroy(static_cast<VisitByteMap::Context *>(ctx_));
+        break;
+      default:
+        break;
+    }
+    ctx_ = nullptr;
   }
 
   int init(int mode, uint64_t maxDocCnt, uint64_t maxScanNum,
@@ -413,6 +428,10 @@ class VisitFilter {
 
   int get_mode(void) const {
     return mode_;
+  }
+
+  bool is_allocated(void) const {
+    return ctx_ != nullptr;
   }
 
 

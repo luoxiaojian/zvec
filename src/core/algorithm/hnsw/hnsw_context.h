@@ -331,11 +331,30 @@ class HnswContext : public IndexContext {
   }
 
   inline void set_filter_mode(uint32_t v) {
+    if (filter_mode_ != v && visit_filter_.is_allocated()) {
+      visit_filter_.destroy();
+    }
     filter_mode_ = v;
   }
 
   inline void set_filter_negative_probability(float v) {
     negative_probability_ = v;
+  }
+
+  // Visit storage is mutually exclusive between VisitFilter (slow path) and
+  // BlockHeap/LinearPool bitsets (fast path).
+  void prepare_fast_search_visit();
+  void prepare_slow_search_visit();
+
+  inline ContextType context_type() const {
+    return static_cast<ContextType>(type_);
+  }
+
+  inline uint64_t visit_doc_capacity() const {
+    if (type_ == kStreamerContext && reserve_max_doc_cnt_ > 0) {
+      return reserve_max_doc_cnt_;
+    }
+    return entity_->doc_cnt();
   }
 
   inline void set_max_scan_ratio(float v) {
@@ -417,7 +436,9 @@ class HnswContext : public IndexContext {
       }
       uint32_t max_scan_cnt = compute_max_scan_num(reserve_max_doc_cnt_);
       max_scan_num_ = max_scan_cnt;
-      visit_filter_.reset(reserve_max_doc_cnt_, max_scan_cnt);
+      if (visit_filter_.is_allocated()) {
+        visit_filter_.reset(reserve_max_doc_cnt_, max_scan_cnt);
+      }
       candidates_.clear();
       candidates_.limit(max_scan_num_);
     }
@@ -518,6 +539,9 @@ class HnswContext : public IndexContext {
  private:
   // Filling random nodes if topk not full
   void fill_random_to_topk_full(void);
+
+  void release_pool_visit_storage();
+  VisitFilter::Mode slow_path_filter_mode() const;
 
   constexpr static uint32_t kTriggerReserveCnt = 4096UL;
   constexpr static uint32_t kMinReserveDocCnt = 4096UL;
