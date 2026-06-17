@@ -38,7 +38,7 @@ constexpr const int kRabitqCompiledAvx512 = 0;
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
-      QuantizeType::RABITQ}},
+      QuantizeType::RABITQ, QuantizeType::UNIFORM_INT8}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -224,6 +224,20 @@ Status FieldSchema::validate() const {
                 QuantizeTypeCodeBook::AsString(
                     vector_index_params->quantize_type()));
           }
+        }
+
+        // UNIFORM_INT8 builds a direct int8 L2 metric (UniformInt8Metric)
+        // that only supports SquaredEuclidean. Reject IP/COSINE early at
+        // creation time instead of failing opaquely during optimize().
+        if (vector_index_params->quantize_type() ==
+                QuantizeType::UNIFORM_INT8 &&
+            vector_index_params->metric_type() != MetricType::L2) {
+          return Status::InvalidArgument(
+              "schema validate failed: UNIFORM_INT8 quantize only supports L2 "
+              "metric, but field[",
+              name_, "]'s metric is ",
+              MetricTypeCodeBook::AsString(
+                  vector_index_params->metric_type()));
         }
       }
       if (index_params_->type() == IndexType::IVF &&

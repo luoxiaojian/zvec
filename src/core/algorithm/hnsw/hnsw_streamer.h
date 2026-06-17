@@ -42,6 +42,9 @@ class HnswStreamer : public IndexStreamer {
     return entity_->storage_mode();
   }
 
+  //! Merge converter/reformer params produced after deferred training.
+  void merge_trained_meta(const IndexMeta &trained_meta) override;
+
  protected:
   //! Initialize Streamer
   int init(const IndexMeta &imeta, const ailego::Params &params) override;

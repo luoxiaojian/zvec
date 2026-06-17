@@ -729,8 +729,10 @@ Status SegmentHelper::ReduceVectorIndex(
       // RABITQ requires raw fp32 vectors as input, because re-encoding the
       // already-encoded quant indexers would produce garbage data. Other
       // types require the quantized vectors as input.
+      // RABITQ and UNIFORM_INT8 must train/quantize from raw fp32 vectors.
       auto quant_merge_sources =
-          (vector_index_params->quantize_type() == QuantizeType::RABITQ)
+          (vector_index_params->quantize_type() == QuantizeType::RABITQ ||
+           vector_index_params->quantize_type() == QuantizeType::UNIFORM_INT8)
               ? collect_merge_indexers(&Segment::get_vector_indexer)
               : collect_merge_indexers(&Segment::get_quant_vector_indexer);
 

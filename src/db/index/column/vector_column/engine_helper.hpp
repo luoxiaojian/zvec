@@ -285,6 +285,8 @@ class ProximaEngineHelper {
         return core_interface::QuantizerType::kInt4;
       case QuantizeType::RABITQ:
         return core_interface::QuantizerType::kRabitq;
+      case QuantizeType::UNIFORM_INT8:
+        return core_interface::QuantizerType::kUniformInt8;
       default:
         return tl::make_unexpected(
             Status::InvalidArgument("unsupported quantize type"));

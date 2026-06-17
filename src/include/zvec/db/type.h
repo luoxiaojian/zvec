@@ -77,6 +77,7 @@ enum class QuantizeType : uint32_t {
   INT8 = 2,
   INT4 = 3,
   RABITQ = 4,
+  UNIFORM_INT8 = 5,
 };
 
 enum class MetricType : uint32_t {

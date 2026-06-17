@@ -41,6 +41,10 @@ class CombinedVectorColumnIndexer {
   virtual Result<vector_column_params::VectorDataBuffer> Fetch(
       uint32_t segment_doc_id) const;
 
+  //! True when at least one backing vector indexer is available for search.
+  bool has_searchable_indexers() const {
+    return !indexers_.empty();
+  }
 
  protected:
   /**

@@ -856,6 +856,8 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_FP16 1
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
+#define ZVEC_QUANTIZE_TYPE_RABITQ 4
+#define ZVEC_QUANTIZE_TYPE_UNIFORM_INT8 5
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)

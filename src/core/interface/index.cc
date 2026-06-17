@@ -13,12 +13,93 @@
 // limitations under the License.
 
 #include <magic_enum/magic_enum.hpp>
+#include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec::core_interface {
+
+namespace {
+
+int TrainConverterFromMergeSources(
+    const core::IndexConverter::Pointer &converter,
+    const std::vector<Index::Pointer> &indexes,
+    const core::IndexQueryMeta &input_meta) {
+  if (!converter || indexes.empty()) {
+    return core::IndexError_InvalidArgument;
+  }
+
+  auto holder = std::make_shared<core::MultiPassIndexHolder<
+      core::IndexMeta::DataType::DT_FP32>>(input_meta.dimension());
+  for (const auto &index : indexes) {
+    auto provider = index->create_index_provider();
+    if (!provider) {
+      continue;
+    }
+    auto iter = provider->create_iterator();
+    if (!iter) {
+      continue;
+    }
+    for (; iter->is_valid(); iter->next()) {
+      ailego::NumericalVector<float> vec(std::string(
+          static_cast<const char *>(iter->data()),
+          input_meta.dimension() * input_meta.unit_size()));
+      if (!holder->emplace(iter->key(), vec)) {
+        LOG_ERROR("Failed to emplace vector into training holder");
+        return core::IndexError_Runtime;
+      }
+    }
+  }
+  if (holder->count() == 0) {
+    LOG_ERROR("No vectors available to train converter");
+    return core::IndexError_InvalidArgument;
+  }
+  return core::IndexConverter::TrainAndTransform(converter, holder);
+}
+
+int CreateReformerFromConverterMeta(
+    const core::IndexConverter::Pointer &converter,
+    core::IndexMeta *proxima_index_meta,
+    core::IndexQueryMeta *streamer_vector_meta,
+    core::IndexReformer::Pointer *reformer) {
+  if (!converter || !proxima_index_meta || !streamer_vector_meta || !reformer) {
+    return core::IndexError_InvalidArgument;
+  }
+  if (*reformer != nullptr) {
+    return core::IndexError_Success;
+  }
+  const auto &meta = converter->meta();
+  if (meta.reformer_name().empty()) {
+    return core::IndexError_Success;
+  }
+  *proxima_index_meta = meta;
+  streamer_vector_meta->set_meta(proxima_index_meta->data_type(),
+                                 proxima_index_meta->dimension());
+  streamer_vector_meta->set_meta_type(proxima_index_meta->meta_type());
+  *reformer = core::IndexFactory::CreateReformer(meta.reformer_name());
+  if (!*reformer || (*reformer)->init(meta.reformer_params()) != 0) {
+    LOG_ERROR("Failed to create reformer '%s' from converter meta",
+              meta.reformer_name().c_str());
+    return core::IndexError_Runtime;
+  }
+  return core::IndexError_Success;
+}
+
+void PersistTrainedMetaToStreamer(const core::IndexMeta &meta,
+                                  core::IndexStreamer::Pointer &streamer) {
+  if (!streamer) {
+    return;
+  }
+  // Streamers that persist trained meta via flush (e.g. HnswStreamer) override
+  // merge_trained_meta; others keep the base no-op and persist by other means.
+  streamer->merge_trained_meta(meta);
+}
+
+}  // namespace
 
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
@@ -301,24 +382,36 @@ int Index::Open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  // If a converter exists but reformer was not created during Init()
-  // (converters like UniformInt8 whose reformer params are only available
-  // after train()), create it now from the persisted meta that the streamer
-  // has loaded.  When there is no converter (QuantizerType::kNone), reformer_
-  // is nullptr by design — skip this block entirely.
-  if (converter_ != nullptr && reformer_ == nullptr) {
-    const auto &meta = streamer_->meta();
-    if (meta.reformer_name().empty()) {
-      LOG_ERROR(
-          "Index::Open: converter exists but reformer not initialized and "
-          "no reformer in persisted meta");
-      return core::IndexError_Runtime;
-    }
-    reformer_ = core::IndexFactory::CreateReformer(meta.reformer_name());
-    if (!reformer_ || reformer_->init(meta.reformer_params()) != 0) {
-      LOG_ERROR("Failed to create reformer '%s' from persisted meta",
-                meta.reformer_name().c_str());
-      return core::IndexError_Runtime;
+  // Restore reformer from persisted meta after reload. Training and in-process
+  // reformer creation happen in Merge(); Search must not lazily init reformer.
+  // Pre-optimize writer segments (UniformInt8) legitimately have no reformer.
+  if (reformer_ == nullptr && streamer_ != nullptr) {
+    const auto &streamer_meta = streamer_->meta();
+    if (!streamer_meta.reformer_name().empty()) {
+      reformer_ =
+          core::IndexFactory::CreateReformer(streamer_meta.reformer_name());
+      if (!reformer_ || reformer_->init(streamer_meta.reformer_params()) != 0) {
+        LOG_ERROR("Failed to create reformer '%s' from persisted meta",
+                  streamer_meta.reformer_name().c_str());
+        return core::IndexError_Runtime;
+      }
+    } else if (converter_ != nullptr) {
+      if (!converter_->meta().reformer_name().empty()) {
+        if (int ret = CreateReformerFromConverterMeta(
+                converter_, &proxima_index_meta_, &streamer_vector_meta_,
+                &reformer_);
+            ret != 0) {
+          return ret;
+        }
+      } else if (!storage_options.create_new) {
+        LOG_ERROR(
+            "Index::Open: converter exists but reformer not initialized and "
+            "no reformer in persisted meta");
+        return core::IndexError_Runtime;
+      }
+      // New index: converters like UniformInt8 defer reformer creation until
+      // train() runs (e.g. during optimize merge). Raw vectors may be ingested
+      // before that point without a reformer.
     }
   }
 
@@ -369,6 +462,12 @@ int Index::Flush() {
   if (is_read_only_) {
     LOG_ERROR("Cannot flush read-only index");
     return core::IndexError_Runtime;
+  }
+  // Only persist trained meta once the converter has actually produced a
+  // reformer (i.e. training ran, e.g. during optimize). Before that the call
+  // would be a no-op, so skip it on every pre-training flush.
+  if (converter_ != nullptr && !converter_->meta().reformer_name().empty()) {
+    PersistTrainedMetaToStreamer(converter_->meta(), streamer_);
   }
   if (ailego_unlikely(streamer_->flush(0) != 0)) {
     LOG_ERROR("Failed to flush streamer");
@@ -829,6 +928,23 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
+
+  if (converter_ != nullptr && reformer_ == nullptr) {
+    if (int ret = TrainConverterFromMergeSources(converter_, indexes,
+                                                 input_vector_meta_);
+        ret != 0) {
+      LOG_ERROR("Failed to train converter from merge sources");
+      return ret;
+    }
+    if (int ret = CreateReformerFromConverterMeta(
+            converter_, &proxima_index_meta_, &streamer_vector_meta_,
+            &reformer_);
+        ret != 0) {
+      return ret;
+    }
+    PersistTrainedMetaToStreamer(proxima_index_meta_, streamer_);
+  }
+
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_,
                                              input_vector_meta_) != 0) {
@@ -847,6 +963,7 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to reduce");
     return core::IndexError_Runtime;
   }
+  PersistTrainedMetaToStreamer(proxima_index_meta_, streamer_);
   is_trained_ = true;
   return 0;
 }

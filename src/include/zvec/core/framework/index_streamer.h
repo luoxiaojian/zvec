@@ -49,6 +49,13 @@ class IndexStreamer : public IndexRunner {
 
   //! Retrieve meta of index
   virtual const IndexMeta &meta(void) const = 0;
+
+  //! Merge converter/reformer params produced after deferred training (e.g.
+  //! UniformInt8) into the streamer meta so they are persisted on flush.
+  //! Default is a no-op for streamers that persist their meta through other
+  //! paths (e.g. FlatStreamer serializes meta at dump time); streamers that
+  //! rely on flush to persist trained meta override this.
+  virtual void merge_trained_meta(const IndexMeta & /*trained_meta*/) {}
 };
 
 }  // namespace core

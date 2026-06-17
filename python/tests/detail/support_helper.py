@@ -99,7 +99,12 @@ DEFAULT_INDEX_PARAMS = {
 }
 
 SUPPORT_VECTOR_DATA_TYPE_QUANT_MAP = {
-    DataType.VECTOR_FP32: [QuantizeType.FP16, QuantizeType.INT8, QuantizeType.INT4],
+    DataType.VECTOR_FP32: [
+        QuantizeType.FP16,
+        QuantizeType.INT8,
+        QuantizeType.INT4,
+        QuantizeType.UNIFORM_INT8,
+    ],
     DataType.SPARSE_VECTOR_FP32: [QuantizeType.FP16],
 }
 
