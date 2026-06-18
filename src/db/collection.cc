@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -37,6 +38,12 @@
 #include "db/common/global_resource.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
+#include <arrow/array.h>
+#include <arrow/chunked_array.h>
+#include <arrow/table.h>
+#include "db/index/column/common/index_results.h"
+#include "db/index/column/vector_column/combined_vector_column_indexer.h"
+#include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
@@ -122,6 +129,14 @@ class CollectionImpl : public Collection {
   Result<DocPtrList> Query(const SearchQuery &query) const override;
 
   Result<DocPtrList> Query(const MultiQuery &query) const override;
+
+  Result<RawSearchResult> FastQuery(
+      const std::string &field_name, const void *query_vector, int topk,
+      const QueryParams::Ptr &query_params) const override;
+
+  Result<RawSearchResultDocIds> FastQueryDocIds(
+      const std::string &field_name, const void *query_vector, int topk,
+      const QueryParams::Ptr &query_params) const override;
 
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
@@ -1683,6 +1698,295 @@ Result<DocPtrList> CollectionImpl::Query(const SearchQuery &query) const {
   }
 
   return sql_engine_->execute(schema_, std::move(sanitized), segments);
+}
+
+Result<RawSearchResult> CollectionImpl::FastQuery(
+    const std::string &field_name, const void *query_vector, int topk,
+    const QueryParams::Ptr &query_params) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  if (field_schema == nullptr || !field_schema->is_dense_vector()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FastQuery requires a dense vector field: ", field_name));
+  }
+  if (query_vector == nullptr) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FastQuery: query_vector is null"));
+  }
+  if (topk <= 0) {
+    return RawSearchResult{};
+  }
+
+  auto segments = get_all_segments();
+  if (segments.empty()) {
+    return RawSearchResult{};
+  }
+
+  // Metric direction must match CombinedVectorColumnIndexer's ranking.
+  MetricType metric = MetricType::L2;
+  bool quantized = false;
+  if (const auto *vp = dynamic_cast<const VectorIndexParams *>(
+          field_schema->index_params().get())) {
+    metric = vp->metric_type();
+    quantized = vp->quantize_type() != QuantizeType::UNDEFINED;
+  }
+  // Returns true when score `a` ranks strictly better than `b`.
+  auto better = [metric](float a, float b) {
+    return metric == MetricType::IP ? a > b : a < b;
+  };
+
+  vector_column_params::QueryParams qp;
+  qp.topk = static_cast<uint32_t>(topk);
+  qp.data_type = field_schema->data_type();
+  qp.dimension = field_schema->dimension();
+  qp.query_params = query_params;
+
+  vector_column_params::VectorData vector_data;
+  vector_data.vector = vector_column_params::DenseVector{query_vector};
+
+  // Search one segment and append (pk, score) results into `out`.
+  auto search_one = [&](const Segment::Ptr &seg, RawSearchResult *out) -> Status {
+    CombinedVectorColumnIndexer::Ptr indexer;
+    if (!quantized) {
+      indexer = seg->get_combined_vector_indexer(field_name);
+    } else {
+      indexer = seg->get_quant_combined_vector_indexer(field_name);
+      // Quant index is built at optimize(); before that fall back to the raw
+      // in-memory indexer so insert-then-query works on the writer.
+      if (indexer != nullptr && !indexer->has_searchable_indexers()) {
+        indexer = seg->get_combined_vector_indexer(field_name);
+      }
+    }
+    if (!indexer || !indexer->has_searchable_indexers()) {
+      return Status::OK();
+    }
+
+    // Hold the delete filter alive for the duration of the search.
+    IndexFilter::Ptr seg_filter = seg->get_filter();
+    qp.filter = seg_filter ? seg_filter.get() : nullptr;
+
+    auto res = indexer->Search(vector_data, qp);
+    if (!res) {
+      return res.error();
+    }
+    IndexResults::Ptr results = std::move(res.value());
+
+    std::vector<int> indices;
+    indices.reserve(topk);
+    const size_t score_begin = out->scores.size();
+    for (auto it = results->create_iterator(); it->valid(); it->next()) {
+      indices.push_back(static_cast<int>(it->doc_id()));
+      out->scores.push_back(it->score());
+    }
+    if (indices.empty()) {
+      return Status::OK();
+    }
+
+    // Resolve segment-local row ids -> primary keys via a single columnar
+    // fetch (rows are returned in the order of `indices`).
+    auto table = seg->fetch({USER_ID}, indices);
+    if (!table) {
+      out->scores.resize(score_begin);
+      return Status::InternalError("FastQuery: fetch USER_ID failed");
+    }
+    auto uid_col = table->GetColumnByName(USER_ID);
+    if (uid_col == nullptr) {
+      out->scores.resize(score_begin);
+      return Status::InternalError("FastQuery: USER_ID column missing");
+    }
+    for (int c = 0; c < uid_col->num_chunks(); ++c) {
+      auto arr =
+          std::static_pointer_cast<arrow::StringArray>(uid_col->chunk(c));
+      for (int64_t r = 0; r < arr->length(); ++r) {
+        out->pks.emplace_back(arr->GetString(r));
+      }
+    }
+    return Status::OK();
+  };
+
+  // Single-segment fast path: index results are already ranked, no merge.
+  if (segments.size() == 1) {
+    RawSearchResult out;
+    auto s = search_one(segments[0], &out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    if (static_cast<int>(out.pks.size()) > topk) {
+      out.pks.resize(topk);
+      out.scores.resize(topk);
+    }
+    return out;
+  }
+
+  // Multi-segment: gather all candidates and merge the global top-k.
+  std::vector<std::pair<float, std::string>> candidates;
+  candidates.reserve(static_cast<size_t>(topk) * segments.size());
+  for (const auto &seg : segments) {
+    RawSearchResult seg_out;
+    auto s = search_one(seg, &seg_out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    for (size_t i = 0; i < seg_out.pks.size(); ++i) {
+      candidates.emplace_back(seg_out.scores[i], std::move(seg_out.pks[i]));
+    }
+  }
+
+  const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
+  std::partial_sort(
+      candidates.begin(), candidates.begin() + keep, candidates.end(),
+      [&better](const std::pair<float, std::string> &a,
+                const std::pair<float, std::string> &b) {
+        return better(a.first, b.first);
+      });
+
+  RawSearchResult out;
+  out.pks.reserve(keep);
+  out.scores.reserve(keep);
+  for (size_t i = 0; i < keep; ++i) {
+    out.scores.push_back(candidates[i].first);
+    out.pks.push_back(std::move(candidates[i].second));
+  }
+  return out;
+}
+
+Result<RawSearchResultDocIds> CollectionImpl::FastQueryDocIds(
+    const std::string &field_name, const void *query_vector, int topk,
+    const QueryParams::Ptr &query_params) const {
+  std::shared_lock lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  if (field_schema == nullptr || !field_schema->is_dense_vector()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "FastQueryDocIds requires a dense vector field: ", field_name));
+  }
+  if (query_vector == nullptr) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FastQueryDocIds: query_vector is null"));
+  }
+  if (topk <= 0) {
+    return RawSearchResultDocIds{};
+  }
+
+  auto segments = get_all_segments();
+  if (segments.empty()) {
+    return RawSearchResultDocIds{};
+  }
+
+  // Metric direction must match CombinedVectorColumnIndexer's ranking.
+  MetricType metric = MetricType::L2;
+  bool quantized = false;
+  if (const auto *vp = dynamic_cast<const VectorIndexParams *>(
+          field_schema->index_params().get())) {
+    metric = vp->metric_type();
+    quantized = vp->quantize_type() != QuantizeType::UNDEFINED;
+  }
+  // Returns true when score `a` ranks strictly better than `b`.
+  auto better = [metric](float a, float b) {
+    return metric == MetricType::IP ? a > b : a < b;
+  };
+
+  vector_column_params::QueryParams qp;
+  qp.topk = static_cast<uint32_t>(topk);
+  qp.data_type = field_schema->data_type();
+  qp.dimension = field_schema->dimension();
+  qp.query_params = query_params;
+
+  vector_column_params::VectorData vector_data;
+  vector_data.vector = vector_column_params::DenseVector{query_vector};
+
+  // Search one segment and append (global_doc_id, score) results into `out`.
+  auto search_one = [&](const Segment::Ptr &seg,
+                        RawSearchResultDocIds *out) -> Status {
+    CombinedVectorColumnIndexer::Ptr indexer;
+    if (!quantized) {
+      indexer = seg->get_combined_vector_indexer(field_name);
+    } else {
+      indexer = seg->get_quant_combined_vector_indexer(field_name);
+      if (indexer != nullptr && !indexer->has_searchable_indexers()) {
+        indexer = seg->get_combined_vector_indexer(field_name);
+      }
+    }
+    if (!indexer || !indexer->has_searchable_indexers()) {
+      return Status::OK();
+    }
+
+    // Hold the delete filter alive for the duration of the search.
+    IndexFilter::Ptr seg_filter = seg->get_filter();
+    qp.filter = seg_filter ? seg_filter.get() : nullptr;
+
+    auto res = indexer->Search(vector_data, qp);
+    if (!res) {
+      return res.error();
+    }
+    IndexResults::Ptr results = std::move(res.value());
+
+    std::vector<int> indices;
+    indices.reserve(topk);
+    const size_t score_begin = out->scores.size();
+    for (auto it = results->create_iterator(); it->valid(); it->next()) {
+      indices.push_back(static_cast<int>(it->doc_id()));
+      out->scores.push_back(it->score());
+    }
+    if (indices.empty()) {
+      return Status::OK();
+    }
+
+    // Resolve segment-local row ids -> stable global doc ids via a direct
+    // ``doc_ids_`` gather (no Arrow table / USER_ID string materialization).
+    std::vector<int64_t> ids;
+    auto s = seg->get_global_doc_ids(indices, ids);
+    if (!s.ok()) {
+      out->scores.resize(score_begin);
+      return s;
+    }
+    out->ids.insert(out->ids.end(), ids.begin(), ids.end());
+    return Status::OK();
+  };
+
+  // Single-segment fast path: index results are already ranked, no merge.
+  if (segments.size() == 1) {
+    RawSearchResultDocIds out;
+    auto s = search_one(segments[0], &out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    if (static_cast<int>(out.ids.size()) > topk) {
+      out.ids.resize(topk);
+      out.scores.resize(topk);
+    }
+    return out;
+  }
+
+  // Multi-segment: gather all candidates and merge the global top-k.
+  std::vector<std::pair<float, int64_t>> candidates;
+  candidates.reserve(static_cast<size_t>(topk) * segments.size());
+  for (const auto &seg : segments) {
+    RawSearchResultDocIds seg_out;
+    auto s = search_one(seg, &seg_out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    for (size_t i = 0; i < seg_out.ids.size(); ++i) {
+      candidates.emplace_back(seg_out.scores[i], seg_out.ids[i]);
+    }
+  }
+
+  const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
+  std::partial_sort(
+      candidates.begin(), candidates.begin() + keep, candidates.end(),
+      [&better](const std::pair<float, int64_t> &a,
+                const std::pair<float, int64_t> &b) {
+        return better(a.first, b.first);
+      });
+
+  RawSearchResultDocIds out;
+  out.ids.reserve(keep);
+  out.scores.reserve(keep);
+  for (size_t i = 0; i < keep; ++i) {
+    out.scores.push_back(candidates[i].first);
+    out.ids.push_back(candidates[i].second);
+  }
+  return out;
 }
 
 Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {

@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include "python_collection.h"
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
+#include <cstring>
 
 namespace zvec {
 
@@ -261,6 +263,91 @@ void ZVecPyCollection::bind_dql_methods(
             // return DocPtrList
             return unwrap_expected(result);
           })
+      // Lowest-overhead dense KNN bypass: a single call takes the raw query
+      // vector buffer (numpy) + params, goes straight to the segment indexer
+      // (no SQL planner / Arrow pipeline / Doc materialization), and returns
+      // (ids, scores). Maximizes recovery of native C++ search throughput.
+      .def(
+          "fast_query",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &vector, int topk,
+             const QueryParams::Ptr &query_params) {
+            // request() needs the GIL; do it before releasing below.
+            py::buffer_info info = vector.request();
+            const void *ptr = info.ptr;
+            Result<RawSearchResult> result;
+            {
+              py::gil_scoped_release release;
+              result = self.FastQuery(field_name, ptr, topk, query_params);
+            }
+            RawSearchResult raw = unwrap_expected(result);
+            return std::pair<std::vector<std::string>, std::vector<float>>(
+                std::move(raw.pks), std::move(raw.scores));
+          },
+          py::arg("field_name"), py::arg("vector"), py::arg("topk"),
+          py::arg("query_params") = QueryParams::Ptr{})
+      // Like fast_query, but returns stable internal global doc ids (insertion
+      // order) as an int64 numpy array instead of string primary keys. Skips
+      // the Arrow/USER_ID string materialization, so it is the cheapest
+      // id-returning bypass. Runs in parallel to fast_query.
+      .def(
+          "fast_query_doc_ids",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &vector, int topk,
+             const QueryParams::Ptr &query_params) {
+            py::buffer_info info = vector.request();
+            const void *ptr = info.ptr;
+            Result<RawSearchResultDocIds> result;
+            {
+              py::gil_scoped_release release;
+              result = self.FastQueryDocIds(field_name, ptr, topk, query_params);
+            }
+            RawSearchResultDocIds raw = unwrap_expected(result);
+            const auto n = static_cast<py::ssize_t>(raw.ids.size());
+            py::array_t<int64_t> ids(n);
+            py::array_t<float> scores(n);
+            if (n > 0) {
+              std::memcpy(ids.mutable_data(), raw.ids.data(),
+                          raw.ids.size() * sizeof(int64_t));
+              std::memcpy(scores.mutable_data(), raw.scores.data(),
+                          raw.scores.size() * sizeof(float));
+            }
+            return std::pair<py::array_t<int64_t>, py::array_t<float>>(
+                std::move(ids), std::move(scores));
+          },
+          py::arg("field_name"), py::arg("vector"), py::arg("topk"),
+          py::arg("query_params") = QueryParams::Ptr{})
+      // Like fast_query_doc_ids, but returns ONLY the int64 id array (no scores),
+      // handing the result buffer to numpy via a capsule (zero-copy, no extra
+      // numpy allocation or memcpy). Matches the lowest-overhead bindings used
+      // by the top ann-benchmarks entries (glass/scann/n2). Use when scores are
+      // not needed (e.g. recall benchmarking).
+      .def(
+          "fast_query_doc_ids_only",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &vector, int topk,
+             const QueryParams::Ptr &query_params) {
+            py::buffer_info info = vector.request();
+            const void *ptr = info.ptr;
+            Result<RawSearchResultDocIds> result;
+            {
+              py::gil_scoped_release release;
+              result = self.FastQueryDocIds(field_name, ptr, topk, query_params);
+            }
+            RawSearchResultDocIds raw = unwrap_expected(result);
+            // Move the id vector to the heap and let a capsule own it; the
+            // numpy array aliases its buffer directly (no copy).
+            auto *ids_vec = new std::vector<int64_t>(std::move(raw.ids));
+            const auto n = static_cast<py::ssize_t>(ids_vec->size());
+            py::capsule free_when_done(ids_vec, [](void *p) {
+              delete reinterpret_cast<std::vector<int64_t> *>(p);
+            });
+            return py::array_t<int64_t>(
+                {n}, {static_cast<py::ssize_t>(sizeof(int64_t))},
+                ids_vec->data(), free_when_done);
+          },
+          py::arg("field_name"), py::arg("vector"), py::arg("topk"),
+          py::arg("query_params") = QueryParams::Ptr{})
       // MultiQuery: multi query with reranker
       .def(
           "Query",

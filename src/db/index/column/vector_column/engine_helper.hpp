@@ -103,8 +103,14 @@ class ProximaEngineHelper {
     engine_query_param->topk = db_query_params.topk;
     engine_query_param->fetch_vector = db_query_params.fetch_vector;
 
+    // No-filter fast path: skip allocating an (empty) engine filter wrapper and
+    // binding a std::function when the query has no filter. The core indexes
+    // guard with `if (param->filter)` / `is_valid()`, so a null filter is
+    // equivalent to the previously-passed unset IndexFilter.
     engine_query_param->filter =
-        convert_to_engine_filter(db_query_params.filter);
+        db_query_params.filter != nullptr
+            ? convert_to_engine_filter(db_query_params.filter)
+            : nullptr;
 
     if (db_query_params.query_params) {
       engine_query_param->radius = db_query_params.query_params->radius();

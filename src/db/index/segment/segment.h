@@ -161,6 +161,14 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
+  // Batch-resolve segment-local doc ids -> stable global doc ids (the value of
+  // the GLOBAL_DOC_ID column, assigned in insertion order). This is a direct
+  // gather over the in-memory ``doc_ids_`` map; it avoids the Arrow table /
+  // USER_ID string materialization that fetch() performs. ``out`` is resized to
+  // match ``segment_doc_ids`` and filled in the same order.
+  virtual Status get_global_doc_ids(const std::vector<int> &segment_doc_ids,
+                                    std::vector<int64_t> &out) const = 0;
+
   // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const = 0;

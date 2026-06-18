@@ -101,6 +101,45 @@ class Collection {
 
   virtual Result<DocPtrList> Query(const MultiQuery &query) const = 0;
 
+  //! Lowest-overhead dense-vector KNN bypass, parallel to Query(). Calls the
+  //! segment vector indexer directly, skipping the SQL analyzer/planner, the
+  //! Arrow execution pipeline and Doc materialization, to recover as much of
+  //! the native C++ search throughput as possible. Only the delete filter is
+  //! applied (plain KNN: no scalar filter / FTS / group-by). Returns primary
+  //! keys and scores.
+  //!
+  //! @param field_name   Dense vector field to search.
+  //! @param query_vector Pointer to a contiguous query vector buffer whose
+  //!                      element type and length match the field's vector
+  //!                      data type and dimension. Must stay valid for the
+  //!                      duration of the call.
+  //! @param topk         Number of neighbors to return.
+  //! @param query_params Index query params (e.g. ef for HNSW); may be null.
+  virtual Result<RawSearchResult> FastQuery(
+      const std::string &field_name, const void *query_vector, int topk,
+      const QueryParams::Ptr &query_params) const = 0;
+
+  //! Like FastQuery(), but returns stable internal global doc ids (insertion
+  //! order) instead of user primary keys. This skips the Arrow/USER_ID string
+  //! materialization that FastQuery() pays for PK resolution, replacing it with
+  //! a direct segment ``doc_ids_`` gather, so it is the cheapest id-returning
+  //! bypass. Runs in parallel to FastQuery() on the same collection.
+  //!
+  //! Note: the returned id is the internal ordinal assigned at insert time. It
+  //! equals the dataset row index iff vectors were inserted in row order (which
+  //! is the case for the sequential single-writer build path).
+  //!
+  //! @param field_name   Dense vector field to search.
+  //! @param query_vector Pointer to a contiguous query vector buffer whose
+  //!                      element type and length match the field's vector
+  //!                      data type and dimension. Must stay valid for the
+  //!                      duration of the call.
+  //! @param topk         Number of neighbors to return.
+  //! @param query_params Index query params (e.g. ef for HNSW); may be null.
+  virtual Result<RawSearchResultDocIds> FastQueryDocIds(
+      const std::string &field_name, const void *query_vector, int topk,
+      const QueryParams::Ptr &query_params) const = 0;
+
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;
 

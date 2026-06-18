@@ -204,6 +204,90 @@ class QueryExecutor:
             return docs_list[0]
         return ctx.reranker.rerank(docs_list, ctx.topk)
 
+    def fast_query(
+        self,
+        collection: _Collection,
+        field_name: str,
+        vector,
+        topk: int,
+        param=None,
+    ) -> tuple[list[str], list[float]]:
+        """Lowest-overhead dense-vector KNN bypass.
+
+        Converts the query vector to the field's dtype once and issues a single
+        C++ ``fast_query`` call that goes straight to the segment vector
+        indexer (no SQL planner, Arrow pipeline, Doc materialization, or
+        per-attribute ``_SearchQuery`` construction). Returns ``(ids, scores)``.
+        """
+        vector_schema = self._schema.vector(field_name)
+        if vector_schema is None:
+            raise ValueError(f"No vector field found: {field_name}")
+        target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
+        arr = (
+            convert_to_numpy(vector, target_dtype)
+            if target_dtype
+            else np.asarray(vector)
+        )
+        return collection.fast_query(field_name, arr, topk, param)
+
+    def fast_query_doc_ids(
+        self,
+        collection: _Collection,
+        field_name: str,
+        vector,
+        topk: int,
+        param=None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Cheapest id-returning KNN bypass.
+
+        Like :meth:`fast_query`, but returns stable internal global doc ids
+        (insertion order) as an ``int64`` numpy array instead of string primary
+        keys, avoiding the Arrow/USER_ID string materialization. Returns
+        ``(ids, scores)`` as numpy arrays.
+
+        Note: the returned id equals the dataset row index iff vectors were
+        inserted in row order (the sequential single-writer build path).
+        """
+        vector_schema = self._schema.vector(field_name)
+        if vector_schema is None:
+            raise ValueError(f"No vector field found: {field_name}")
+        target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
+        arr = (
+            convert_to_numpy(vector, target_dtype)
+            if target_dtype
+            else np.asarray(vector)
+        )
+        return collection.fast_query_doc_ids(field_name, arr, topk, param)
+
+    def fast_query_doc_ids_only(
+        self,
+        collection: _Collection,
+        field_name: str,
+        vector,
+        topk: int,
+        param=None,
+    ) -> np.ndarray:
+        """Cheapest id-only KNN bypass.
+
+        Like :meth:`fast_query_doc_ids`, but returns ONLY the ``int64`` id numpy
+        array (no scores). The result buffer is handed to numpy via a capsule
+        (zero-copy), avoiding the second numpy allocation and memcpy. Use when
+        scores are not needed (e.g. recall benchmarking).
+
+        Note: the returned id equals the dataset row index iff vectors were
+        inserted in row order (the sequential single-writer build path).
+        """
+        vector_schema = self._schema.vector(field_name)
+        if vector_schema is None:
+            raise ValueError(f"No vector field found: {field_name}")
+        target_dtype = DTYPE_MAP.get(vector_schema.data_type.value)
+        arr = (
+            convert_to_numpy(vector, target_dtype)
+            if target_dtype
+            else np.asarray(vector)
+        )
+        return collection.fast_query_doc_ids_only(field_name, arr, topk, param)
+
     def _build_base_search_query(self, ctx: QueryContext) -> _SearchQuery:
         search_query = _SearchQuery()
         search_query.topk = ctx.topk

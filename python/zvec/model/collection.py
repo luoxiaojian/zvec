@@ -434,3 +434,116 @@ class Collection:
             reranker=reranker,
         )
         return self._querier.execute(ctx, self._obj)
+
+    def fast_query(
+        self,
+        field_name: str,
+        vector,
+        *,
+        topk: int = 10,
+        param=None,
+    ) -> tuple[list[str], list[float]]:
+        """Lowest-overhead dense-vector KNN search (bypass path).
+
+        Parallel to :meth:`query`, but goes straight to the segment vector
+        indexer in C++, skipping the SQL analyzer/planner, the Arrow execution
+        pipeline, Doc materialization, and the multi-call ``_SearchQuery``
+        construction. This recovers as much of the native C++ search
+        throughput as possible. Plain KNN only (no scalar filter / FTS).
+
+        Args:
+            field_name (str): Dense vector field to search.
+            vector: Query vector (list/tuple/np.ndarray); converted once to the
+                field's vector dtype.
+            topk (int, optional): Number of neighbors. Defaults to 10.
+            param: Index query params (e.g. HnswQueryParam). Defaults to None.
+
+        Returns:
+            tuple[list[str], list[float]]: (ids, scores), sorted by relevance.
+        """
+        return self._querier.fast_query(
+            self._obj,
+            field_name,
+            vector,
+            topk,
+            param,
+        )
+
+    def fast_query_doc_ids(
+        self,
+        field_name: str,
+        vector,
+        *,
+        topk: int = 10,
+        param=None,
+    ):
+        """Cheapest id-returning dense-vector KNN search (bypass path).
+
+        Like :meth:`fast_query`, but returns stable internal global doc ids
+        (insertion order) as an ``int64`` numpy array instead of string primary
+        keys. This skips the Arrow/USER_ID string materialization that
+        :meth:`fast_query` performs for primary-key resolution, replacing it
+        with a direct segment ``doc_ids_`` gather. Runs in parallel to
+        :meth:`fast_query`. Plain KNN only (no scalar filter / FTS).
+
+        Args:
+            field_name (str): Dense vector field to search.
+            vector: Query vector (list/tuple/np.ndarray); converted once to the
+                field's vector dtype.
+            topk (int, optional): Number of neighbors. Defaults to 10.
+            param: Index query params (e.g. HnswQueryParam). Defaults to None.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (ids, scores) as numpy arrays
+            (``int64`` ids, ``float32`` scores), sorted by relevance.
+
+        Note:
+            The returned id is the internal ordinal assigned at insert time; it
+            equals the dataset row index iff vectors were inserted in row order.
+        """
+        return self._querier.fast_query_doc_ids(
+            self._obj,
+            field_name,
+            vector,
+            topk,
+            param,
+        )
+
+    def fast_query_doc_ids_only(
+        self,
+        field_name: str,
+        vector,
+        *,
+        topk: int = 10,
+        param=None,
+    ):
+        """Cheapest id-only dense-vector KNN search (bypass path).
+
+        Like :meth:`fast_query_doc_ids`, but returns ONLY the ``int64`` id numpy
+        array (no scores). The id buffer is transferred to numpy via a capsule
+        (zero-copy), saving the second numpy allocation and memcpy that
+        :meth:`fast_query_doc_ids` does for scores. This matches the lowest-overhead
+        bindings of the top ann-benchmarks entries. Plain KNN only (no scalar
+        filter / FTS).
+
+        Args:
+            field_name (str): Dense vector field to search.
+            vector: Query vector (list/tuple/np.ndarray); converted once to the
+                field's vector dtype.
+            topk (int, optional): Number of neighbors. Defaults to 10.
+            param: Index query params (e.g. HnswQueryParam). Defaults to None.
+
+        Returns:
+            np.ndarray: ``int64`` ids, sorted by relevance.
+
+        Note:
+            The returned id is the internal ordinal assigned at insert time; it
+            equals the dataset row index iff vectors were inserted in row order.
+        """
+        return self._querier.fast_query_doc_ids_only(
+            self._obj,
+            field_name,
+            vector,
+            topk,
+            param,
+        )

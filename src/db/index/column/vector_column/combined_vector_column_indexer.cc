@@ -152,6 +152,13 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       return tl::make_unexpected(result.error());
     }
 
+    // Single-block fast path: the only block has offset 0, and the sub-index
+    // already returns results sorted and truncated to topk. Return directly to
+    // skip the merge / re-sort / reorder / truncate work below.
+    if (indexers_.size() == 1) {
+      return std::move(result.value());
+    }
+
     auto index_results = result.value();
     VectorIndexResults *vector_index_results =
         dynamic_cast<VectorIndexResults *>(index_results.get());

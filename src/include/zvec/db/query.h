@@ -98,6 +98,21 @@ struct SearchQuery {
   Status validate_and_sanitize(const FieldSchema *schema);
 };
 
+//! Lightweight result for the low-overhead ``FastQuery`` bypass: only primary
+//! keys and scores, with no Doc / scalar-field / vector materialization.
+struct RawSearchResult {
+  std::vector<std::string> pks;
+  std::vector<float> scores;
+};
+
+//! Lightweight result for the ``FastQueryDocIds`` bypass: stable internal global
+//! doc ids (insertion order) and scores. Avoids the Arrow/USER_ID string
+//! materialization that ``FastQuery`` pays to resolve user primary keys.
+struct RawSearchResultDocIds {
+  std::vector<int64_t> ids;
+  std::vector<float> scores;
+};
+
 struct GroupByVectorQuery {
   QueryTarget target_;
   std::string filter_;
