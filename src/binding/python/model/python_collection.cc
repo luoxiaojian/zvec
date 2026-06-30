@@ -17,6 +17,7 @@
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
 #include <cstring>
+#include <limits>
 
 namespace zvec {
 
@@ -347,6 +348,137 @@ void ZVecPyCollection::bind_dql_methods(
                 ids_vec->data(), free_when_done);
           },
           py::arg("field_name"), py::arg("vector"), py::arg("topk"),
+          py::arg("query_params") = QueryParams::Ptr{})
+      // Ann-benchmarks bypass: cache indexers at prepare time; set search params
+      // once; per-query call passes only (vector, topk). Parallel to
+      // fast_query_doc_ids_only — does not modify that path.
+      .def(
+          "ann_bench_prepare",
+          [](Collection &self, const std::string &field_name) {
+            Status status;
+            {
+              py::gil_scoped_release release;
+              status = self.AnnBenchPrepare(field_name);
+            }
+            throw_if_error(status);
+          },
+          py::arg("field_name"))
+      .def(
+          "ann_bench_set_query_params",
+          [](Collection &self, const QueryParams::Ptr &query_params) {
+            py::gil_scoped_release release;
+            self.AnnBenchSetQueryParams(query_params);
+          },
+          py::arg("query_params") = QueryParams::Ptr{})
+      .def(
+          "ann_bench_search_doc_ids_only",
+          [](const Collection &self, const py::array &vector, int topk) {
+            py::buffer_info info = vector.request();
+            const void *ptr = info.ptr;
+            Result<RawSearchResultDocIds> result;
+            {
+              py::gil_scoped_release release;
+              result = self.AnnBenchSearchDocIds(ptr, topk);
+            }
+            RawSearchResultDocIds raw = unwrap_expected(result);
+            auto *ids_vec = new std::vector<int64_t>(std::move(raw.ids));
+            const auto n = static_cast<py::ssize_t>(ids_vec->size());
+            py::capsule free_when_done(ids_vec, [](void *p) {
+              delete reinterpret_cast<std::vector<int64_t> *>(p);
+            });
+            return py::array_t<int64_t>(
+                {n}, {static_cast<py::ssize_t>(sizeof(int64_t))},
+                ids_vec->data(), free_when_done);
+          },
+          py::arg("vector"), py::arg("topk"))
+      // Batch version of fast_query_doc_ids_only: process all queries in a
+      // single C++ loop with the GIL released, eliminating per-query Python
+      // dispatch overhead. Input: (nq, dim) array. Output: (nq, topk) int64.
+      .def(
+          "batch_fast_query_doc_ids_only",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &queries, int topk,
+             const QueryParams::Ptr &query_params) {
+            py::buffer_info info = queries.request();
+            if (info.ndim != 2)
+              throw std::runtime_error("queries must be 2D (nq x dim)");
+            const auto nq = static_cast<py::ssize_t>(info.shape[0]);
+            const auto dim = static_cast<py::ssize_t>(info.shape[1]);
+            const auto item_size = static_cast<py::ssize_t>(info.itemsize);
+            const char *base = static_cast<const char *>(info.ptr);
+
+            // Pre-allocate output: (nq, topk) int64
+            py::array_t<int64_t> out({nq, static_cast<py::ssize_t>(topk)});
+            int64_t *out_ptr = out.mutable_data();
+
+            {
+              py::gil_scoped_release release;
+              for (py::ssize_t i = 0; i < nq; ++i) {
+                const void *qptr = base + i * dim * item_size;
+                auto result =
+                    self.FastQueryDocIds(field_name, qptr, topk, query_params);
+                auto raw = unwrap_expected(result);
+                const auto n =
+                    std::min(static_cast<py::ssize_t>(raw.ids.size()),
+                             static_cast<py::ssize_t>(topk));
+                std::memcpy(out_ptr + i * topk, raw.ids.data(),
+                            n * sizeof(int64_t));
+                // Pad with -1 if fewer than topk results
+                for (py::ssize_t j = n; j < topk; ++j)
+                  out_ptr[i * topk + j] = -1;
+              }
+            }
+            return out;
+          },
+          py::arg("field_name"), py::arg("queries"), py::arg("topk"),
+          py::arg("query_params") = QueryParams::Ptr{})
+      // Batch version of fast_query_doc_ids: returns both ids and scores.
+      // Input: (nq, dim) array. Output: ((nq, topk) int64, (nq, topk) float32).
+      .def(
+          "batch_fast_query_doc_ids",
+          [](const Collection &self, const std::string &field_name,
+             const py::array &queries, int topk,
+             const QueryParams::Ptr &query_params) {
+            py::buffer_info info = queries.request();
+            if (info.ndim != 2)
+              throw std::runtime_error("queries must be 2D (nq x dim)");
+            const auto nq = static_cast<py::ssize_t>(info.shape[0]);
+            const auto dim = static_cast<py::ssize_t>(info.shape[1]);
+            const auto item_size = static_cast<py::ssize_t>(info.itemsize);
+            const char *base = static_cast<const char *>(info.ptr);
+
+            py::array_t<int64_t> ids_out(
+                {nq, static_cast<py::ssize_t>(topk)});
+            py::array_t<float> scores_out(
+                {nq, static_cast<py::ssize_t>(topk)});
+            int64_t *ids_ptr = ids_out.mutable_data();
+            float *scores_ptr = scores_out.mutable_data();
+
+            {
+              py::gil_scoped_release release;
+              for (py::ssize_t i = 0; i < nq; ++i) {
+                const void *qptr = base + i * dim * item_size;
+                auto result =
+                    self.FastQueryDocIds(field_name, qptr, topk, query_params);
+                auto raw = unwrap_expected(result);
+                const auto n =
+                    std::min(static_cast<py::ssize_t>(raw.ids.size()),
+                             static_cast<py::ssize_t>(topk));
+                std::memcpy(ids_ptr + i * topk, raw.ids.data(),
+                            n * sizeof(int64_t));
+                std::memcpy(scores_ptr + i * topk, raw.scores.data(),
+                            n * sizeof(float));
+                for (py::ssize_t j = n; j < topk; ++j) {
+                  ids_ptr[i * topk + j] = -1;
+                  scores_ptr[i * topk + j] =
+                      std::numeric_limits<float>::max();
+                }
+              }
+            }
+            return std::pair<py::array_t<int64_t>, py::array_t<float>>(
+                std::move(ids_out), std::move(scores_out));
+          },
+          py::arg("field_name"), py::arg("queries"), py::arg("topk"),
           py::arg("query_params") = QueryParams::Ptr{})
       // MultiQuery: multi query with reranker
       .def(

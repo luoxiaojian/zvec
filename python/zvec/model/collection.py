@@ -547,3 +547,78 @@ class Collection:
             topk,
             param,
         )
+
+    def batch_fast_query_doc_ids_only(
+        self,
+        field_name: str,
+        queries,
+        *,
+        topk: int = 10,
+        param=None,
+    ):
+        """Batch version of :meth:`fast_query_doc_ids_only`.
+
+        Processes all query vectors in a single C++ loop with the GIL released,
+        eliminating per-query Python dispatch overhead.
+
+        Args:
+            field_name (str): Dense vector field to search.
+            queries: (nq, dim) float32 numpy array of query vectors.
+            topk (int, optional): Number of neighbors per query. Defaults to 10.
+            param: Index query params (e.g. HnswQueryParam). Defaults to None.
+
+        Returns:
+            np.ndarray: (nq, topk) int64 array of doc ids.
+        """
+        import numpy as np
+
+        queries = np.ascontiguousarray(queries, dtype=np.float32)
+        return self._obj.batch_fast_query_doc_ids_only(
+            field_name, queries, topk, param
+        )
+
+    def ann_bench_prepare(self, field_name: str) -> None:
+        """Cache segment indexers for ann-benchmarks bypass (call once after open)."""
+        self._obj.ann_bench_prepare(field_name)
+
+    def ann_bench_set_query_params(self, param=None) -> None:
+        """Store search params (e.g. ef) for ann-benchmarks bypass queries."""
+        self._obj.ann_bench_set_query_params(param)
+
+    def ann_bench_search_doc_ids_only(self, vector, *, topk: int = 10):
+        """Ann-benchmarks bypass: search with only (vector, topk).
+
+        Requires :meth:`ann_bench_prepare` and :meth:`ann_bench_set_query_params`.
+        Caches indexers at prepare time to avoid per-query field/segment routing.
+        """
+        return self._obj.ann_bench_search_doc_ids_only(vector, topk)
+
+    def batch_fast_query_doc_ids(
+        self,
+        field_name: str,
+        queries,
+        *,
+        topk: int = 10,
+        param=None,
+    ):
+        """Batch version of :meth:`fast_query_doc_ids`.
+
+        Processes all query vectors in a single C++ loop with the GIL released,
+        eliminating per-query Python dispatch overhead.
+
+        Args:
+            field_name (str): Dense vector field to search.
+            queries: (nq, dim) float32 numpy array of query vectors.
+            topk (int, optional): Number of neighbors per query. Defaults to 10.
+            param: Index query params (e.g. HnswQueryParam). Defaults to None.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: ((nq, topk) int64 ids,
+                (nq, topk) float32 scores)
+        """
+        import numpy as np
+
+        queries = np.ascontiguousarray(queries, dtype=np.float32)
+        return self._obj.batch_fast_query_doc_ids(
+            field_name, queries, topk, param
+        )

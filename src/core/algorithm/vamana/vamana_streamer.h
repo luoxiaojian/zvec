@@ -31,6 +31,9 @@ class VamanaStreamer : public IndexStreamer {
   VamanaStreamer(const VamanaStreamer &) = delete;
   VamanaStreamer &operator=(const VamanaStreamer &) = delete;
 
+  //! Merge converter/reformer params produced after deferred training.
+  void merge_trained_meta(const IndexMeta &trained_meta) override;
+
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 

@@ -140,6 +140,17 @@ class Collection {
       const std::string &field_name, const void *query_vector, int topk,
       const QueryParams::Ptr &query_params) const = 0;
 
+  //! Ann-benchmarks bypass (parallel to FastQueryDocIds; does not modify it).
+  //! ``AnnBenchPrepare`` caches segment indexers and field metadata once;
+  //! ``AnnBenchSetQueryParams`` stores search params (e.g. ef) for subsequent
+  //! queries; ``AnnBenchSearchDocIds`` searches with only ``(vector, topk)``.
+  //! Intended for read-only, sequential-insert benchmark collections.
+  virtual Status AnnBenchPrepare(const std::string &field_name) = 0;
+  virtual void AnnBenchSetQueryParams(
+      const QueryParams::Ptr &query_params) = 0;
+  virtual Result<RawSearchResultDocIds> AnnBenchSearchDocIds(
+      const void *query_vector, int topk) const = 0;
+
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;
 

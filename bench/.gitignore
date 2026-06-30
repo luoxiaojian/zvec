@@ -1,0 +1,10 @@
+# Local venv and caches
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Generated benchmark artifacts (indexes, logs, result dumps)
+**/output/
+**/results/
+*.proxima
+nohup.out

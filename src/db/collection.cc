@@ -138,6 +138,14 @@ class CollectionImpl : public Collection {
       const std::string &field_name, const void *query_vector, int topk,
       const QueryParams::Ptr &query_params) const override;
 
+  Status AnnBenchPrepare(const std::string &field_name) override;
+
+  void AnnBenchSetQueryParams(
+      const QueryParams::Ptr &query_params) override;
+
+  Result<RawSearchResultDocIds> AnnBenchSearchDocIds(
+      const void *query_vector, int topk) const override;
+
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
 
@@ -267,6 +275,28 @@ class CollectionImpl : public Collection {
   DeleteStore::Ptr delete_store_;
 
   sqlengine::SQLEngine::Ptr sql_engine_;
+
+  struct AnnBenchSegmentCache {
+    Segment::Ptr segment;
+    CombinedVectorColumnIndexer::Ptr indexer;
+    IndexFilter::Ptr filter;
+  };
+
+  struct AnnBenchCache {
+    bool prepared{false};
+    std::string field_name;
+    DataType data_type{DataType::UNDEFINED};
+    uint32_t dimension{0};
+    bool quantized{false};
+    MetricType metric{MetricType::L2};
+    QueryParams::Ptr query_params;
+    std::vector<AnnBenchSegmentCache> segments;
+  };
+
+  void ann_bench_clear_unlocked() { ann_bench_ = AnnBenchCache{}; }
+
+  mutable AnnBenchCache ann_bench_;
+  mutable std::mutex ann_bench_mtx_;
 };
 
 Result<Collection::Ptr> Collection::CreateAndOpen(
@@ -383,6 +413,11 @@ Status CollectionImpl::Destroy() {
   ailego::FileHelper::RemoveDirectory(path_.c_str());
 
   destroyed_ = true;
+
+  {
+    std::lock_guard bench_lock(ann_bench_mtx_);
+    ann_bench_clear_unlocked();
+  }
 
   return Status::OK();
 }
@@ -1965,6 +2000,183 @@ Result<RawSearchResultDocIds> CollectionImpl::FastQueryDocIds(
   for (const auto &seg : segments) {
     RawSearchResultDocIds seg_out;
     auto s = search_one(seg, &seg_out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    for (size_t i = 0; i < seg_out.ids.size(); ++i) {
+      candidates.emplace_back(seg_out.scores[i], seg_out.ids[i]);
+    }
+  }
+
+  const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
+  std::partial_sort(
+      candidates.begin(), candidates.begin() + keep, candidates.end(),
+      [&better](const std::pair<float, int64_t> &a,
+                const std::pair<float, int64_t> &b) {
+        return better(a.first, b.first);
+      });
+
+  RawSearchResultDocIds out;
+  out.ids.reserve(keep);
+  out.scores.reserve(keep);
+  for (size_t i = 0; i < keep; ++i) {
+    out.scores.push_back(candidates[i].first);
+    out.ids.push_back(candidates[i].second);
+  }
+  return out;
+}
+
+Status CollectionImpl::AnnBenchPrepare(const std::string &field_name) {
+  std::shared_lock schema_lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
+
+  const FieldSchema *field_schema =
+      field_name.empty() ? nullptr : schema_->get_field(field_name);
+  if (field_schema == nullptr || !field_schema->is_dense_vector()) {
+    return Status::InvalidArgument(
+        "AnnBenchPrepare requires a dense vector field: ", field_name);
+  }
+
+  bool quantized = false;
+  MetricType metric = MetricType::L2;
+  if (const auto *vp = dynamic_cast<const VectorIndexParams *>(
+          field_schema->index_params().get())) {
+    metric = vp->metric_type();
+    quantized = vp->quantize_type() != QuantizeType::UNDEFINED;
+  }
+
+  auto segments = get_all_segments();
+
+  AnnBenchCache cache;
+  cache.prepared = true;
+  cache.field_name = field_name;
+  cache.data_type = field_schema->data_type();
+  cache.dimension = field_schema->dimension();
+  cache.quantized = quantized;
+  cache.metric = metric;
+  cache.segments.reserve(segments.size());
+
+  for (const auto &seg : segments) {
+    CombinedVectorColumnIndexer::Ptr indexer;
+    if (!quantized) {
+      indexer = seg->get_combined_vector_indexer(field_name);
+    } else {
+      indexer = seg->get_quant_combined_vector_indexer(field_name);
+      if (indexer != nullptr && !indexer->has_searchable_indexers()) {
+        indexer = seg->get_combined_vector_indexer(field_name);
+      }
+    }
+    if (!indexer || !indexer->has_searchable_indexers()) {
+      continue;
+    }
+    AnnBenchSegmentCache entry;
+    entry.segment = seg;
+    entry.indexer = std::move(indexer);
+    entry.filter = seg->get_filter();
+    cache.segments.push_back(std::move(entry));
+  }
+
+  if (cache.segments.empty()) {
+    return Status::InvalidArgument(
+        "AnnBenchPrepare: no searchable vector index for field ", field_name);
+  }
+
+  std::lock_guard bench_lock(ann_bench_mtx_);
+  ann_bench_ = std::move(cache);
+  return Status::OK();
+}
+
+void CollectionImpl::AnnBenchSetQueryParams(
+    const QueryParams::Ptr &query_params) {
+  std::lock_guard bench_lock(ann_bench_mtx_);
+  ann_bench_.query_params = query_params;
+}
+
+Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
+    const void *query_vector, int topk) const {
+  std::shared_lock schema_lock(schema_handle_mtx_);
+
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+
+  if (query_vector == nullptr) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("AnnBenchSearchDocIds: query_vector is null"));
+  }
+  if (topk <= 0) {
+    return RawSearchResultDocIds{};
+  }
+
+  AnnBenchCache cache;
+  {
+    std::lock_guard bench_lock(ann_bench_mtx_);
+    if (!ann_bench_.prepared) {
+      return tl::make_unexpected(Status(
+          StatusCode::FAILED_PRECONDITION,
+          "AnnBenchSearchDocIds: call AnnBenchPrepare first"));
+    }
+    cache = ann_bench_;
+  }
+
+  const MetricType metric = cache.metric;
+  auto better = [metric](float a, float b) {
+    return metric == MetricType::IP ? a > b : a < b;
+  };
+
+  vector_column_params::QueryParams qp;
+  qp.topk = static_cast<uint32_t>(topk);
+  qp.data_type = cache.data_type;
+  qp.dimension = cache.dimension;
+  qp.query_params = cache.query_params;
+
+  vector_column_params::VectorData vector_data;
+  vector_data.vector = vector_column_params::DenseVector{query_vector};
+
+  auto search_one = [&](const AnnBenchSegmentCache &entry,
+                        RawSearchResultDocIds *out) -> Status {
+    qp.filter = entry.filter ? entry.filter.get() : nullptr;
+
+    auto res = entry.indexer->Search(vector_data, qp);
+    if (!res) {
+      return res.error();
+    }
+    IndexResults::Ptr results = std::move(res.value());
+
+    std::vector<int> indices;
+    indices.reserve(topk);
+    const size_t score_begin = out->scores.size();
+    for (auto it = results->create_iterator(); it->valid(); it->next()) {
+      indices.push_back(static_cast<int>(it->doc_id()));
+      out->scores.push_back(it->score());
+    }
+    if (indices.empty()) {
+      return Status::OK();
+    }
+
+    std::vector<int64_t> ids;
+    auto s = entry.segment->get_global_doc_ids(indices, ids);
+    if (!s.ok()) {
+      out->scores.resize(score_begin);
+      return s;
+    }
+    out->ids.insert(out->ids.end(), ids.begin(), ids.end());
+    return Status::OK();
+  };
+
+  if (cache.segments.size() == 1) {
+    RawSearchResultDocIds out;
+    auto s = search_one(cache.segments[0], &out);
+    CHECK_RETURN_STATUS_EXPECTED(s);
+    if (static_cast<int>(out.ids.size()) > topk) {
+      out.ids.resize(topk);
+      out.scores.resize(topk);
+    }
+    return out;
+  }
+
+  std::vector<std::pair<float, int64_t>> candidates;
+  candidates.reserve(static_cast<size_t>(topk) * cache.segments.size());
+  for (const auto &entry : cache.segments) {
+    RawSearchResultDocIds seg_out;
+    auto s = search_one(entry, &seg_out);
     CHECK_RETURN_STATUS_EXPECTED(s);
     for (size_t i = 0; i < seg_out.ids.size(); ++i) {
       candidates.emplace_back(seg_out.scores[i], seg_out.ids[i]);

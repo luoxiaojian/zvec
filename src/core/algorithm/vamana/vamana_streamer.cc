@@ -322,6 +322,19 @@ int VamanaStreamer::flush(uint64_t checkpoint) {
   return entity_->flush(checkpoint);
 }
 
+void VamanaStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
+  if (!trained_meta.reformer_name().empty()) {
+    meta_.set_reformer(trained_meta.reformer_name(),
+                       trained_meta.reformer_revision(),
+                       trained_meta.reformer_params());
+  }
+  if (!trained_meta.converter_name().empty()) {
+    meta_.set_converter(trained_meta.converter_name(),
+                        trained_meta.converter_revision(),
+                        trained_meta.converter_params());
+  }
+}
+
 int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   LOG_INFO("VamanaStreamer dump");
 
