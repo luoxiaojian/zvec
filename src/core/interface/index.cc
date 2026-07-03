@@ -605,6 +605,48 @@ int Index::Search(const VectorData &vector_data,
 }
 
 
+int Index::SearchDocIds(const VectorData &vector_data,
+                        const BaseIndexQueryParam::Pointer &search_param,
+                        int64_t *output_ids, int topk) {
+  if (output_ids == nullptr || topk <= 0) {
+    return core::IndexError_InvalidArgument;
+  }
+  if (!is_open_) {
+    LOG_ERROR("Index is not open");
+    return core::IndexError_Runtime;
+  }
+  if (!is_trained_ && this->Train() != 0) {
+    LOG_ERROR("Failed to train index");
+    return core::IndexError_Runtime;
+  }
+  if (is_sparse_) {
+    LOG_ERROR("SearchDocIds does not support sparse indexes");
+    return core::IndexError_Unsupported;
+  }
+  if (search_param->refiner_param != nullptr) {
+    LOG_ERROR("SearchDocIds does not support refiner queries");
+    return core::IndexError_Unsupported;
+  }
+
+  auto &context = acquire_context();
+  if (!context) {
+    LOG_ERROR("Failed to acquire context");
+    return core::IndexError_Runtime;
+  }
+
+  if (_prepare_for_search(vector_data, search_param, context) != 0) {
+    LOG_ERROR("Failed to prepare for search");
+    context->reset();
+    return core::IndexError_Runtime;
+  }
+
+  const int ret =
+      _dense_search_doc_ids(vector_data, search_param, output_ids, topk, context);
+  context->reset();
+  return ret;
+}
+
+
 int Index::_dense_fetch(const uint32_t doc_id,
                         VectorDataBuffer *vector_data_buffer) {
   core::IndexStorage::MemoryBlock vector_block;
@@ -737,17 +779,16 @@ int Index::_sparse_add(const VectorData &vector_data, const uint32_t doc_id,
 }
 
 
-int Index::_dense_search(const VectorData &vector_data,
-                         const BaseIndexQueryParam::Pointer &search_param,
-                         SearchResult *result,
-                         core::IndexContext::Pointer &context) {
+int Index::_execute_dense_search(
+    const VectorData &vector_data,
+    const BaseIndexQueryParam::Pointer &search_param,
+    core::IndexContext::Pointer &context) {
   if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   auto vector = dense_vector.data;
-  // Check if need to transform feature
   std::string new_vector;
   core::IndexQueryMeta new_meta = input_vector_meta_;
   if (reformer_ != nullptr) {
@@ -758,9 +799,7 @@ int Index::_dense_search(const VectorData &vector_data,
     }
     vector = new_vector.data();
   }
-  // TODO: group by
   if (search_param->bf_pks != nullptr) {
-    // should we eliminate the copy of bf_pks?
     if (streamer_->search_bf_by_p_keys_impl(
             vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
             new_meta, 1, context) != 0) {
@@ -772,11 +811,39 @@ int Index::_dense_search(const VectorData &vector_data,
       LOG_ERROR("Failed to search vector");
       return core::IndexError_Runtime;
     }
-  } else {
-    if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
-      LOG_ERROR("Failed to search vector");
-      return core::IndexError_Runtime;
-    }
+  } else if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
+    LOG_ERROR("Failed to search vector");
+    return core::IndexError_Runtime;
+  }
+  return 0;
+}
+
+int Index::_dense_search_doc_ids(const VectorData &vector_data,
+                                 const BaseIndexQueryParam::Pointer &search_param,
+                                 int64_t *output_ids, int topk,
+                                 core::IndexContext::Pointer &context) {
+  if (0 != _execute_dense_search(vector_data, search_param, context)) {
+    return core::IndexError_Runtime;
+  }
+  const auto &docs = context->result();
+  const int n = std::min(topk, static_cast<int>(docs.size()));
+  for (int i = 0; i < n; ++i) {
+    output_ids[i] = static_cast<int64_t>(docs[i].key());
+  }
+  return 0;
+}
+
+int Index::_dense_search(const VectorData &vector_data,
+                         const BaseIndexQueryParam::Pointer &search_param,
+                         SearchResult *result,
+                         core::IndexContext::Pointer &context) {
+  if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
+    LOG_ERROR("Invalid vector data");
+    return core::IndexError_Runtime;
+  }
+  const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
+  if (0 != _execute_dense_search(vector_data, search_param, context)) {
+    return core::IndexError_Runtime;
   }
   result->doc_list_ = std::move(context->result());
 
@@ -798,7 +865,7 @@ int Index::_dense_search(const VectorData &vector_data,
         std::string &reverted_vector = result->reverted_vector_list_[i];
         reverted_vector.resize(input_vector_meta_.dimension() *
                                input_vector_meta_.unit_size());
-        if (reformer_->revert(context->result()[i].vector(), new_meta,
+        if (reformer_->revert(context->result()[i].vector(), streamer_vector_meta_,
                               &reverted_vector) != 0) {
           LOG_ERROR("Failed to revert vector");
           return core::IndexError_Runtime;

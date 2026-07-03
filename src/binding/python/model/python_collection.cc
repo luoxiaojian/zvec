@@ -13,11 +13,13 @@
 // limitations under the License.
 
 #include "python_collection.h"
+
+#include "zvec/db/ann_bench_timer.h"
+#include <cstring>
+#include <limits>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/db/collection.h>
-#include <cstring>
-#include <limits>
 
 namespace zvec {
 
@@ -301,7 +303,8 @@ void ZVecPyCollection::bind_dql_methods(
             Result<RawSearchResultDocIds> result;
             {
               py::gil_scoped_release release;
-              result = self.FastQueryDocIds(field_name, ptr, topk, query_params);
+              result =
+                  self.FastQueryDocIds(field_name, ptr, topk, query_params);
             }
             RawSearchResultDocIds raw = unwrap_expected(result);
             const auto n = static_cast<py::ssize_t>(raw.ids.size());
@@ -318,11 +321,11 @@ void ZVecPyCollection::bind_dql_methods(
           },
           py::arg("field_name"), py::arg("vector"), py::arg("topk"),
           py::arg("query_params") = QueryParams::Ptr{})
-      // Like fast_query_doc_ids, but returns ONLY the int64 id array (no scores),
-      // handing the result buffer to numpy via a capsule (zero-copy, no extra
-      // numpy allocation or memcpy). Matches the lowest-overhead bindings used
-      // by the top ann-benchmarks entries (glass/scann/n2). Use when scores are
-      // not needed (e.g. recall benchmarking).
+      // Like fast_query_doc_ids, but returns ONLY the int64 id array (no
+      // scores), handing the result buffer to numpy via a capsule (zero-copy,
+      // no extra numpy allocation or memcpy). Matches the lowest-overhead
+      // bindings used by the top ann-benchmarks entries (glass/scann/n2). Use
+      // when scores are not needed (e.g. recall benchmarking).
       .def(
           "fast_query_doc_ids_only",
           [](const Collection &self, const std::string &field_name,
@@ -333,7 +336,8 @@ void ZVecPyCollection::bind_dql_methods(
             Result<RawSearchResultDocIds> result;
             {
               py::gil_scoped_release release;
-              result = self.FastQueryDocIds(field_name, ptr, topk, query_params);
+              result =
+                  self.FastQueryDocIds(field_name, ptr, topk, query_params);
             }
             RawSearchResultDocIds raw = unwrap_expected(result);
             // Move the id vector to the heap and let a capsule own it; the
@@ -349,8 +353,8 @@ void ZVecPyCollection::bind_dql_methods(
           },
           py::arg("field_name"), py::arg("vector"), py::arg("topk"),
           py::arg("query_params") = QueryParams::Ptr{})
-      // Ann-benchmarks bypass: cache indexers at prepare time; set search params
-      // once; per-query call passes only (vector, topk). Parallel to
+      // Ann-benchmarks bypass: cache indexers at prepare time; set search
+      // params once; per-query call passes only (vector, topk). Parallel to
       // fast_query_doc_ids_only — does not modify that path.
       .def(
           "ann_bench_prepare",
@@ -391,6 +395,36 @@ void ZVecPyCollection::bind_dql_methods(
                 ids_vec->data(), free_when_done);
           },
           py::arg("vector"), py::arg("topk"))
+      .def(
+          "ann_bench_search_fast",
+          [](const Collection &self,
+             const py::array_t<float, py::array::c_style> &vector,
+             py::array_t<int64_t> &output) {
+            const float *ptr = vector.data();
+            int topk = static_cast<int>(output.size());
+            int64_t *out_ptr = output.mutable_data();
+            {
+              py::gil_scoped_release release;
+              zvec::ScopedTimer _t(1);
+              self.AnnBenchSearchFast(ptr, topk, out_ptr);
+            }
+          },
+          py::arg("vector"), py::arg("output"))
+      .def(
+          "ann_bench_timer_reset",
+          [](const Collection &) { zvec::AnnBenchTimer::reset(); })
+      .def(
+          "ann_bench_timer_get_ns",
+          [](const Collection &, int slot) {
+            return zvec::AnnBenchTimer::get_ns(slot);
+          },
+          py::arg("slot"))
+      .def(
+          "ann_bench_timer_get_count",
+          [](const Collection &, int slot) {
+            return zvec::AnnBenchTimer::get_count(slot);
+          },
+          py::arg("slot"))
       // Batch version of fast_query_doc_ids_only: process all queries in a
       // single C++ loop with the GIL released, eliminating per-query Python
       // dispatch overhead. Input: (nq, dim) array. Output: (nq, topk) int64.
@@ -447,10 +481,8 @@ void ZVecPyCollection::bind_dql_methods(
             const auto item_size = static_cast<py::ssize_t>(info.itemsize);
             const char *base = static_cast<const char *>(info.ptr);
 
-            py::array_t<int64_t> ids_out(
-                {nq, static_cast<py::ssize_t>(topk)});
-            py::array_t<float> scores_out(
-                {nq, static_cast<py::ssize_t>(topk)});
+            py::array_t<int64_t> ids_out({nq, static_cast<py::ssize_t>(topk)});
+            py::array_t<float> scores_out({nq, static_cast<py::ssize_t>(topk)});
             int64_t *ids_ptr = ids_out.mutable_data();
             float *scores_ptr = scores_out.mutable_data();
 
@@ -470,8 +502,7 @@ void ZVecPyCollection::bind_dql_methods(
                             n * sizeof(float));
                 for (py::ssize_t j = n; j < topk; ++j) {
                   ids_ptr[i * topk + j] = -1;
-                  scores_ptr[i * topk + j] =
-                      std::numeric_limits<float>::max();
+                  scores_ptr[i * topk + j] = std::numeric_limits<float>::max();
                 }
               }
             }

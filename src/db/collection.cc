@@ -22,7 +22,13 @@
 #include <string>
 #include <variant>
 #include <vector>
+
+#include "zvec/db/ann_bench_timer.h"
+
 #include <ailego/io/file_lock.h>
+#include <arrow/array.h>
+#include <arrow/chunked_array.h>
+#include <arrow/table.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
@@ -38,12 +44,13 @@
 #include "db/common/global_resource.h"
 #include "db/common/profiler.h"
 #include "db/common/typedef.h"
-#include <arrow/array.h>
-#include <arrow/chunked_array.h>
-#include <arrow/table.h>
 #include "db/index/column/common/index_results.h"
 #include "db/index/column/vector_column/combined_vector_column_indexer.h"
+#include "db/index/column/vector_column/engine_helper.hpp"
+#include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
+#include <zvec/core/interface/index.h>
+#include <zvec/core/interface/index_param.h>
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/index_filter.h"
@@ -140,11 +147,13 @@ class CollectionImpl : public Collection {
 
   Status AnnBenchPrepare(const std::string &field_name) override;
 
-  void AnnBenchSetQueryParams(
-      const QueryParams::Ptr &query_params) override;
+  void AnnBenchSetQueryParams(const QueryParams::Ptr &query_params) override;
 
-  Result<RawSearchResultDocIds> AnnBenchSearchDocIds(
-      const void *query_vector, int topk) const override;
+  Result<RawSearchResultDocIds> AnnBenchSearchDocIds(const void *query_vector,
+                                                     int topk) const override;
+
+  void AnnBenchSearchFast(const void *query_vector, int topk,
+                          int64_t *output_ids) const override;
 
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
@@ -291,9 +300,19 @@ class CollectionImpl : public Collection {
     MetricType metric{MetricType::L2};
     QueryParams::Ptr query_params;
     std::vector<AnnBenchSegmentCache> segments;
+
+    // Direct proxima index shortcut (mirrors C++ bench.cc): skip
+    // CombinedVectorColumnIndexer / per-query engine param conversion.
+    bool use_direct_index{false};
+    core_interface::Index::Pointer raw_index;
+    core_interface::BaseIndexQueryParam::Pointer engine_query_param;
   };
 
-  void ann_bench_clear_unlocked() { ann_bench_ = AnnBenchCache{}; }
+  void ann_bench_clear_unlocked() {
+    ann_bench_ = AnnBenchCache{};
+  }
+
+  void ann_bench_rebuild_engine_query_param_unlocked();
 
   mutable AnnBenchCache ann_bench_;
   mutable std::mutex ann_bench_mtx_;
@@ -1784,7 +1803,8 @@ Result<RawSearchResult> CollectionImpl::FastQuery(
   vector_data.vector = vector_column_params::DenseVector{query_vector};
 
   // Search one segment and append (pk, score) results into `out`.
-  auto search_one = [&](const Segment::Ptr &seg, RawSearchResult *out) -> Status {
+  auto search_one = [&](const Segment::Ptr &seg,
+                        RawSearchResult *out) -> Status {
     CombinedVectorColumnIndexer::Ptr indexer;
     if (!quantized) {
       indexer = seg->get_combined_vector_indexer(field_name);
@@ -1868,12 +1888,12 @@ Result<RawSearchResult> CollectionImpl::FastQuery(
   }
 
   const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
-  std::partial_sort(
-      candidates.begin(), candidates.begin() + keep, candidates.end(),
-      [&better](const std::pair<float, std::string> &a,
-                const std::pair<float, std::string> &b) {
-        return better(a.first, b.first);
-      });
+  std::partial_sort(candidates.begin(), candidates.begin() + keep,
+                    candidates.end(),
+                    [&better](const std::pair<float, std::string> &a,
+                              const std::pair<float, std::string> &b) {
+                      return better(a.first, b.first);
+                    });
 
   RawSearchResult out;
   out.pks.reserve(keep);
@@ -2007,12 +2027,12 @@ Result<RawSearchResultDocIds> CollectionImpl::FastQueryDocIds(
   }
 
   const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
-  std::partial_sort(
-      candidates.begin(), candidates.begin() + keep, candidates.end(),
-      [&better](const std::pair<float, int64_t> &a,
-                const std::pair<float, int64_t> &b) {
-        return better(a.first, b.first);
-      });
+  std::partial_sort(candidates.begin(), candidates.begin() + keep,
+                    candidates.end(),
+                    [&better](const std::pair<float, int64_t> &a,
+                              const std::pair<float, int64_t> &b) {
+                      return better(a.first, b.first);
+                    });
 
   RawSearchResultDocIds out;
   out.ids.reserve(keep);
@@ -2080,15 +2100,63 @@ Status CollectionImpl::AnnBenchPrepare(const std::string &field_name) {
         "AnnBenchPrepare: no searchable vector index for field ", field_name);
   }
 
+  cache.use_direct_index = false;
+  cache.raw_index.reset();
+  cache.engine_query_param.reset();
+  if (cache.segments.size() == 1) {
+    const auto &entry = cache.segments[0];
+    if (entry.filter == nullptr && entry.indexer->is_single_block()) {
+      auto primary = entry.indexer->ann_bench_primary_indexer();
+      if (primary) {
+        cache.raw_index = primary->debug_get_index();
+        cache.use_direct_index = (cache.raw_index != nullptr);
+      }
+    }
+  }
+
   std::lock_guard bench_lock(ann_bench_mtx_);
   ann_bench_ = std::move(cache);
+  ann_bench_rebuild_engine_query_param_unlocked();
   return Status::OK();
+}
+
+void CollectionImpl::ann_bench_rebuild_engine_query_param_unlocked() {
+  ann_bench_.engine_query_param.reset();
+  if (!ann_bench_.use_direct_index || !ann_bench_.raw_index ||
+      !ann_bench_.query_params || ann_bench_.segments.empty()) {
+    return;
+  }
+
+  auto primary =
+      ann_bench_.segments[0].indexer->ann_bench_primary_indexer();
+  if (!primary) {
+    ann_bench_.use_direct_index = false;
+    return;
+  }
+
+  vector_column_params::QueryParams qp;
+  qp.topk = 10;  // updated per query in AnnBenchSearchFast
+  qp.data_type = ann_bench_.data_type;
+  qp.dimension = ann_bench_.dimension;
+  qp.query_params = ann_bench_.query_params;
+  qp.filter = nullptr;
+
+  auto engine_qp = ProximaEngineHelper::convert_to_engine_query_param(
+      primary->field_schema(), qp);
+  if (!engine_qp) {
+    ann_bench_.use_direct_index = false;
+    return;
+  }
+  ann_bench_.engine_query_param =
+      std::shared_ptr<core_interface::BaseIndexQueryParam>(
+          std::move(engine_qp.value()));
 }
 
 void CollectionImpl::AnnBenchSetQueryParams(
     const QueryParams::Ptr &query_params) {
   std::lock_guard bench_lock(ann_bench_mtx_);
   ann_bench_.query_params = query_params;
+  ann_bench_rebuild_engine_query_param_unlocked();
 }
 
 Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
@@ -2109,9 +2177,9 @@ Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
   {
     std::lock_guard bench_lock(ann_bench_mtx_);
     if (!ann_bench_.prepared) {
-      return tl::make_unexpected(Status(
-          StatusCode::FAILED_PRECONDITION,
-          "AnnBenchSearchDocIds: call AnnBenchPrepare first"));
+      return tl::make_unexpected(
+          Status(StatusCode::FAILED_PRECONDITION,
+                 "AnnBenchSearchDocIds: call AnnBenchPrepare first"));
     }
     cache = ann_bench_;
   }
@@ -2184,12 +2252,12 @@ Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
   }
 
   const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
-  std::partial_sort(
-      candidates.begin(), candidates.begin() + keep, candidates.end(),
-      [&better](const std::pair<float, int64_t> &a,
-                const std::pair<float, int64_t> &b) {
-        return better(a.first, b.first);
-      });
+  std::partial_sort(candidates.begin(), candidates.begin() + keep,
+                    candidates.end(),
+                    [&better](const std::pair<float, int64_t> &a,
+                              const std::pair<float, int64_t> &b) {
+                      return better(a.first, b.first);
+                    });
 
   RawSearchResultDocIds out;
   out.ids.reserve(keep);
@@ -2199,6 +2267,48 @@ Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
     out.ids.push_back(candidates[i].second);
   }
   return out;
+}
+
+void CollectionImpl::AnnBenchSearchFast(const void *query_vector, int topk,
+                                        int64_t *output_ids) const {
+  zvec::ScopedTimer _t(2);
+  // Minimal hot path for ann-benchmarks: no locks, no validation.
+  // Assumes: AnnBenchPrepare called (single segment), serial access.
+
+  if (ann_bench_.use_direct_index && ann_bench_.raw_index &&
+      ann_bench_.engine_query_param) {
+    ann_bench_.engine_query_param->topk = static_cast<uint32_t>(topk);
+
+    core_interface::DenseVector dense_query{query_vector};
+    core_interface::VectorData query_data{dense_query};
+
+    if (0 != ann_bench_.raw_index->SearchDocIds(
+                 query_data, ann_bench_.engine_query_param, output_ids, topk)) {
+      return;
+    }
+    return;
+  }
+
+  const auto &seg = ann_bench_.segments[0];
+
+  vector_column_params::QueryParams qp;
+  qp.topk = static_cast<uint32_t>(topk);
+  qp.data_type = ann_bench_.data_type;
+  qp.dimension = ann_bench_.dimension;
+  qp.query_params = ann_bench_.query_params;
+  qp.filter = seg.filter ? seg.filter.get() : nullptr;
+
+  vector_column_params::VectorData vd;
+  vd.vector = vector_column_params::DenseVector{query_vector};
+
+  auto res = seg.indexer->Search(vd, qp);
+  auto results = std::move(res.value());
+
+  int i = 0;
+  for (auto it = results->create_iterator(); it->valid() && i < topk;
+       it->next(), ++i) {
+    output_ids[i] = static_cast<int64_t>(it->doc_id());
+  }
 }
 
 Result<DocPtrList> CollectionImpl::Query(const MultiQuery &query) const {

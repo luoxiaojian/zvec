@@ -146,10 +146,16 @@ class Collection {
   //! queries; ``AnnBenchSearchDocIds`` searches with only ``(vector, topk)``.
   //! Intended for read-only, sequential-insert benchmark collections.
   virtual Status AnnBenchPrepare(const std::string &field_name) = 0;
-  virtual void AnnBenchSetQueryParams(
-      const QueryParams::Ptr &query_params) = 0;
+  virtual void AnnBenchSetQueryParams(const QueryParams::Ptr &query_params) = 0;
   virtual Result<RawSearchResultDocIds> AnnBenchSearchDocIds(
       const void *query_vector, int topk) const = 0;
+
+  /// Minimal fast path for ann-benchmarks: no locks, no validation,
+  /// single-segment assumption, writes doc_ids directly to caller buffer.
+  /// Caller must ensure: AnnBenchPrepare + AnnBenchSetQueryParams called,
+  /// output_ids has space for at least topk elements.
+  virtual void AnnBenchSearchFast(const void *query_vector, int topk,
+                                  int64_t *output_ids) const = 0;
 
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;

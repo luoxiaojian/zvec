@@ -132,6 +132,12 @@ class Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
+  //! Dense ANN search that writes doc keys into ``output_ids`` without
+  //! materializing a ``SearchResult`` (skips score normalize / vector revert).
+  virtual int SearchDocIds(const VectorData &query,
+                           const BaseIndexQueryParam::Pointer &search_param,
+                           int64_t *output_ids, int topk);
+
   virtual BaseIndexParam::Pointer GetParam() const {
     return std::make_shared<BaseIndexParam>(param_);
   }
@@ -177,9 +183,16 @@ class Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result,
                      core::IndexContext::Pointer &context);
+  int _execute_dense_search(const VectorData &query,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            core::IndexContext::Pointer &context);
   int _dense_search(const VectorData &query,
                     const BaseIndexQueryParam::Pointer &search_param,
                     SearchResult *result, core::IndexContext::Pointer &context);
+  int _dense_search_doc_ids(const VectorData &query,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            int64_t *output_ids, int topk,
+                            core::IndexContext::Pointer &context);
   virtual int _prepare_for_search(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       core::IndexContext::Pointer &context) = 0;

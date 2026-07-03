@@ -16,6 +16,8 @@
 #include <type_traits>
 #include <ailego/internal/cpu_features.h>
 
+#include "zvec/db/ann_bench_timer.h"
+
 namespace zvec {
 namespace core {
 
@@ -389,10 +391,13 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
         zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
     auto &topk_heap = ctx->topk_heap();
 
-    VamanaFastGreedyRunner<EntityType>{entity,         dc,      ctx,
-                                       topk_v,         ef_v,    entry_point,
-                                       prefetch_lines, avx2_ok, topk_heap}
-        .run(ctx->visit_filter());
+    {
+      zvec::ScopedTimer _t(4);
+      VamanaFastGreedyRunner<EntityType>{entity,         dc,      ctx,
+                                         topk_v,         ef_v,    entry_point,
+                                         prefetch_lines, avx2_ok, topk_heap}
+          .run(ctx->visit_filter());
+    }
   } else {
     auto filter = [](node_id_t) { return false; };
     dual_heap_greedy_search<EntityType, MemBlockType>(entity, ctx, dc,

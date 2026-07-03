@@ -46,6 +46,17 @@ class CombinedVectorColumnIndexer {
     return !indexers_.empty();
   }
 
+  //! True when this combined indexer wraps exactly one block (ann-bench fast
+  //! path eligible).
+  bool is_single_block() const {
+    return indexers_.size() == 1;
+  }
+
+  //! Primary block indexer (valid when ``is_single_block()``).
+  VectorColumnIndexer::Ptr ann_bench_primary_indexer() const {
+    return indexers_.empty() ? nullptr : indexers_[0];
+  }
+
  protected:
   /**
    * A filter wrapper that applies an offset to document IDs before
