@@ -32,6 +32,8 @@ def effective_element_size(dimension: int, quantize: str) -> int:
         return dim + 20
     if q == "uniform_int8":
         return dim
+    if q == "uniform_uint8":
+        return dim + 8
     if q == "fp32":
         return dim * 4
     if q == "fp16":

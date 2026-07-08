@@ -148,7 +148,7 @@ class HnswContext : public IndexContext {
 
     for (size_t i = 0; i < heap.size(); ++i) {
       node_id_t id = heap[i].first;
-      dist_t dist = dc_.dist(id);
+      dist_t dist = dc_.batch_dist(id);
       topk_heap_.emplace_back(id, dist);
     }
   }
@@ -252,8 +252,9 @@ class HnswContext : public IndexContext {
   }
 
   inline void reset_query(const void *query) {
-    if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
-        query_preprocess_func != nullptr) {
+    auto query_preprocess_func =
+        metric_ ? metric_->get_query_preprocess_func() : nullptr;
+    if (query_preprocess_func != nullptr) {
       size_t dim = dc_.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);

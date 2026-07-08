@@ -100,8 +100,9 @@ class VamanaContext : public IndexContext {
   void topk_to_result(uint32_t idx);
 
   inline void reset_query(const void *query) {
-    if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
-        query_preprocess_func != nullptr) {
+    auto query_preprocess_func =
+        metric_ ? metric_->get_query_preprocess_func() : nullptr;
+    if (query_preprocess_func != nullptr) {
       size_t dim = dc_.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
@@ -115,6 +116,12 @@ class VamanaContext : public IndexContext {
   inline VamanaDistCalculator &dist_calculator() {
     return dc_;
   }
+  inline void update_dist_caculator_distance(
+      const IndexMetric::MatrixDistance &distance,
+      const IndexMetric::MatrixBatchDistance &batch_distance) {
+    dc_.update_distance(distance, batch_distance);
+  }
+
   inline TopkHeap &topk_heap() {
     return topk_heap_;
   }

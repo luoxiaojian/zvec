@@ -13,6 +13,7 @@ import json
 import shutil
 from collections import defaultdict
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,12 @@ EF_SWEEP = [
 
 RECALL_THRESHOLDS = [0.9, 0.95, 0.98, 0.99]
 TOP_PER_TIER = 2  # min distinct builds per dataset × recall tier
-MAX_GROUPS = 10
+MAX_GROUPS = 11
+
+# Always include high-QPS SIFT builds even when Vamana fills the tier quota.
+MANDATORY_BUILD_KEYS: list[tuple] = [
+    ("hnsw", 32, 500, "int8"),
+]
 
 
 def build_key(b: dict[str, Any]) -> tuple:
@@ -51,6 +57,30 @@ def bracket_ef(ef: int, margin: int = 1) -> list[int]:
 
 def format_inline_list(vals: list[Any]) -> str:
     return "[" + ", ".join(format_yaml_scalar(v) for v in vals) + "]"
+
+
+def cartesian_query_specs(
+    ef_list: list[int], po_list: list[int], pl_list: list[int]
+) -> list[dict[str, int]]:
+    """All ef × prefetch_offset × prefetch_lines combinations as dict specs."""
+    return [
+        {"ef": ef, "prefetch_offset": po, "prefetch_lines": pl}
+        for ef, po, pl in product(ef_list, po_list, pl_list)
+    ]
+
+
+def emit_query_args_lines(combos: list[dict[str, int]]) -> list[str]:
+    """Emit query_args in ann-benchmarks runner format (hnswlib-style nested list).
+
+    ``query_args: [[spec1, spec2, ...]]`` expands to ``[[spec1], [spec2], ...]`` so
+    ``set_query_arguments(*group)`` receives one dict per query run.
+    """
+    lines = ["        query_args:", "          -"]
+    for spec in combos:
+        lines.append(f"            - ef: {spec['ef']}")
+        lines.append(f"              prefetch_offset: {spec['prefetch_offset']}")
+        lines.append(f"              prefetch_lines: {spec['prefetch_lines']}")
+    return lines
 
 
 def load_results(grid_dir: Path) -> dict[str, dict]:
@@ -127,6 +157,13 @@ def select_build_keys(results: dict[str, dict]) -> list[tuple]:
                 selected.discard(drop)
         selected.add(best_hnsw)
 
+    for bk in MANDATORY_BUILD_KEYS:
+        if bk not in selected:
+            if len(selected) >= MAX_GROUPS:
+                drop = min(selected, key=lambda k: scores.get(k, 0.0))
+                selected.discard(drop)
+            selected.add(bk)
+
     return sorted(selected, key=lambda k: (k[0], k[1], k[2] if k[0] == "hnsw" else k[2]))
 
 
@@ -184,11 +221,15 @@ def build_run_group(k: tuple, results: dict[str, dict]) -> tuple[str, dict]:
     ef_list, po_list, pl_list = collect_query_args(k, results)
 
     if k[0] == "hnsw":
+        quantize = ["int8"]
+        # uniform_int8 HNSW is broken in the Python Collection path on SIFT.
+        if k != ("hnsw", 32, 500, "int8"):
+            quantize.append("uniform_int8")
         args: dict[str, Any] = {
             "index": "hnsw",
             "M": k[1],
             "efConstruction": k[2],
-            "quantize": ["int8", "uniform_int8"],
+            "quantize": quantize,
         }
     else:
         args = {
@@ -199,12 +240,8 @@ def build_run_group(k: tuple, results: dict[str, dict]) -> tuple[str, dict]:
             "quantize": ["int8"],
         }
 
-    query_args = {
-        "ef": ef_list,
-        "prefetch_offset": po_list,
-        "prefetch_lines": pl_list,
-    }
-    return label, {"args": args, "query_args": query_args}
+    query_specs = cartesian_query_specs(ef_list, po_list, pl_list)
+    return label, {"args": args, "query_specs": query_specs}
 
 
 def format_yaml_value(val: Any) -> str:
@@ -248,9 +285,7 @@ def emit_config(run_groups: dict[str, dict]) -> str:
         lines.append("        args:")
         for ak, av in rg["args"].items():
             lines.append(f"          {ak}: {format_yaml_value(av)}")
-        lines.append("        query_args:")
-        for qk, qv in rg["query_args"].items():
-            lines.append(f"          {qk}: {format_yaml_value(qv)}")
+        lines.extend(emit_query_args_lines(rg["query_specs"]))
 
     for ctor, name in constructors[1:]:
         lines.extend([
@@ -270,18 +305,13 @@ def summarize(run_groups: dict[str, dict]) -> str:
     lines = ["Run groups:", f"  count: {len(run_groups)}"]
     total = 0
     for label, rg in run_groups.items():
-        qa = rg["query_args"]
         qargs = rg["args"].get("quantize", [])
-        n = len(qa["ef"]) * len(qa["prefetch_offset"]) * len(qa["prefetch_lines"])
+        n = len(rg["query_specs"])
         if isinstance(qargs, list):
             n *= len(qargs)
         total += n
-        lines.append(
-            f"  {label}: ef×po×pl×quant = "
-            f"{len(qa['ef'])}×{len(qa['prefetch_offset'])}×"
-            f"{len(qa['prefetch_lines'])}×{len(qargs) if isinstance(qargs, list) else 1} "
-            f"= {n}"
-        )
+        qn = len(qargs) if isinstance(qargs, list) else 1
+        lines.append(f"  {label}: query_specs×quant = {len(rg['query_specs'])}×{qn} = {n}")
     lines.append(f"  total query combos per constructor: {total}")
     lines.append(f"  total across 4 constructors: {total * 4}")
     return "\n".join(lines)

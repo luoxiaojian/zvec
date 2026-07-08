@@ -38,7 +38,8 @@ constexpr const int kRabitqCompiledAvx512 = 0;
 std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
-      QuantizeType::RABITQ, QuantizeType::UNIFORM_INT8}},
+      QuantizeType::RABITQ, QuantizeType::UNIFORM_INT8,
+      QuantizeType::UNIFORM_UINT8}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -226,14 +227,19 @@ Status FieldSchema::validate() const {
           }
         }
 
-        // UNIFORM_INT8 builds a direct int8 L2 metric (UniformInt8Metric)
+        // UNIFORM_* builds a direct byte L2 metric
         // that only supports SquaredEuclidean. Reject IP/COSINE early at
         // creation time instead of failing opaquely during optimize().
-        if (vector_index_params->quantize_type() ==
-                QuantizeType::UNIFORM_INT8 &&
+        if ((vector_index_params->quantize_type() ==
+                 QuantizeType::UNIFORM_INT8 ||
+             vector_index_params->quantize_type() ==
+                 QuantizeType::UNIFORM_UINT8) &&
             vector_index_params->metric_type() != MetricType::L2) {
           return Status::InvalidArgument(
-              "schema validate failed: UNIFORM_INT8 quantize only supports L2 "
+              "schema validate failed: ",
+              QuantizeTypeCodeBook::AsString(
+                  vector_index_params->quantize_type()),
+              " quantize only supports L2 "
               "metric, but field[",
               name_, "]'s metric is ",
               MetricTypeCodeBook::AsString(

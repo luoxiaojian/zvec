@@ -73,6 +73,7 @@ def _build_schema(
     name: str,
     *,
     metric_type: MetricType = MetricType.IP,
+    quantize_type: QuantizeType = QuantizeType.UNDEFINED,
     max_degree: int = 32,
     search_list_size: int = 64,
     alpha: float = 1.2,
@@ -100,6 +101,7 @@ def _build_schema(
                     search_list_size=search_list_size,
                     alpha=alpha,
                     use_contiguous_memory=use_contiguous_memory,
+                    quantize_type=quantize_type,
                 ),
             ),
         ],
@@ -497,5 +499,46 @@ class TestVamanaEndToEnd:
                 f"post-optimize top-1 should still be probe id, got {ids_post}"
             )
             assert len(ids_post) == TOPK
+        finally:
+            coll.destroy()
+
+    def test_uniform_uint8_optimize_then_query(
+        self, tmp_path_factory, collection_option
+    ):
+        """UNIFORM_UINT8 uses a query metric with preprocessed query bytes."""
+        schema = _build_schema(
+            "vamana_uniform_uint8_e2e",
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT8,
+            max_degree=16,
+            search_list_size=32,
+            use_contiguous_memory=True,
+        )
+        path = tmp_path_factory.mktemp("zvec") / "vamana_uniform_uint8_e2e"
+        coll = zvec.create_and_open(
+            path=str(path), schema=schema, option=collection_option
+        )
+        try:
+            docs = []
+            for i in range(NUM_DOCS):
+                vec = np.zeros(DIMENSION, dtype=np.float32)
+                vec[i % DIMENSION] = float(i % 255)
+                vec[(i * 7) % DIMENSION] += float((i * 3) % 255)
+                docs.append(
+                    Doc(id=str(i), fields={"id": i}, vectors={"dense": vec.tolist()})
+                )
+            for r in coll.insert(docs=docs):
+                assert r.ok()
+
+            coll.optimize()
+
+            for probe in (0, 13, 71, NUM_DOCS - 1):
+                ids = _query_topk(
+                    coll, docs[probe].vector("dense"), ef_search=128
+                )
+                assert ids[0] == str(probe), (
+                    f"expected self-recall at probe={probe}, got top-1 id={ids[0]} "
+                    f"(top-{TOPK}={ids})"
+                )
         finally:
             coll.destroy()

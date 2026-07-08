@@ -82,7 +82,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     return 0;
   }
 
-  dist_t dist = ctx->dist_calculator().dist(entry_point);
+  dist_t dist = ctx->dist_calculator().batch_dist(entry_point);
   for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }

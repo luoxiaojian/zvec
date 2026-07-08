@@ -22,11 +22,15 @@ HnswContext::HnswContext(size_t dimension, const IndexMetric::Pointer &metric,
                          const HnswEntity::Pointer &entity)
     : IndexContext(metric),
       entity_(entity),
-      dc_(entity_.get(), metric, dimension) {}
+      dc_(entity_.get(), metric, dimension),
+      metric_(metric) {}
 
 HnswContext::HnswContext(const IndexMetric::Pointer &metric,
                          const HnswEntity::Pointer &entity)
-    : IndexContext(metric), entity_(entity), dc_(entity_.get(), metric) {}
+    : IndexContext(metric),
+      entity_(entity),
+      dc_(entity_.get(), metric),
+      metric_(metric) {}
 
 HnswContext::~HnswContext() {
   visit_filter_.destroy();
@@ -296,7 +300,7 @@ void HnswContext::fill_random_to_topk_full(void) {
     const auto id = gen();
     if (!visit_filter_.visited(id) && !myfilter(id)) {
       visit_filter_.set_visited(id);
-      topk_heap_.emplace(id, dc_.dist(id));
+      topk_heap_.emplace(id, dc_.batch_dist(id));
     }
   }
   return;

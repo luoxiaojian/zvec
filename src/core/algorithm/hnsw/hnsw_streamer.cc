@@ -334,10 +334,10 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
 
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
+  auto query_metric = metric_->query_metric();
+  if (query_metric && query_metric->distance() && query_metric->batch_distance()) {
+    search_distance_ = query_metric->distance();
+    search_batch_distance_ = query_metric->batch_distance();
   }
 
   // Create algorithm based on entity storage mode

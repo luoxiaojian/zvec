@@ -98,6 +98,16 @@ class TestHnswIndexParam:
         data = param.to_dict()
         assert data["quantize_type"] == "UNIFORM_INT8"
 
+    def test_uniform_uint8_quantize(self):
+        param = HnswIndexParam(
+            metric_type=MetricType.L2,
+            m=48,
+            quantize_type=QuantizeType.UNIFORM_UINT8,
+        )
+        assert param.quantize_type == QuantizeType.UNIFORM_UINT8
+        data = param.to_dict()
+        assert data["quantize_type"] == "UNIFORM_UINT8"
+
     def test_custom(self):
         param = HnswIndexParam(
             metric_type=MetricType.L2,
@@ -149,6 +159,14 @@ class TestFlatIndexParam:
         )
         assert param.quantize_type == QuantizeType.UNIFORM_INT8
         assert param.to_dict()["quantize_type"] == "UNIFORM_INT8"
+
+    def test_uniform_uint8_quantize(self):
+        param = FlatIndexParam(
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT8,
+        )
+        assert param.quantize_type == QuantizeType.UNIFORM_UINT8
+        assert param.to_dict()["quantize_type"] == "UNIFORM_UINT8"
 
     @pytest.mark.parametrize("attr", ["metric_type", "quantize_type"])
     def test_readonly_attributes(self, attr):

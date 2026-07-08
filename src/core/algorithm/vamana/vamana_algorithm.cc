@@ -263,12 +263,9 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
   candidates.clear();
   visit.clear();
 
-  // Initialize with entry point using batch_dist (single-element batch).
-  // We must NOT use dc.dist(entry_point) here because dist() calls
-  // distance_() which is squared_euclidean_int8_distance (sign/abs trick,
-  // expects two raw int8 inputs), but query_ has been preprocessed by
-  // reset_query (+128 shift to uint8). batch_dist() correctly calls
-  // batch_distance_() which expects the preprocessed uint8 query.
+  // Initialize with entry point through the batch path. reset_query() may
+  // preprocess the query for SIMD batch kernels, while distance_() still
+  // expects the raw vector representation.
   dist_t entry_dist = dc.batch_dist(entry_point);
   if (ailego_unlikely(dc.error())) {
     return;
