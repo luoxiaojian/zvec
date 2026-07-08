@@ -255,6 +255,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kUniformInt8:
           converter_name = "UniformInt8StreamingConverter";
           break;
+        case QuantizerType::kUniformUint8:
+          converter_name = "UniformUint8StreamingConverter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;

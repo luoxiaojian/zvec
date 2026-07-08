@@ -252,12 +252,11 @@ class HnswContext : public IndexContext {
   }
 
   inline void reset_query(const void *query) {
-    if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
-        query_preprocess_func != nullptr) {
+    if (query_preprocess_func_ != nullptr) {
       size_t dim = dc_.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
-      query_preprocess_func(preprocess_buffer_.data(), dim);
+      query_preprocess_func_(preprocess_buffer_.data(), dim);
       query = preprocess_buffer_.data();
     }
 
@@ -481,6 +480,16 @@ class HnswContext : public IndexContext {
       const IndexMetric::MatrixDistance &distance,
       const IndexMetric::MatrixBatchDistance &batch_distance) {
     dc_.update_distance(distance, batch_distance);
+    query_preprocess_func_ = index_metric_->get_query_preprocess_func();
+  }
+
+  inline void update_dist_caculator_distance(
+      const IndexMetric::MatrixDistance &distance,
+      const IndexMetric::MatrixBatchDistance &batch_distance,
+      const IndexMetric::DistanceBatchQueryPreprocessFunc
+          &query_preprocess_func) {
+    dc_.update_distance(distance, batch_distance);
+    query_preprocess_func_ = query_preprocess_func;
   }
 
   //! Get topk
@@ -563,6 +572,7 @@ class HnswContext : public IndexContext {
   uint32_t stats_get_vector_cnt_{0u};
   uint32_t stats_visit_dup_cnt_{0u};
   std::string preprocess_buffer_;
+  IndexMetric::DistanceBatchQueryPreprocessFunc query_preprocess_func_{};
 
   LinearPool<dist_t> pool_;
   BlockHeap block_pool_;

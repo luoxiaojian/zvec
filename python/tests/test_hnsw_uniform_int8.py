@@ -152,10 +152,58 @@ class TestUniformInt8QuantizeTypeSurface:
     def test_enum_value(self):
         assert QuantizeType.UNIFORM_INT8.value == 5
         assert QuantizeType.UNIFORM_INT8.name == "UNIFORM_INT8"
+        assert QuantizeType.UNIFORM_UINT8.value == 6
+        assert QuantizeType.UNIFORM_UINT8.name == "UNIFORM_UINT8"
 
     def test_top_level_namespace(self):
         assert zvec.QuantizeType.UNIFORM_INT8 is QuantizeType.UNIFORM_INT8
         assert "QuantizeType" in zvec.__all__
+
+
+class TestHnswUniformUint8EndToEnd:
+    """Build and query a collection with uniform uint8 HNSW quantization."""
+
+    def test_insert_optimize_query_and_reopen(
+        self, tmp_path_factory, collection_option
+    ):
+        schema = _build_schema(
+            "uniform_uint8_persist",
+            index_param=HnswIndexParam(
+                metric_type=MetricType.L2,
+                m=16,
+                ef_construction=100,
+                quantize_type=QuantizeType.UNIFORM_UINT8,
+            ),
+        )
+        path = tmp_path_factory.mktemp("zvec") / "uniform_uint8_persist"
+        path_str = str(path)
+
+        # Integer vectors with range <=255 should hit the lossless scale=1 path.
+        docs = []
+        for i in range(NUM_DOCS):
+            vec = ((np.arange(DIMENSION, dtype=np.float32) + i) % 219).tolist()
+            docs.append(Doc(id=str(i), fields={"id": i}, vectors={"dense": vec}))
+
+        coll = zvec.create_and_open(
+            path=path_str, schema=schema, option=collection_option
+        )
+        try:
+            for r in coll.insert(docs=docs):
+                assert r.ok(), f"insert failed: code={r.code()}"
+            coll.optimize()
+
+            ids = _query_topk(coll, docs[0].vector("dense"))
+            assert ids[0] == "0"
+        finally:
+            del coll
+
+        reopened = zvec.open(path=path_str, option=collection_option)
+        try:
+            assert reopened.stats.doc_count == NUM_DOCS
+            ids = _query_topk(reopened, docs[0].vector("dense"))
+            assert ids[0] == "0"
+        finally:
+            reopened.destroy()
 
 
 class TestHnswIndexParamUniformInt8Surface:

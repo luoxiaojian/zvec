@@ -152,6 +152,12 @@ class VamanaStreamer : public IndexStreamer {
   VamanaAlgorithmBase::UPointer alg_;
   IndexMeta meta_{};
   IndexMetric::Pointer metric_{};
+  IndexMetric::MatrixDistance add_distance_{};
+  IndexMetric::MatrixDistance search_distance_{};
+  IndexMetric::MatrixBatchDistance add_batch_distance_{};
+  IndexMetric::MatrixBatchDistance search_batch_distance_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc add_query_preprocess_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc search_query_preprocess_{};
 
   Stats stats_{};
   std::mutex mutex_{};

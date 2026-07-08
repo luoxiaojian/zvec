@@ -330,14 +330,17 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
 
   add_distance_ = metric_->distance();
   add_batch_distance_ = metric_->batch_distance();
+  add_query_preprocess_ = metric_->get_query_preprocess_func();
 
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
+  search_query_preprocess_ = add_query_preprocess_;
 
-  if (metric_->query_metric() && metric_->query_metric()->distance() &&
-      metric_->query_metric()->batch_distance()) {
-    search_distance_ = metric_->query_metric()->distance();
-    search_batch_distance_ = metric_->query_metric()->batch_distance();
+  auto query_metric = metric_->query_metric();
+  if (query_metric && query_metric->distance() && query_metric->batch_distance()) {
+    search_distance_ = query_metric->distance();
+    search_batch_distance_ = query_metric->batch_distance();
+    search_query_preprocess_ = query_metric->get_query_preprocess_func();
   }
 
   // Create algorithm based on entity storage mode
@@ -540,7 +543,8 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_,
+                                      add_query_preprocess_);
   ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
@@ -620,7 +624,8 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_,
+                                      add_query_preprocess_);
   ctx->reset_query(query);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
 
@@ -692,7 +697,8 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_,
+                                      search_query_preprocess_);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   for (size_t q = 0; q < count; ++q) {
@@ -762,7 +768,8 @@ int HnswStreamer::search_bf_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_,
+                                      search_query_preprocess_);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {
@@ -856,7 +863,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   }
 
   ctx->clear();
-  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_,
+                                      search_query_preprocess_);
   ctx->resize_results(count);
 
   if (ctx->group_by_search()) {

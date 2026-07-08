@@ -35,6 +35,7 @@ from zvec import (
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (QuantizeType.UNIFORM_INT8, "UNIFORM_INT8"),
+        (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
         (StatusCode.OK, "OK"),
     ],
 )
@@ -50,6 +51,7 @@ def test_enum_names(member, name):
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (QuantizeType.UNIFORM_INT8, 5),
+        (QuantizeType.UNIFORM_UINT8, 6),
         (StatusCode.OK, 0),
     ],
 )
@@ -98,7 +100,9 @@ def test_index_type_has_member(member):
     assert member in IndexType.__members__
 
 
-@pytest.mark.parametrize("member", ["FP16", "INT8", "INT4", "UNIFORM_INT8", "UNDEFINED"])
+@pytest.mark.parametrize(
+    "member", ["FP16", "INT8", "INT4", "UNIFORM_INT8", "UNIFORM_UINT8", "UNDEFINED"]
+)
 def test_quantize_type_has_member(member):
     assert member in QuantizeType.__members__
 

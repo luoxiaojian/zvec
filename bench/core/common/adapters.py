@@ -7,7 +7,7 @@ from zvec import HnswQueryParam, VamanaQueryParam
 
 from .schema import VECTOR_FIELD
 
-SEARCH_PATHS = ("fast_query_doc_ids", "ann_bench_doc_ids")
+SEARCH_PATHS = ("fast_query_doc_ids", "ann_bench_doc_ids", "ann_bench_fast")
 
 
 def _param_str(param) -> str:
@@ -96,6 +96,45 @@ class ZvecAnnBenchDocIdsANN:
         return self._res
 
 
+class ZvecAnnBenchFastANN:
+    """``ann_bench_prepare`` + ``ann_bench_search_fast`` (pre-allocated output buffer).
+
+    Mirrors the ann-benchmarks ZvecAnnBenchDocIds._search implementation:
+    uses ann_bench_search_fast with a pre-allocated numpy int64 output buffer
+    to avoid per-query allocation overhead.
+    """
+
+    path = "ann_bench_fast"
+
+    def __init__(self, raw, base_param, field: str = VECTOR_FIELD, *, count: int = 10):
+        self._raw = raw
+        self._field = field
+        self._param = base_param
+        self.name = "zvec(ann_bench_fast)"
+        self._q = None
+        self._n = count
+        self._out_buf = np.empty(count, dtype=np.int64)
+        self._raw.ann_bench_prepare(field)
+        self._raw.ann_bench_set_query_params(base_param)
+
+    def set_query_arguments(self, param) -> None:
+        self._param = param
+        self._raw.ann_bench_set_query_params(param)
+        self.name = f"zvec(ann_bench_fast, {_param_str(param)})"
+
+    def prepare_query(self, v: np.ndarray, n: int) -> None:
+        self._q = np.ascontiguousarray(v, dtype=np.float32)
+        if n != self._n:
+            self._n = n
+            self._out_buf = np.empty(n, dtype=np.int64)
+
+    def run_prepared_query(self) -> None:
+        self._raw.ann_bench_search_fast(self._q, self._out_buf)
+
+    def get_prepared_query_results(self) -> np.ndarray:
+        return self._out_buf
+
+
 def make_search_adapter(
     path: str,
     raw,
@@ -103,6 +142,7 @@ def make_search_adapter(
     *,
     field: str = VECTOR_FIELD,
     legacy_ids: bool = False,
+    count: int = 10,
 ):
     if path == "fast_query_doc_ids":
         return ZvecFastQueryDocIdsANN(
@@ -110,4 +150,6 @@ def make_search_adapter(
         )
     if path == "ann_bench_doc_ids":
         return ZvecAnnBenchDocIdsANN(raw, param, field=field)
+    if path == "ann_bench_fast":
+        return ZvecAnnBenchFastANN(raw, param, field=field, count=count)
     raise ValueError(f"unknown search path {path!r}; choose from {SEARCH_PATHS}")

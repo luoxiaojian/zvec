@@ -27,6 +27,7 @@ VamanaContext::VamanaContext(size_t dimension,
       metric_(metric) {
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();
+    query_preprocess_func_ = metric->get_query_preprocess_func();
   }
 }
 
@@ -38,6 +39,7 @@ VamanaContext::VamanaContext(const IndexMetric::Pointer &metric,
       metric_(metric) {
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();
+    query_preprocess_func_ = metric->get_query_preprocess_func();
   }
 }
 

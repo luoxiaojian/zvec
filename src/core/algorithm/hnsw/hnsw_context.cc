@@ -22,11 +22,17 @@ HnswContext::HnswContext(size_t dimension, const IndexMetric::Pointer &metric,
                          const HnswEntity::Pointer &entity)
     : IndexContext(metric),
       entity_(entity),
-      dc_(entity_.get(), metric, dimension) {}
+      dc_(entity_.get(), metric, dimension),
+      query_preprocess_func_(metric ? metric->get_query_preprocess_func()
+                                    : nullptr) {}
 
 HnswContext::HnswContext(const IndexMetric::Pointer &metric,
                          const HnswEntity::Pointer &entity)
-    : IndexContext(metric), entity_(entity), dc_(entity_.get(), metric) {}
+    : IndexContext(metric),
+      entity_(entity),
+      dc_(entity_.get(), metric),
+      query_preprocess_func_(metric ? metric->get_query_preprocess_func()
+                                    : nullptr) {}
 
 HnswContext::~HnswContext() {
   visit_filter_.destroy();

@@ -150,9 +150,10 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   } else {
     vector_indexer = segment_->get_quant_combined_vector_indexer(
         vector_cond_->vector_field_name());
-    // UNIFORM_INT8 quant index is built at optimize(); before that, fall back
+    // UNIFORM_* quant index is built at optimize(); before that, fall back
     // to the raw in-memory indexer so insert-then-query works on the writer.
-    if (vector_params->quantize_type() == QuantizeType::UNIFORM_INT8 &&
+    if ((vector_params->quantize_type() == QuantizeType::UNIFORM_INT8 ||
+         vector_params->quantize_type() == QuantizeType::UNIFORM_UINT8) &&
         vector_indexer != nullptr &&
         !vector_indexer->has_searchable_indexers()) {
       vector_indexer = segment_->get_combined_vector_indexer(

@@ -780,13 +780,15 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
       if (m_indexer) {
         indexers.push_back(m_indexer);
       } else if (vector_index_params->quantize_type() !=
-                 QuantizeType::UNIFORM_INT8) {
+                     QuantizeType::UNIFORM_INT8 &&
+                 vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT8) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
             "quant vector indexer not found for field: ", field->name());
       }
-      // UNIFORM_INT8: quant index is built at optimize(); insert only into the
+      // UNIFORM_*: quant index is built at optimize(); insert only into the
       // raw in-memory indexer until then.
     }
 
@@ -4166,10 +4168,11 @@ Status SegmentImpl::init_memory_components() {
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
 
-      // UNIFORM_INT8 needs a global train() over the full dataset before the
+      // UNIFORM_* needs a global train() over the full dataset before the
       // quant index can be built. The quant index is created at optimize();
       // until then searches use the raw in-memory FLAT indexer above.
-      if (index_params->quantize_type() == QuantizeType::UNIFORM_INT8) {
+      if (index_params->quantize_type() == QuantizeType::UNIFORM_INT8 ||
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8) {
         continue;
       }
 

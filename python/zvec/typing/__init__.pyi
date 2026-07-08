@@ -238,6 +238,8 @@ class QuantizeType:
       INT4
 
       UNIFORM_INT8
+
+      UNIFORM_UINT8
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
@@ -246,6 +248,7 @@ class QuantizeType:
     RABITQ: typing.ClassVar[QuantizeType]  # value = <QuantizeType.RABITQ: 4>
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     UNIFORM_INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNIFORM_INT8: 5>
+    UNIFORM_UINT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNIFORM_UINT8: 6>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
     ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>}

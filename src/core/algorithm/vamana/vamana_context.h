@@ -100,12 +100,11 @@ class VamanaContext : public IndexContext {
   void topk_to_result(uint32_t idx);
 
   inline void reset_query(const void *query) {
-    if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();
-        query_preprocess_func != nullptr) {
+    if (query_preprocess_func_ != nullptr) {
       size_t dim = dc_.dimension();
       preprocess_buffer_.resize(dim);
       memcpy(preprocess_buffer_.data(), query, dim);
-      query_preprocess_func(preprocess_buffer_.data(), dim);
+      query_preprocess_func_(preprocess_buffer_.data(), dim);
       query = preprocess_buffer_.data();
     }
     dc_.reset_query(query);
@@ -115,6 +114,15 @@ class VamanaContext : public IndexContext {
   inline VamanaDistCalculator &dist_calculator() {
     return dc_;
   }
+  inline void update_dist_caculator_distance(
+      const IndexMetric::MatrixDistance &distance,
+      const IndexMetric::MatrixBatchDistance &batch_distance,
+      const IndexMetric::DistanceBatchQueryPreprocessFunc
+          &query_preprocess_func) {
+    dc_.update_distance(distance, batch_distance);
+    query_preprocess_func_ = query_preprocess_func;
+  }
+
   inline TopkHeap &topk_heap() {
     return topk_heap_;
   }
@@ -326,6 +334,7 @@ class VamanaContext : public IndexContext {
   bool fetch_vector_{false};
   uint32_t type_{kUnknownContext};
   std::string preprocess_buffer_;
+  IndexMetric::DistanceBatchQueryPreprocessFunc query_preprocess_func_{};
 
   // Pre-allocated buffers for robust_prune optimization
   std::vector<const void *> prune_vec_cache_;

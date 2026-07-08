@@ -31,6 +31,8 @@ def _metric_from_name(name: str) -> MetricType:
 
 def _quantize_from_converter(converter_name: str) -> QuantizeType:
     normalized = converter_name.strip().lower()
+    if "uniformuint8" in normalized.replace("_", ""):
+        return QuantizeType.UNIFORM_UINT8
     if "uniformint8" in normalized.replace("_", ""):
         return QuantizeType.UNIFORM_INT8
     if "int8" in normalized:

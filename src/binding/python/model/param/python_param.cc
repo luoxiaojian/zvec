@@ -72,6 +72,8 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "RABITQ";
     case QuantizeType::UNIFORM_INT8:
       return "UNIFORM_INT8";
+    case QuantizeType::UNIFORM_UINT8:
+      return "UNIFORM_UINT8";
     default:
       return "UNDEFINED";
   }

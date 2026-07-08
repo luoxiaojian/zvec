@@ -135,7 +135,8 @@ Examples:
       .value("INT8", QuantizeType::INT8)
       .value("INT4", QuantizeType::INT4)
       .value("RABITQ", QuantizeType::RABITQ)
-      .value("UNIFORM_INT8", QuantizeType::UNIFORM_INT8);
+      .value("UNIFORM_INT8", QuantizeType::UNIFORM_INT8)
+      .value("UNIFORM_UINT8", QuantizeType::UNIFORM_UINT8);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

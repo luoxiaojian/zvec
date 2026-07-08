@@ -137,6 +137,7 @@ DATASET_INFO = {
 _QUANTIZE_TYPE = {
     "int8": QuantizeType.INT8,
     "uniform_int8": QuantizeType.UNIFORM_INT8,
+    "uniform_uint8": QuantizeType.UNIFORM_UINT8,
     "fp32": QuantizeType.UNDEFINED,
 }
 

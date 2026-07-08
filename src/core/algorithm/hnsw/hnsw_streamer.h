@@ -205,6 +205,8 @@ class HnswStreamer : public IndexStreamer {
 
   IndexMetric::MatrixBatchDistance add_batch_distance_{};
   IndexMetric::MatrixBatchDistance search_batch_distance_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc add_query_preprocess_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc search_query_preprocess_{};
 
   Stats stats_{};
   std::mutex mutex_{};
