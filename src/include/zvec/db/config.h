@@ -92,6 +92,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     // query
     uint32_t query_thread_count;
+    bool query_thread_binding;
     float invert_to_forward_scan_ratio;
     float brute_force_by_keys_ratio;
     // Independent from brute_force_by_keys_ratio: per-candidate FTS cost
@@ -100,6 +101,7 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
     // optimize
     uint32_t optimize_thread_count;
+    bool optimize_thread_binding;
 
     // FTS jieba tokenizer default dict dir (lowest-priority fallback;
     // per-field config > ZVEC_JIEBA_DICT_DIR > this). Empty by default.
@@ -165,6 +167,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return config_.query_thread_count;
   }
 
+  //! Query thread binding
+  bool query_thread_binding() const noexcept {
+    return config_.query_thread_binding;
+  }
+
   //! Invert to forward scan ratio
   float invert_to_forward_scan_ratio() const noexcept {
     return config_.invert_to_forward_scan_ratio;
@@ -184,6 +191,11 @@ class GlobalConfig : public ailego::Singleton<GlobalConfig> {
   //! Optimize thread count
   uint32_t optimize_thread_count() const noexcept {
     return config_.optimize_thread_count;
+  }
+
+  //! Optimize thread binding
+  bool optimize_thread_binding() const noexcept {
+    return config_.optimize_thread_binding;
   }
 
   //! Effective jieba dict dir. Thread-safe.

@@ -137,12 +137,8 @@ class ThreadPool {
   explicit ThreadPool(uint32_t size, bool binding);
 
   //! Constructor
-  explicit ThreadPool(bool binding)
-      : ThreadPool{std::max(std::thread::hardware_concurrency(), 1u), binding} {
-  }
-
-  //! Constructor
-  ThreadPool(void) : ThreadPool{false} {}
+  ThreadPool(void)
+      : ThreadPool{std::max(std::thread::hardware_concurrency(), 1u), false} {}
 
   //! Destructor
   ~ThreadPool(void) {

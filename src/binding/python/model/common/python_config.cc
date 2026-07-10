@@ -149,11 +149,23 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       data.query_thread_count = static_cast<uint32_t>(q);
     }
 
+    // set query thread binding
+    if (has_key(config_dict, "query_thread_binding")) {
+      data.query_thread_binding =
+          get_if<bool>(config_dict, "query_thread_binding").value();
+    }
+
     // set optimize thread count
     if (has_key(config_dict, "optimize_threads")) {
       auto o = get_if<int32_t>(config_dict, "optimize_threads").value();
       if (o <= 0) throw py::value_error("optimize_threads must be positive");
       data.optimize_thread_count = static_cast<uint32_t>(o);
+    }
+
+    // set optimize thread binding
+    if (has_key(config_dict, "optimize_thread_binding")) {
+      data.optimize_thread_binding =
+          get_if<bool>(config_dict, "optimize_thread_binding").value();
     }
 
     // set invert_to_forward_scan_ratio

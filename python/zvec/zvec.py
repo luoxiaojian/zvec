@@ -35,7 +35,9 @@ def init(
     log_file_size: Optional[int] = 2048,
     log_overdue_days: Optional[int] = 7,
     query_threads: Optional[int] = None,
+    query_thread_binding: Optional[bool] = None,
     optimize_threads: Optional[int] = None,
+    optimize_thread_binding: Optional[bool] = None,
     invert_to_forward_scan_ratio: Optional[float] = None,
     brute_force_by_keys_ratio: Optional[float] = None,
     fts_brute_force_by_keys_ratio: Optional[float] = None,
@@ -79,9 +81,15 @@ def init(
             Number of threads for query execution.
             If ``None`` (default), inferred from available CPU cores (via cgroup).
             Must be ≥ 1 if provided.
+        query_thread_binding (Optional[bool], optional):
+            Whether to bind query worker threads to CPU cores. Defaults to
+            Zvec's internal setting, currently ``False``.
         optimize_threads (Optional[int], optional):
             Threads for background tasks (e.g., compaction, indexing).
             If ``None``, defaults to same as ``query_threads`` or CPU count.
+        optimize_thread_binding (Optional[bool], optional):
+            Whether to bind optimize worker threads to CPU cores. Defaults to
+            Zvec's internal setting, currently ``False``.
         invert_to_forward_scan_ratio (Optional[float], optional):
             Threshold to switch from inverted index to full forward scan.
             Range: [0.0, 1.0]. Higher → more aggressive index skipping.
@@ -167,8 +175,16 @@ def init(
         config_dict["log_overdue_days"] = log_overdue_days
     if query_threads is not None:
         config_dict["query_threads"] = query_threads
+    if query_thread_binding is not None:
+        if not isinstance(query_thread_binding, bool):
+            raise TypeError("query_thread_binding must be bool")
+        config_dict["query_thread_binding"] = query_thread_binding
     if optimize_threads is not None:
         config_dict["optimize_threads"] = optimize_threads
+    if optimize_thread_binding is not None:
+        if not isinstance(optimize_thread_binding, bool):
+            raise TypeError("optimize_thread_binding must be bool")
+        config_dict["optimize_thread_binding"] = optimize_thread_binding
     if invert_to_forward_scan_ratio is not None:
         config_dict["invert_to_forward_scan_ratio"] = invert_to_forward_scan_ratio
     if brute_force_by_keys_ratio is not None:

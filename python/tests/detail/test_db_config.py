@@ -154,6 +154,17 @@ class TestDbConfigThreadValidation:
         zvec.init(query_threads=1)
 
     @run_in_subprocess
+    def test_query_thread_binding(self):
+        zvec.init(query_thread_binding=True)
+
+    @run_in_subprocess
+    def test_query_thread_binding_invalid(self):
+        with pytest.raises(TypeError):
+            zvec.init(query_thread_binding=1)
+        with pytest.raises(TypeError):
+            zvec.init(query_thread_binding="true")
+
+    @run_in_subprocess
     def test_query_threads_invalid(self):
         # query_threads must >= 0 and must be int and if None, set default value
         with pytest.raises(ValueError):
@@ -170,6 +181,17 @@ class TestDbConfigThreadValidation:
     @run_in_subprocess
     def test_optimize_threads(self):
         zvec.init(optimize_threads=1)
+
+    @run_in_subprocess
+    def test_optimize_thread_binding(self):
+        zvec.init(optimize_thread_binding=True)
+
+    @run_in_subprocess
+    def test_optimize_thread_binding_invalid(self):
+        with pytest.raises(TypeError):
+            zvec.init(optimize_thread_binding=1)
+        with pytest.raises(TypeError):
+            zvec.init(optimize_thread_binding="true")
 
     @run_in_subprocess
     def test_optimize_threads_invalid(self):

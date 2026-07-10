@@ -42,10 +42,12 @@ TEST_F(ConfigTest, InitializeWithDefaultConfig) {
             GlobalConfig::LogLevel::kWarn);
   ASSERT_EQ(GlobalConfig::Instance().log_type(), "ConsoleLogger");
   ASSERT_GT(GlobalConfig::Instance().query_thread_count(), 0);
+  ASSERT_FALSE(GlobalConfig::Instance().query_thread_binding());
   ASSERT_EQ(GlobalConfig::Instance().invert_to_forward_scan_ratio(), 0.9f);
   ASSERT_EQ(GlobalConfig::Instance().brute_force_by_keys_ratio(), 0.1f);
   ASSERT_EQ(GlobalConfig::Instance().fts_brute_force_by_keys_ratio(), 0.05f);
   ASSERT_GT(GlobalConfig::Instance().optimize_thread_count(), 0);
+  ASSERT_FALSE(GlobalConfig::Instance().optimize_thread_binding());
 }
 
 TEST_F(ConfigTest, InitializeWithCustomConsoleLogConfig) {

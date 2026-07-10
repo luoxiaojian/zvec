@@ -76,7 +76,8 @@ class Recall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>(
+          std::max(std::thread::hardware_concurrency(), 1u), true);
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
@@ -127,7 +128,7 @@ class Recall {
 
     if (batch_queries_.size() < threads_) {
       threads_ = batch_queries_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, true);
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
@@ -903,7 +904,8 @@ class SparseRecall {
         batch_count_(batch_count),
         filter_mode_{filter_mode} {
     if (threads_ == 0) {
-      pool_ = make_shared<ThreadPool>(true);
+      pool_ = make_shared<ThreadPool>(
+          std::max(std::thread::hardware_concurrency(), 1u), true);
       threads_ = pool_->count();
       cout << "Using cpu count as thread pool count[" << threads_ << "]"
            << endl;
@@ -985,7 +987,7 @@ class SparseRecall {
 
     if (batch_sparse_counts_.size() < threads_) {
       threads_ = batch_sparse_counts_.size();
-      pool_ = make_shared<ThreadPool>(true, threads_);
+      pool_ = make_shared<ThreadPool>(threads_, true);
       cout << "Query size too small, resize thread pool count[" << threads_
            << "]" << endl;
     }
