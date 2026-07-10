@@ -49,6 +49,7 @@ void UniformUint8SquaredEuclidean(const void *a, const void *b, size_t dim,
                                  static_cast<int64_t>(rhs_tail[1]) - 2 * dot);
 }
 
+#if !ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
 void UniformUint8SquaredEuclideanBatch(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances) {
@@ -56,6 +57,7 @@ void UniformUint8SquaredEuclideanBatch(const void *const *vectors,
     UniformUint8SquaredEuclidean(vectors[i], query, dim, distances + i);
   }
 }
+#endif
 
 #if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
 void UniformUint8QueryPreprocess(void *query, size_t dim) {
@@ -157,8 +159,9 @@ class UniformUint8Metric : public IndexMetric {
     }
 #if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
     return UniformUint8SquaredEuclideanPreprocessedQueryBatch;
-#endif
+#else
     return UniformUint8SquaredEuclideanBatch;
+#endif
   }
 
   const ailego::Params &params(void) const override {
