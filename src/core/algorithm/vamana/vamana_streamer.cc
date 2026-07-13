@@ -362,9 +362,19 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
 
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
+  // UNIFORM_UINT8 stores [0, 255] values in an int8-typed index whose
+  // records end with an 8-byte [int32 sum, int32 sum_sq] tail: interpret the
+  // bytes as unsigned and exclude the tail from the centroid computation.
   if (entity_->doc_cnt() > 0) {
+    const bool int8_as_unsigned = (meta_.metric_name() == "UniformUint8");
+    uint32_t medoid_dim = meta_.dimension();
+    constexpr uint32_t kUniformUint8TailBytes = sizeof(int32_t) * 2;
+    if (int8_as_unsigned && medoid_dim > kUniformUint8TailBytes) {
+      medoid_dim -= kUniformUint8TailBytes;
+    }
     node_id_t medoid = entity_->calculate_medoid(
-        meta_.dimension(), static_cast<uint32_t>(meta_.data_type()));
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()),
+        int8_as_unsigned);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
