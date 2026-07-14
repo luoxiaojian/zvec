@@ -45,6 +45,8 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                             param_.use_id_map);
   proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
                             param_.use_contiguous_memory);
+  proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
+                            param_.two_pass_build);
 
   streamer_ = core::IndexFactory::CreateStreamer("VamanaStreamer");
 

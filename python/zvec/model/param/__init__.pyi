@@ -585,6 +585,7 @@ class VamanaIndexParam(VectorIndexParam):
         saturate_graph (bool): Force every node to reach max_degree. Default is False.
         use_contiguous_memory (bool): Allocate contiguous memory arena. Default is False.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
+        two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is True.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
 
     Examples:
@@ -600,6 +601,7 @@ class VamanaIndexParam(VectorIndexParam):
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
+        two_pass_build: bool = True,
         quantize_type: _zvec.typing.QuantizeType = ...,
     ) -> None: ...
     def __repr__(self) -> str: ...
@@ -623,6 +625,9 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""
+    @property
+    def two_pass_build(self) -> bool:
+        """bool: Whether full-graph two-pass Vamana refinement is enabled."""
 
 class VamanaQueryParam(QueryParam):
     """

@@ -615,6 +615,8 @@ Attributes:
     use_id_map (bool): Reserved flag for engine-level id remapping; the
         db layer always supplies consecutive ids so this is currently
         ignored by the engine. Default is False.
+    two_pass_build (bool): If True, run the full-graph two-pass Vamana refine
+        before dumping the index. Default is True.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -630,7 +632,7 @@ Examples:
     ... )
 )pbdoc");
   vamana_params
-      .def(py::init<MetricType, int, int, float, bool, bool, bool,
+      .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
                     QuantizeType>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
@@ -641,6 +643,7 @@ Examples:
                core_interface::kDefaultVamanaSaturateGraph,
            py::arg("use_contiguous_memory") = false,
            py::arg("use_id_map") = false,
+           py::arg("two_pass_build") = true,
            py::arg("quantize_type") = QuantizeType::UNDEFINED)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
@@ -663,6 +666,10 @@ Examples:
           "bool: Reserved flag for engine-level id remapping. Currently "
           "ignored by the engine because the db layer always supplies "
           "consecutive ids.")
+      .def_property_readonly(
+          "two_pass_build", &VamanaIndexParams::two_pass_build,
+          "bool: Whether to run full-graph two-pass Vamana refinement before "
+          "dumping the index.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -675,6 +682,7 @@ Examples:
             dict["saturate_graph"] = self.saturate_graph();
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_id_map"] = self.use_id_map();
+            dict["two_pass_build"] = self.two_pass_build();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -698,6 +706,8 @@ Examples:
                                                              : "false") +
                     ", \"use_id_map\":" +
                     std::string(self.use_id_map() ? "true" : "false") +
+                    ", \"two_pass_build\":" +
+                    std::string(self.two_pass_build() ? "true" : "false") +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
@@ -707,15 +717,23 @@ Examples:
                                   self.search_list_size(), self.alpha(),
                                   self.saturate_graph(),
                                   self.use_contiguous_memory(),
-                                  self.use_id_map(), self.quantize_type());
+                                  self.use_id_map(), self.two_pass_build(),
+                                  self.quantize_type());
           },
           [](py::tuple t) {
-            if (t.size() != 8)
+            if (t.size() != 8 && t.size() != 9)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
+            if (t.size() == 8) {
+              return std::make_shared<VamanaIndexParams>(
+                  t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
+                  t[6].cast<bool>(), true, t[7].cast<QuantizeType>());
+            }
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
-                t[6].cast<bool>(), t[7].cast<QuantizeType>());
+                t[6].cast<bool>(), t[7].cast<bool>(),
+                t[8].cast<QuantizeType>());
           }));
 
   // FlatIndexParams

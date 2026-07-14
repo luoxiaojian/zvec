@@ -203,12 +203,9 @@ class VamanaEntity {
   //   dimension: vector dimension (number of elements per vector)
   //   data_type: IndexMeta::DataType value (e.g. DT_FP32=2, DT_INT8=4,
   //   DT_FP16=1)
-  //   int8_as_unsigned: interpret DT_INT8 bytes as uint8 (UNIFORM_UINT8
-  //   stores [0, 255] values in an int8-typed index)
   // Returns the medoid node ID, or kInvalidNodeId if no valid data.
   virtual node_id_t calculate_medoid(uint32_t /*dimension*/,
-                                     uint32_t /*data_type*/,
-                                     bool /*int8_as_unsigned*/ = false) {
+                                     uint32_t /*data_type*/) {
     return kInvalidNodeId;
   }
 

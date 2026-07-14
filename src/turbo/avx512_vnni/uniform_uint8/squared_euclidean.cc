@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AVX512-VNNI optimized squared Euclidean distance for UNIFORM_UINT8.
+// AVX512-VNNI optimized score for UNIFORM_UINT8.
 //
-// Record layout: [ dim uint8 values | int32 sum | int32 sum_sq ].
-// Values use the full [0, 255] range, so a direct int8 subtraction would
-// overflow. Instead the distance is computed via the dot product:
-//   dist = sum_sq(v) + sum_sq(q) - 2 * dot(v, q)
-//   dot(v, q) = dpbusd(v, q - 128) + 128 * sum(v)
-// where (q - 128) fits int8 and v stays uint8, matching vpdpbusd's
-// unsigned x signed operand contract. sum(v) / sum_sq(v) come from the
-// per-record tail; the query is shifted to (q - 128) once per search via the
-// preprocess entry point.
+// Stored record layout: [ dim int8 values = uint8(value) - 128 | int32 sum_sq ].
+// Query layout:         [ dim raw uint8 values                         | int32 sum_sq ].
+//
+// Build-time pairwise distance uses true L2 between two stored shifted vectors.
+// Search-time batch score drops the query-only constant from true uint8 L2:
+//   score = sum_sq(v_raw) - 2 * dot(v_shifted, q_raw)
+//         = ||v_raw - q_raw||^2 - query_constant
+// This preserves ranking exactly while avoiding per-vector sum correction.
+// VNNI uses vpdpbusd's unsigned x signed contract as:
+//   dot(v_shifted, q_raw) = dpbusd(q_raw, v_shifted)
 //
 // Batch kernel design (hot path for graph search):
 //   - 4 vectors per block, two-phase load/compute to maximize MLP
@@ -32,7 +33,7 @@
 //   - no per-vector scalar epilogue: the 4 accumulators are reduced with a
 //     single SIMD 4-to-1 horizontal reduction, the 4 tails are gathered with
 //     SIMD, and the final distance formula is evaluated on int32x4 lanes:
-//       dist = sum_sq + q_sum_sq - 2*ip - 256*sum
+//       score = sum_sq - 2*ip
 //     (exact in int32 for any realistic dim; converted to float at the end)
 //
 // This file is compiled with per-file -march=avx512vnni (set in
@@ -50,7 +51,7 @@ namespace zvec::turbo::avx512_vnni {
 
 namespace {
 
-constexpr size_t kTailBytes = sizeof(int32_t) * 2;
+constexpr size_t kTailBytes = sizeof(int32_t);
 
 static inline size_t original_dim(size_t dim) {
   return dim > kTailBytes ? dim - kTailBytes : 0;
@@ -71,18 +72,14 @@ void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
     return;
   }
 
-  const auto *lhs = reinterpret_cast<const uint8_t *>(a);
-  const auto *rhs = reinterpret_cast<const uint8_t *>(b);
-  int64_t dot = 0;
+  const auto *lhs = reinterpret_cast<const int8_t *>(a);
+  const auto *rhs = reinterpret_cast<const int8_t *>(b);
+  int64_t dist = 0;
   for (size_t i = 0; i < orig_dim; ++i) {
-    dot += static_cast<int>(lhs[i]) * static_cast<int>(rhs[i]);
+    int diff = static_cast<int>(lhs[i]) - static_cast<int>(rhs[i]);
+    dist += diff * diff;
   }
-
-  const int32_t *lhs_tail = tail(a, orig_dim);
-  const int32_t *rhs_tail = tail(b, orig_dim);
-  const int64_t lhs_sum_sq = lhs_tail[1];
-  const int64_t rhs_sum_sq = rhs_tail[1];
-  *distance = static_cast<float>(lhs_sum_sq + rhs_sum_sq - 2 * dot);
+  *distance = static_cast<float>(dist);
 }
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
@@ -113,23 +110,23 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0,
 // query. `prefetch_ptrs[j]`, when non-null, points to a future vector whose
 // full record (including the tail line) is prefetched.
 static ailego_force_inline void uniform_sq_l2_uint8_batch4(
-    const void *const *vectors, const int8_t *signed_query,
-    int32_t query_sum_sq, size_t orig_dim, const void *const *prefetch_ptrs,
+    const void *const *vectors, const uint8_t *raw_query,
+    size_t orig_dim, const void *const *prefetch_ptrs,
     float *distances) {
   __m512i a0 = _mm512_setzero_si512();
   __m512i a1 = _mm512_setzero_si512();
   __m512i a2 = _mm512_setzero_si512();
   __m512i a3 = _mm512_setzero_si512();
 
-  const auto *v0 = reinterpret_cast<const uint8_t *>(vectors[0]);
-  const auto *v1 = reinterpret_cast<const uint8_t *>(vectors[1]);
-  const auto *v2 = reinterpret_cast<const uint8_t *>(vectors[2]);
-  const auto *v3 = reinterpret_cast<const uint8_t *>(vectors[3]);
+  const auto *v0 = reinterpret_cast<const int8_t *>(vectors[0]);
+  const auto *v1 = reinterpret_cast<const int8_t *>(vectors[1]);
+  const auto *v2 = reinterpret_cast<const int8_t *>(vectors[2]);
+  const auto *v3 = reinterpret_cast<const int8_t *>(vectors[3]);
 
   size_t d = 0;
   for (; d + 64 <= orig_dim; d += 64) {
     __m512i q = _mm512_loadu_si512(
-        reinterpret_cast<const __m512i *>(signed_query + d));
+        reinterpret_cast<const __m512i *>(raw_query + d));
     __m512i r0 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v0 + d));
     __m512i r1 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v1 + d));
     __m512i r2 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v2 + d));
@@ -140,10 +137,10 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
                      _MM_HINT_T0);
       }
     }
-    a0 = _mm512_dpbusd_epi32(a0, r0, q);
-    a1 = _mm512_dpbusd_epi32(a1, r1, q);
-    a2 = _mm512_dpbusd_epi32(a2, r2, q);
-    a3 = _mm512_dpbusd_epi32(a3, r3, q);
+    a0 = _mm512_dpbusd_epi32(a0, q, r0);
+    a1 = _mm512_dpbusd_epi32(a1, q, r1);
+    a2 = _mm512_dpbusd_epi32(a2, q, r2);
+    a3 = _mm512_dpbusd_epi32(a3, q, r3);
   }
 
   // Prefetch the tail cache line of future vectors; the main loop above only
@@ -162,64 +159,47 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
   if (d < orig_dim) {
     alignas(16) int32_t tmp[4];
     _mm_store_si128(reinterpret_cast<__m128i *>(tmp), ip4);
-    const uint8_t *vecs[4] = {v0, v1, v2, v3};
+    const int8_t *vecs[4] = {v0, v1, v2, v3};
     for (int j = 0; j < 4; ++j) {
       int32_t extra = 0;
       for (size_t k = d; k < orig_dim; ++k) {
         extra += static_cast<int>(vecs[j][k]) *
-                 static_cast<int>(signed_query[k]);
+                 static_cast<int>(raw_query[k]);
       }
       tmp[j] += extra;
     }
     ip4 = _mm_load_si128(reinterpret_cast<const __m128i *>(tmp));
   }
 
-  // Gather the 4 tails ([int32 sum | int32 sum_sq] each) and transpose.
-  __m128i t0 =
-      _mm_loadl_epi64(reinterpret_cast<const __m128i *>(v0 + orig_dim));
-  __m128i t1 =
-      _mm_loadl_epi64(reinterpret_cast<const __m128i *>(v1 + orig_dim));
-  __m128i t2 =
-      _mm_loadl_epi64(reinterpret_cast<const __m128i *>(v2 + orig_dim));
-  __m128i t3 =
-      _mm_loadl_epi64(reinterpret_cast<const __m128i *>(v3 + orig_dim));
-  __m128i t01 = _mm_unpacklo_epi32(t0, t1);      // [sum0 sum1 sq0 sq1]
-  __m128i t23 = _mm_unpacklo_epi32(t2, t3);      // [sum2 sum3 sq2 sq3]
-  __m128i sums = _mm_unpacklo_epi64(t01, t23);   // [sum0 sum1 sum2 sum3]
-  __m128i sqs = _mm_unpackhi_epi64(t01, t23);    // [sq0  sq1  sq2  sq3]
+  __m128i sqs =
+      _mm_set_epi32(tail(v3, orig_dim)[0], tail(v2, orig_dim)[0],
+                    tail(v1, orig_dim)[0], tail(v0, orig_dim)[0]);
 
-  // dist = sq + q_sq - 2*(ip + 128*sum) = sq + q_sq - 2*ip - 256*sum
-  // Exact in int32: |ip| <= 128*255*dim and the true distance fits easily.
-  __m128i dist = _mm_add_epi32(sqs, _mm_set1_epi32(query_sum_sq));
-  dist = _mm_sub_epi32(dist, _mm_slli_epi32(ip4, 1));
-  dist = _mm_sub_epi32(dist, _mm_slli_epi32(sums, 8));
+  __m128i dist = _mm_sub_epi32(sqs, _mm_slli_epi32(ip4, 1));
   _mm_storeu_ps(distances, _mm_cvtepi32_ps(dist));
 }
 
 // Single-vector path against the (already signed) query, used for the
 // n % 4 remainder of a batch.
 static ailego_force_inline void uniform_sq_l2_uint8_single(
-    const void *vector, const int8_t *signed_query, int32_t query_sum_sq,
-    size_t orig_dim, float *distance) {
-  const auto *vec = reinterpret_cast<const uint8_t *>(vector);
+    const void *vector, const uint8_t *raw_query, size_t orig_dim,
+    float *distance) {
+  const auto *vec = reinterpret_cast<const int8_t *>(vector);
   __m512i acc = _mm512_setzero_si512();
   size_t d = 0;
   for (; d + 64 <= orig_dim; d += 64) {
     __m512i q = _mm512_loadu_si512(
-        reinterpret_cast<const __m512i *>(signed_query + d));
+        reinterpret_cast<const __m512i *>(raw_query + d));
     __m512i v =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(vec + d));
-    acc = _mm512_dpbusd_epi32(acc, v, q);
+    acc = _mm512_dpbusd_epi32(acc, q, v);
   }
-  int64_t ip_shifted = _mm512_reduce_add_epi32(acc);
+  int64_t dot = _mm512_reduce_add_epi32(acc);
   for (; d < orig_dim; ++d) {
-    ip_shifted +=
-        static_cast<int>(vec[d]) * static_cast<int>(signed_query[d]);
+    dot += static_cast<int>(vec[d]) * static_cast<int>(raw_query[d]);
   }
   const int32_t *vec_tail = tail(vector, orig_dim);
-  const int64_t dot = ip_shifted + 128 * static_cast<int64_t>(vec_tail[0]);
-  *distance = static_cast<float>(static_cast<int64_t>(vec_tail[1]) +
-                                 query_sum_sq - 2 * dot);
+  *distance = static_cast<float>(static_cast<int64_t>(vec_tail[0]) - 2 * dot);
 }
 
 }  // namespace
@@ -236,47 +216,8 @@ void uniform_squared_euclidean_uint8_batch_distance_impl(
     return;
   }
 
-  const int32_t *query_tail = tail(query, orig_dim);
-  const int32_t query_sum_sq = query_tail[1];
-
-  // The kernels need the query as (q - 128) int8. The preprocessed path
-  // already stores it that way; otherwise shift into a stack buffer once.
-  const int8_t *signed_query;
-  alignas(64) int8_t shifted_query[4096];
-  if constexpr (QueryPreprocessed) {
-    signed_query = reinterpret_cast<const int8_t *>(query);
-  } else {
-    const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
-    if (orig_dim <= sizeof(shifted_query)) {
-      const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(128));
-      size_t i = 0;
-      for (; i + 64 <= orig_dim; i += 64) {
-        __m512i data = _mm512_loadu_si512(
-            reinterpret_cast<const __m512i *>(raw_query + i));
-        _mm512_storeu_si512(reinterpret_cast<__m512i *>(shifted_query + i),
-                            _mm512_sub_epi8(data, offset));
-      }
-      for (; i < orig_dim; ++i) {
-        shifted_query[i] =
-            static_cast<int8_t>(static_cast<int>(raw_query[i]) - 128);
-      }
-      signed_query = shifted_query;
-    } else {
-      // Dimension exceeds the stack buffer: fall back to the scalar-safe
-      // single-vector formula per vector.
-      for (size_t i = 0; i < n; ++i) {
-        const auto *vec = reinterpret_cast<const uint8_t *>(vectors[i]);
-        int64_t dot = 0;
-        for (size_t k = 0; k < orig_dim; ++k) {
-          dot += static_cast<int>(vec[k]) * static_cast<int>(raw_query[k]);
-        }
-        const int32_t *vec_tail = tail(vectors[i], orig_dim);
-        distances[i] = static_cast<float>(
-            static_cast<int64_t>(vec_tail[1]) + query_sum_sq - 2 * dot);
-      }
-      return;
-    }
-  }
+  (void)QueryPreprocessed;
+  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
 
   static constexpr size_t batch_size = 4;
   // Prefetch ~8 vectors ahead for small dims, ~4 ahead for large ones.
@@ -289,12 +230,11 @@ void uniform_squared_euclidean_uint8_batch_distance_impl(
       size_t pi = i + j + batch_size * prefetch_step;
       pf[j] = (pi < n) ? vectors[pi] : nullptr;
     }
-    uniform_sq_l2_uint8_batch4(&vectors[i], signed_query, query_sum_sq,
-                               orig_dim, pf, distances + i);
+    uniform_sq_l2_uint8_batch4(&vectors[i], raw_query, orig_dim, pf,
+                               distances + i);
   }
   for (; i < n; ++i) {
-    uniform_sq_l2_uint8_single(vectors[i], signed_query, query_sum_sq,
-                               orig_dim, distances + i);
+    uniform_sq_l2_uint8_single(vectors[i], raw_query, orig_dim, distances + i);
   }
 #else
   (void)vectors;
@@ -322,24 +262,8 @@ void uniform_squared_euclidean_uint8_preprocessed_batch_distance(
 }
 
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {
-#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
-  const size_t orig_dim = original_dim(dim);
-  auto *bytes = reinterpret_cast<uint8_t *>(query);
-  const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(128));
-  size_t i = 0;
-  for (; i + 64 <= orig_dim; i += 64) {
-    __m512i data =
-        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(bytes + i));
-    __m512i shifted = _mm512_sub_epi8(data, offset);
-    _mm512_storeu_si512(reinterpret_cast<__m512i *>(bytes + i), shifted);
-  }
-  for (; i < orig_dim; ++i) {
-    bytes[i] = static_cast<uint8_t>(static_cast<int>(bytes[i]) - 128);
-  }
-#else
   (void)query;
   (void)dim;
-#endif
 }
 #endif
 

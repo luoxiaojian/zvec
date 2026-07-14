@@ -41,6 +41,11 @@ class VamanaAlgorithmBase {
   // Greedy search: find approximate nearest neighbors.
   virtual int search(VamanaContext *ctx) const = 0;
 
+  // Full-graph refine pass used after all nodes have been inserted. The pass
+  // reruns GreedySearch + RobustPrune for every node, then repairs reverse
+  // links, matching the second-stage Vamana/DiskANN construction pattern.
+  virtual int refine_graph(VamanaContext *ctx, float alpha) = 0;
+
   virtual int init() = 0;
 };
 
@@ -76,6 +81,9 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // Greedy search from entry point. Results are stored in ctx->topk_heap().
   int search(VamanaContext *ctx) const override;
 
+  // Full graph refinement pass.
+  int refine_graph(VamanaContext *ctx, float alpha) override;
+
  private:
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
@@ -88,6 +96,9 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // Result is stored in ctx->prune_result().
   void robust_prune(node_id_t id, TopkHeap &candidates, float alpha,
                     uint32_t max_degree, VamanaContext *ctx) const;
+
+  // Refine one node during a full-graph pass.
+  int refine_node(node_id_t id, float alpha, VamanaContext *ctx);
 
   // Update node's neighbors and handle reverse links.
   void update_neighbors_and_reverse_links(

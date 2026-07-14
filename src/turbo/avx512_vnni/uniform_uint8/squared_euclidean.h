@@ -23,11 +23,12 @@
 namespace zvec::turbo::avx512_vnni {
 
 // Record layout:
-//   [ original_dim bytes: uint8 values ]
-//   [ int32 sum_u8 ]
+//   [ original_dim bytes: int8 values, stored as uint8(value) - 128 ]
 //   [ int32 sum_sq_u8 ]
 //
-// The index data type remains DT_INT8; bytes are interpreted as uint8_t here.
+// The index data type remains DT_INT8. Batch search compares shifted stored
+// vectors against raw uint8 query bytes and returns a ranking-equivalent score:
+//   sum_sq(stored_raw) - 2 * dot(stored_shifted, query_raw)
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 

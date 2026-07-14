@@ -557,6 +557,7 @@ class VamanaIndexParams : public VectorIndexParams {
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
+      bool two_pass_build = true,
       QuantizeType quantize_type = QuantizeType::UNDEFINED)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
@@ -564,7 +565,16 @@ class VamanaIndexParams : public VectorIndexParams {
         alpha_(alpha),
         saturate_graph_(saturate_graph),
         use_contiguous_memory_(use_contiguous_memory),
-        use_id_map_(use_id_map) {}
+        use_id_map_(use_id_map),
+        two_pass_build_(two_pass_build) {}
+
+  VamanaIndexParams(MetricType metric_type, int max_degree,
+                    int search_list_size, float alpha, bool saturate_graph,
+                    bool use_contiguous_memory, bool use_id_map,
+                    QuantizeType quantize_type)
+      : VamanaIndexParams(metric_type, max_degree, search_list_size, alpha,
+                          saturate_graph, use_contiguous_memory, use_id_map,
+                          true, quantize_type) {}
 
   using OPtr = std::shared_ptr<VamanaIndexParams>;
 
@@ -572,7 +582,7 @@ class VamanaIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<VamanaIndexParams>(
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
-        use_contiguous_memory_, use_id_map_, quantize_type_);
+        use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_);
   }
 
   std::string to_string() const override {
@@ -584,7 +594,8 @@ class VamanaIndexParams : public VectorIndexParams {
         << ",saturate_graph:" << (saturate_graph_ ? "true" : "false")
         << ",use_contiguous_memory:"
         << (use_contiguous_memory_ ? "true" : "false")
-        << ",use_id_map:" << (use_id_map_ ? "true" : "false") << "}";
+        << ",use_id_map:" << (use_id_map_ ? "true" : "false")
+        << ",two_pass_build:" << (two_pass_build_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -599,7 +610,8 @@ class VamanaIndexParams : public VectorIndexParams {
            search_list_size_ == rhs.search_list_size_ && alpha_ == rhs.alpha_ &&
            saturate_graph_ == rhs.saturate_graph_ &&
            use_contiguous_memory_ == rhs.use_contiguous_memory_ &&
-           use_id_map_ == rhs.use_id_map_;
+           use_id_map_ == rhs.use_id_map_ &&
+           two_pass_build_ == rhs.two_pass_build_;
   }
 
   int max_degree() const {
@@ -645,6 +657,13 @@ class VamanaIndexParams : public VectorIndexParams {
     use_id_map_ = use_id_map;
   }
 
+  bool two_pass_build() const {
+    return two_pass_build_;
+  }
+  void set_two_pass_build(bool two_pass_build) {
+    two_pass_build_ = two_pass_build;
+  }
+
  private:
   int max_degree_;
   int search_list_size_;
@@ -655,6 +674,7 @@ class VamanaIndexParams : public VectorIndexParams {
   // the cost of peak memory usage.
   bool use_contiguous_memory_;
   bool use_id_map_;
+  bool two_pass_build_;
 };
 
 /*

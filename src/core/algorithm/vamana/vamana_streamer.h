@@ -128,6 +128,7 @@ class VamanaStreamer : public IndexStreamer {
 
   int setup_entity();
   int update_context(VamanaContext *ctx) const;
+  int refine_graph_before_dump();
 
  private:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
@@ -182,6 +183,7 @@ class VamanaStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
+  bool two_pass_build_enabled_{true};
 
   ailego::SharedMutex shared_mutex_{};
 };

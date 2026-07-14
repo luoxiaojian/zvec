@@ -21,6 +21,23 @@
 namespace zvec {
 namespace core {
 
+namespace {
+
+inline bool heap_contains(const TopkHeap &heap, node_id_t id) {
+  for (const auto &item : heap) {
+    if (item.first == id) return true;
+  }
+  return false;
+}
+
+inline void heap_emplace_unique(TopkHeap &heap, node_id_t id, dist_t dist) {
+  if (!heap_contains(heap, id)) {
+    heap.emplace(id, dist);
+  }
+}
+
+}  // namespace
+
 // ============================================================================
 // add_node: Insert a new node into the Vamana graph.
 //
@@ -77,6 +94,37 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
   // Step 4: Reverse-link updates
   update_neighbors_and_reverse_links(id, pruned_neighbors, ctx);
 
+  return 0;
+}
+
+// ============================================================================
+// refine_graph: Full-graph Vamana refinement pass.
+//
+// DiskANN/ParlayANN-style Vamana construction improves graph quality by running
+// an additional pass after all points are visible. For each point we search the
+// current graph, merge those candidates with its existing out-neighbors, prune,
+// and repair reverse links. Callers can invoke this with alpha=1.0 followed by
+// the configured alpha for a two-stage build.
+// ============================================================================
+template <typename EntityType>
+int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
+  if (ctx == nullptr) return IndexError_InvalidArgument;
+  entity_.ensure_dist_storage();
+
+  const uint32_t n = entity_.doc_cnt();
+  if (n <= 1 || entity_.entry_point() == kInvalidNodeId) {
+    return 0;
+  }
+
+  ctx->check_need_adjuct_ctx(n);
+  for (node_id_t id = 0; id < n; ++id) {
+    if (entity_.get_key(id) == kInvalidKey) continue;
+    if (entity_.get_vector(id) == nullptr) continue;
+    int ret = refine_node(id, alpha, ctx);
+    if (ailego_unlikely(ret != 0)) {
+      return ret;
+    }
+  }
   return 0;
 }
 
@@ -400,6 +448,62 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     dual_heap_greedy_search<EntityType, MemBlockType>(entity, ctx, dc,
                                                       entry_point, filter);
   }
+}
+
+template <typename EntityType>
+int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
+                                             VamanaContext *ctx) {
+  const void *query_vec = entity_.get_vector(id);
+  if (ailego_unlikely(query_vec == nullptr)) {
+    return IndexError_ReadData;
+  }
+
+  node_id_t entry_point = entity_.entry_point();
+  if (entry_point == id) {
+    entry_point = kInvalidNodeId;
+    const uint32_t n = entity_.doc_cnt();
+    for (node_id_t candidate = 0; candidate < n; ++candidate) {
+      if (candidate == id) continue;
+      if (entity_.get_key(candidate) == kInvalidKey) continue;
+      if (entity_.get_vector(candidate) == nullptr) continue;
+      entry_point = candidate;
+      break;
+    }
+    if (entry_point == kInvalidNodeId) {
+      return 0;
+    }
+  }
+
+  ctx->clear();
+  ctx->topk_heap().clear();
+  ctx->topk_heap().limit(entity_.search_list_size());
+  ctx->dist_calculator().clear_compare_cnt();
+  ctx->reset_query(query_vec);
+
+  greedy_search(entry_point, ctx, /*use_pool=*/false);
+
+  TopkHeap &candidates = ctx->topk_heap();
+  const Neighbors current_neighbors = entity_.get_neighbors(id);
+  candidates.limit(candidates.size() + current_neighbors.size() + 1);
+
+  const dist_t *cached_dists = entity_.get_neighbor_dists(id);
+  for (uint32_t i = 0; i < current_neighbors.size(); ++i) {
+    node_id_t neighbor = current_neighbors[i];
+    if (neighbor == id) continue;
+    if (entity_.get_vector(neighbor) == nullptr) continue;
+    dist_t dist = cached_dists ? cached_dists[i]
+                               : ctx->dist_calculator().dist(query_vec,
+                                                              entity_.get_vector(neighbor));
+    heap_emplace_unique(candidates, neighbor, dist);
+  }
+
+  robust_prune(id, candidates, alpha, entity_.max_degree(), ctx);
+  auto pruned_neighbors = ctx->prune_result();
+
+  entity_.update_neighbors(id, pruned_neighbors);
+  entity_.update_neighbor_dists(id, pruned_neighbors);
+  update_neighbors_and_reverse_links(id, pruned_neighbors, ctx);
+  return 0;
 }
 
 // ============================================================================

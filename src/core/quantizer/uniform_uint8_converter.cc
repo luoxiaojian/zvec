@@ -162,7 +162,7 @@ class UniformUint8StreamingConverter : public IndexConverter {
   }
 
  private:
-  static constexpr size_t kTailBytes = sizeof(int32_t) * 2;
+  static constexpr size_t kTailBytes = sizeof(int32_t);
 
   class UniformUint8Holder : public IndexHolder {
    public:
@@ -215,17 +215,15 @@ class UniformUint8StreamingConverter : public IndexConverter {
           }
         }
 
-        const auto *u8 = reinterpret_cast<const uint8_t *>(out);
-        int64_t sum = 0;
+        auto *bytes = reinterpret_cast<uint8_t *>(out);
         int64_t sum_sq = 0;
         for (size_t i = 0; i < dim; ++i) {
-          int v = static_cast<int>(u8[i]);
-          sum += v;
+          int v = static_cast<int>(bytes[i]);
           sum_sq += v * v;
+          bytes[i] = static_cast<uint8_t>(v - 128);
         }
         auto *tail = reinterpret_cast<int32_t *>(out + dim);
-        tail[0] = static_cast<int32_t>(sum);
-        tail[1] = static_cast<int32_t>(sum_sq);
+        tail[0] = static_cast<int32_t>(sum_sq);
       }
 
       const UniformUint8Holder *owner_{nullptr};

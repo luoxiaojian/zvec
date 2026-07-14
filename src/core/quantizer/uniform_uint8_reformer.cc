@@ -66,22 +66,23 @@ class UniformUint8StreamingReformer : public IndexReformer {
 
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(query, qmeta, 1, out, ometa);
+    return do_quantize(query, qmeta, 1, out, ometa, /*shift_output=*/false);
   }
 
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(query, qmeta, count, out, ometa);
+    return do_quantize(query, qmeta, count, out, ometa, /*shift_output=*/false);
   }
 
   int convert(const void *record, const IndexQueryMeta &rmeta, std::string *out,
               IndexQueryMeta *ometa) const override {
-    return do_quantize(record, rmeta, 1, out, ometa);
+    return do_quantize(record, rmeta, 1, out, ometa, /*shift_output=*/true);
   }
 
   int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
               std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(records, rmeta, count, out, ometa);
+    return do_quantize(records, rmeta, count, out, ometa,
+                       /*shift_output=*/true);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
@@ -107,23 +108,25 @@ class UniformUint8StreamingReformer : public IndexReformer {
     size_t dim = original_dim(qmeta.dimension());
     out->resize(dim * sizeof(float));
     float *out_buf = reinterpret_cast<float *>(out->data());
-    const auto *buf = reinterpret_cast<const uint8_t *>(in);
+    const auto *buf = reinterpret_cast<const int8_t *>(in);
     float inv_scale = 1.0f / scale_;
     for (size_t i = 0; i < dim; ++i) {
-      out_buf[i] = (static_cast<float>(buf[i]) - bias_) * inv_scale;
+      float raw = static_cast<float>(static_cast<int>(buf[i]) + 128);
+      out_buf[i] = (raw - bias_) * inv_scale;
     }
     return 0;
   }
 
  private:
-  static constexpr size_t kTailBytes = sizeof(int32_t) * 2;
+  static constexpr size_t kTailBytes = sizeof(int32_t);
 
   static size_t original_dim(size_t encoded_dim) {
     return encoded_dim > kTailBytes ? encoded_dim - kTailBytes : 0;
   }
 
   int do_quantize(const void *src, const IndexQueryMeta &smeta, uint32_t count,
-                  std::string *out, IndexQueryMeta *ometa) const {
+                  std::string *out, IndexQueryMeta *ometa,
+                  bool shift_output) const {
     if (!initialized_) {
       LOG_ERROR("UniformUint8StreamingReformer: quantize called before init");
       return IndexError_Runtime;
@@ -144,12 +147,13 @@ class UniformUint8StreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(src);
     int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
     for (uint32_t i = 0; i < count; ++i) {
-      encode(vec + i * src_dim, src_dim, ovec + i * out_stride);
+      encode(vec + i * src_dim, src_dim, ovec + i * out_stride, shift_output);
     }
     return 0;
   }
 
-  void encode(const float *in, size_t dim, int8_t *out) const {
+  void encode(const float *in, size_t dim, int8_t *out,
+              bool shift_output) const {
     if (quantize_func_ != nullptr) {
       quantize_func_(in, dim, scale_, bias_, out);
     } else {
@@ -161,17 +165,17 @@ class UniformUint8StreamingReformer : public IndexReformer {
       }
     }
 
-    const auto *u8 = reinterpret_cast<const uint8_t *>(out);
-    int64_t sum = 0;
+    auto *bytes = reinterpret_cast<uint8_t *>(out);
     int64_t sum_sq = 0;
     for (size_t i = 0; i < dim; ++i) {
-      int v = static_cast<int>(u8[i]);
-      sum += v;
+      int v = static_cast<int>(bytes[i]);
       sum_sq += v * v;
+      if (shift_output) {
+        bytes[i] = static_cast<uint8_t>(v - 128);
+      }
     }
     auto *tail = reinterpret_cast<int32_t *>(out + dim);
-    tail[0] = static_cast<int32_t>(sum);
-    tail[1] = static_cast<int32_t>(sum_sq);
+    tail[0] = static_cast<int32_t>(sum_sq);
   }
 
   float scale_{0.0f};

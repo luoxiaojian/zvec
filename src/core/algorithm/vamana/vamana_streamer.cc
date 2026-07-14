@@ -55,6 +55,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_SATURATE_GRAPH, &saturate_graph_);
   params.get(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY,
              &use_contiguous_memory_);
+  params.get(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
+             &two_pass_build_enabled_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -101,11 +103,12 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "docsSoftLimit=%zu maxDegree=%u searchListSize=%u alpha=%.2f "
       "maxOcclusionSize=%u ef=%u maxScanRatio=%.3f minScanLimit=%zu "
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
-      "getVectorEnabled=%u forcePadding=%u",
+      "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
-      get_vector_enabled_, force_padding_topk_enabled_);
+      get_vector_enabled_, force_padding_topk_enabled_,
+      two_pass_build_enabled_);
 
   state_ = STATE_INITED;
   return 0;
@@ -140,6 +143,7 @@ int VamanaStreamer::cleanup(void) {
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
+  two_pass_build_enabled_ = true;
 
   return 0;
 }
@@ -351,30 +355,19 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
-  meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
-                     ailego::Params());
-
-  int ret = IndexHelper::SerializeToDumper(meta_, dumper.get());
-  if (ret != 0) {
-    LOG_ERROR("Failed to serialize meta into dumper.");
-    return ret;
-  }
-
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
-  // UNIFORM_UINT8 stores [0, 255] values in an int8-typed index whose
-  // records end with an 8-byte [int32 sum, int32 sum_sq] tail: interpret the
-  // bytes as unsigned and exclude the tail from the centroid computation.
+  // UNIFORM_UINT8 stores shifted int8 values followed by an int32 sum_sq tail:
+  // exclude the tail from the centroid computation.
   if (entity_->doc_cnt() > 0) {
-    const bool int8_as_unsigned = (meta_.metric_name() == "UniformUint8");
+    const bool is_uniform_uint8 = (meta_.metric_name() == "UniformUint8");
     uint32_t medoid_dim = meta_.dimension();
-    constexpr uint32_t kUniformUint8TailBytes = sizeof(int32_t) * 2;
-    if (int8_as_unsigned && medoid_dim > kUniformUint8TailBytes) {
+    constexpr uint32_t kUniformUint8TailBytes = sizeof(int32_t);
+    if (is_uniform_uint8 && medoid_dim > kUniformUint8TailBytes) {
       medoid_dim -= kUniformUint8TailBytes;
     }
     node_id_t medoid = entity_->calculate_medoid(
-        medoid_dim, static_cast<uint32_t>(meta_.data_type()),
-        int8_as_unsigned);
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()));
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
@@ -382,7 +375,61 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
     }
   }
 
+  int ret = refine_graph_before_dump();
+  if (ret != 0) {
+    LOG_ERROR("Vamana two-pass graph refine failed: %s", IndexError::What(ret));
+    return ret;
+  }
+
+  meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
+                     ailego::Params());
+
+  ret = IndexHelper::SerializeToDumper(meta_, dumper.get());
+  if (ret != 0) {
+    LOG_ERROR("Failed to serialize meta into dumper.");
+    return ret;
+  }
+
   return entity_->dump(dumper);
+}
+
+int VamanaStreamer::refine_graph_before_dump() {
+  if (!two_pass_build_enabled_ || entity_->doc_cnt() <= 1) {
+    return 0;
+  }
+
+  VamanaEntity::Pointer entity_ref(entity_.get(), [](VamanaEntity *) {});
+  auto ctx = std::make_unique<VamanaContext>(meta_.dimension(), metric_,
+                                             entity_ref);
+  ctx->set_ef(ef_);
+  ctx->set_max_scan_limit(max_scan_limit_);
+  ctx->set_min_scan_limit(min_scan_limit_);
+  ctx->set_max_scan_ratio(max_scan_ratio_);
+  ctx->set_magic(magic_);
+  ctx->set_force_padding_topk(force_padding_topk_enabled_);
+  ctx->set_bruteforce_threshold(bruteforce_threshold_);
+
+  int ret = ctx->init(VamanaContext::kStreamerContext);
+  if (ret != 0) {
+    LOG_ERROR("Init Vamana refine context failed");
+    return ret;
+  }
+
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+
+  LOG_INFO("Vamana two-pass graph refine: alpha=1.0");
+  ret = alg_->refine_graph(ctx.get(), 1.0f);
+  if (ret != 0) return ret;
+
+  if (alpha_ > 1.0f + 1e-6f) {
+    LOG_INFO("Vamana two-pass graph refine: alpha=%.2f", alpha_);
+    ret = alg_->refine_graph(ctx.get(), alpha_);
+    if (ret != 0) return ret;
+  }
+
+  magic_ = IndexContext::GenerateMagic();
+  return ctx->error() ? IndexError_Runtime : 0;
 }
 
 IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {

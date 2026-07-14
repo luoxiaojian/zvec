@@ -817,8 +817,7 @@ void VamanaStreamerEntity::set_neighbor_dist(node_id_t id, uint32_t idx,
 // data_type uses IndexMeta::DataType values: DT_FP16=1, DT_FP32=2, DT_INT8=4.
 // ============================================================================
 node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
-                                                 uint32_t data_type,
-                                                 bool int8_as_unsigned) {
+                                                 uint32_t data_type) {
   uint32_t n = doc_cnt();
   if (n == 0) return kInvalidNodeId;
   if (dimension == 0) return kInvalidNodeId;
@@ -849,15 +848,9 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
         break;
       }
       case DT_INT8: {
-        if (int8_as_unsigned) {
-          const uint8_t *uv = static_cast<const uint8_t *>(vec);
-          for (uint32_t d = 0; d < dimension; ++d)
-            centroid[d] += static_cast<float>(uv[d]);
-        } else {
-          const int8_t *iv = static_cast<const int8_t *>(vec);
-          for (uint32_t d = 0; d < dimension; ++d)
-            centroid[d] += static_cast<float>(iv[d]);
-        }
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d)
+          centroid[d] += static_cast<float>(iv[d]);
         break;
       }
       case DT_FP16: {
@@ -901,18 +894,10 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
         break;
       }
       case DT_INT8: {
-        if (int8_as_unsigned) {
-          const uint8_t *uv = static_cast<const uint8_t *>(vec);
-          for (uint32_t d = 0; d < dimension; ++d) {
-            float diff = static_cast<float>(uv[d]) - centroid[d];
-            dist += diff * diff;
-          }
-        } else {
-          const int8_t *iv = static_cast<const int8_t *>(vec);
-          for (uint32_t d = 0; d < dimension; ++d) {
-            float diff = static_cast<float>(iv[d]) - centroid[d];
-            dist += diff * diff;
-          }
+        const int8_t *iv = static_cast<const int8_t *>(vec);
+        for (uint32_t d = 0; d < dimension; ++d) {
+          float diff = static_cast<float>(iv[d]) - centroid[d];
+          dist += diff * diff;
         }
         break;
       }
