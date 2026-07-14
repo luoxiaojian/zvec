@@ -384,6 +384,10 @@ class ProximaEngineHelper {
               Status::InvalidArgument("failed to build index param: " +
                                       index_param_builder.error().message()));
         }
+        auto db_index_params = dynamic_cast<const FlatIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder.value()->WithUseContiguousMemory(
+            db_index_params->use_contiguous_memory());
         return index_param_builder.value()->Build();
       }
 

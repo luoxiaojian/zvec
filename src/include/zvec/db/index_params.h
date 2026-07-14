@@ -151,6 +151,10 @@ class VectorIndexParams : public IndexParams {
     quantize_type_ = quantize_type;
   }
 
+  virtual bool use_contiguous_memory() const {
+    return false;
+  }
+
  protected:
   MetricType metric_type_;
   QuantizeType quantize_type_;
@@ -219,7 +223,7 @@ class HnswIndexParams : public VectorIndexParams {
   void set_use_contiguous_memory(bool use_contiguous_memory) {
     use_contiguous_memory_ = use_contiguous_memory;
   }
-  bool use_contiguous_memory() const {
+  bool use_contiguous_memory() const override {
     return use_contiguous_memory_;
   }
 
@@ -348,21 +352,25 @@ class HnswRabitqIndexParams : public VectorIndexParams {
 class FlatIndexParams : public VectorIndexParams {
  public:
   FlatIndexParams(MetricType metric_type,
-                  QuantizeType quantize_type = QuantizeType::UNDEFINED)
-      : VectorIndexParams(IndexType::FLAT, metric_type, quantize_type) {}
+                  QuantizeType quantize_type = QuantizeType::UNDEFINED,
+                  bool use_contiguous_memory = false)
+      : VectorIndexParams(IndexType::FLAT, metric_type, quantize_type),
+        use_contiguous_memory_(use_contiguous_memory) {}
 
   using OPtr = std::shared_ptr<FlatIndexParams>;
 
  public:
   Ptr clone() const override {
-    return std::make_shared<FlatIndexParams>(metric_type_, quantize_type_);
+    return std::make_shared<FlatIndexParams>(metric_type_, quantize_type_,
+                                             use_contiguous_memory_);
   }
 
   std::string to_string() const override {
     auto base_str = vector_index_params_to_string("FlatIndexParams",
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
-    oss << base_str << "}";
+    oss << base_str << ",use_contiguous_memory:"
+        << (use_contiguous_memory_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -371,15 +379,26 @@ class FlatIndexParams : public VectorIndexParams {
            metric_type() ==
                static_cast<const VectorIndexParams &>(other).metric_type() &&
            quantize_type() ==
-               static_cast<const VectorIndexParams &>(other).quantize_type();
+               static_cast<const VectorIndexParams &>(other).quantize_type() &&
+           use_contiguous_memory_ == static_cast<const FlatIndexParams &>(other)
+                                         .use_contiguous_memory_;
   }
+
+  bool use_contiguous_memory() const override {
+    return use_contiguous_memory_;
+  }
+
+ private:
+  bool use_contiguous_memory_{false};
 };
 
 // define default index params
 const FlatIndexParams DefaultVectorIndexParams(MetricType::IP);
 
-inline FlatIndexParams MakeDefaultVectorIndexParams(MetricType metric_type) {
-  return FlatIndexParams(metric_type);
+inline FlatIndexParams MakeDefaultVectorIndexParams(
+    MetricType metric_type, bool use_contiguous_memory = false) {
+  return FlatIndexParams(metric_type, QuantizeType::UNDEFINED,
+                         use_contiguous_memory);
 }
 
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
@@ -612,7 +631,7 @@ class VamanaIndexParams : public VectorIndexParams {
     saturate_graph_ = saturate_graph;
   }
 
-  bool use_contiguous_memory() const {
+  bool use_contiguous_memory() const override {
     return use_contiguous_memory_;
   }
   void set_use_contiguous_memory(bool use_contiguous_memory) {

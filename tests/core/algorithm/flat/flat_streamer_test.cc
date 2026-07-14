@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "algorithm/flat/flat_streamer.h"
 #include <cstddef>
 #include <future>
 #include <string>
@@ -95,6 +96,160 @@ TEST_F(FlatStreamerTest, TestAddVector) {
 
   streamer->flush(0UL);
   streamer.reset();
+}
+
+TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
+  const std::string path = dir_ + "Test/ContiguousEntity";
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < 64; ++id) {
+      NumericalVector<float> vec(dim);
+      for (size_t j = 0; j < dim; ++j) {
+        vec[j] = static_cast<float>(id);
+      }
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  ASSERT_TRUE(flat->entity().is_contiguous());
+
+  auto context = streamer->create_context();
+  context->set_topk(2);
+  NumericalVector<float> query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    query[j] = 17.0f;
+  }
+  std::vector<std::vector<uint64_t>> keys{{5, 17, 31}};
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                                  context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(17, context->result()[0].key());
+
+  NumericalVector<float> appended(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    appended[j] = 64.0f;
+  }
+  ASSERT_EQ(0, streamer->add_with_id_impl(64, appended.data(), qmeta, context));
+  EXPECT_FALSE(flat->entity().is_contiguous());
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(64, block));
+  ASSERT_NE(nullptr, block.data());
+  EXPECT_FLOAT_EQ(64.0f, static_cast<const float *>(block.data())[0]);
+}
+
+// Concurrent readers over the contiguous snapshot while a writer inserts and
+// triggers a degrade-to-storage. Exercises the atomic snapshot swap +
+// MemoryBlock keep-alive: readers must never crash or read freed memory, and
+// results must stay valid whether served from the snapshot or storage.
+TEST_F(FlatStreamerTest, TestContiguousConcurrentReadDuringDegrade) {
+  const std::string path = dir_ + "Test/ContiguousConcurrent";
+  const uint32_t kInitial = 2000;
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < kInitial; ++id) {
+      NumericalVector<float> vec(dim);
+      for (size_t j = 0; j < dim; ++j) vec[j] = static_cast<float>(id);
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  ASSERT_TRUE(flat->entity().is_contiguous());
+
+  std::atomic<bool> stop{false};
+  auto reader = [&]() {
+    auto ctx = streamer->create_context();
+    ctx->set_topk(5);
+    NumericalVector<float> query(dim);
+    size_t iters = 0;
+    while (!stop.load()) {
+      uint32_t base = static_cast<uint32_t>(iters % kInitial);
+      for (size_t j = 0; j < dim; ++j) query[j] = static_cast<float>(base);
+      std::vector<std::vector<uint64_t>> keys{
+          {base, (base + 1) % kInitial, (base + 2) % kInitial}};
+      if (streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                             ctx) == 0) {
+        const auto &res = ctx->result();
+        for (size_t i = 0; i < res.size(); ++i) {
+          EXPECT_LT(res[i].key(), kInitial + 1000);
+        }
+      }
+      ++iters;
+    }
+    return iters;
+  };
+  auto writer = [&]() {
+    auto ctx = streamer->create_context();
+    for (uint32_t id = kInitial; id < kInitial + 1000; ++id) {
+      NumericalVector<float> vec(dim);
+      for (size_t j = 0; j < dim; ++j) vec[j] = static_cast<float>(id);
+      streamer->add_with_id_impl(id, vec.data(), qmeta, ctx);
+    }
+  };
+
+  auto r1 = std::async(std::launch::async, reader);
+  auto r2 = std::async(std::launch::async, reader);
+  writer();          // first insert degrades the snapshot mid-read
+  stop.store(true);
+  r1.wait();
+  r2.wait();
+
+  // After degrade, reads are served from storage and remain correct.
+  EXPECT_FALSE(flat->entity().is_contiguous());
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(0, streamer->get_vector_by_id(kInitial + 999, block));
+  ASSERT_NE(nullptr, block.data());
+  EXPECT_FLOAT_EQ(static_cast<float>(kInitial + 999),
+                  static_cast<const float *>(block.data())[0]);
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearch) {

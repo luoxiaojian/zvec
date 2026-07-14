@@ -14,6 +14,7 @@
 
 #include "flat_streamer_entity.h"
 #include <cstdint>
+#include <memory>
 #include <zvec/core/framework/index_error.h>
 #include "flat_utility.h"
 
@@ -78,6 +79,10 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   row_distance_ = metric->distance();
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
+  // One-to-many SIMD kernel for the refine stage (raw/unquantized vectors).
+  // May be null for metrics without a batch kernel; callers fall back to the
+  // scalar per-vector distance in that case.
+  batch_distance_ = metric->batch_distance();
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
             index_meta_.metric_name().c_str());
@@ -330,33 +335,194 @@ int FlatStreamerEntity::search_bf(const void *query, const IndexFilter &filter,
 }
 
 FlatStreamerEntity::Pointer FlatStreamerEntity::clone(void) const {
-  std::vector<IndexStorage::Segment::Pointer> segments;
-  segments.reserve(segments_.size());
-  for (size_t i = 0; i < segments_.size(); ++i) {
-    segments.emplace_back(segments_[i]->clone());
-    if (!segments[i]) {
-      LOG_ERROR("Failed to clone segment, index=%zu", i);
-      return nullptr;
-    }
-  }
   auto entity = new (std::nothrow) FlatStreamerEntity(stats_);
   if (!entity) {
     LOG_ERROR("Failed to New FlatStreamerEntity object");
     return nullptr;
   }
-  entity->index_meta_ = this->index_meta_;
-  entity->storage_ = this->storage_;
-  // entity->reformer_ = this->reformer_;
-  entity->segments_ = segments;
-  entity->meta_ = this->meta_;
-  entity->key_info_map_lock_ = this->key_info_map_lock_;
-  entity->key_info_map_ = this->key_info_map_;
-  entity->id_key_vector_ = this->id_key_vector_;
-  entity->withid_key_info_map_ = this->withid_key_info_map_;
-  entity->withid_key_map_ = this->withid_key_map_;
-  entity->filter_same_key_ = this->filter_same_key_;
-  entity->vec_unit_size_ = this->vec_unit_size_;
-  entity->vec_cols_ = this->vec_cols_;
+  if (!this->copy_state_to(entity)) {
+    delete entity;
+    return nullptr;
+  }
+  return FlatStreamerEntity::Pointer(entity);
+}
+
+bool FlatStreamerEntity::copy_state_to(FlatStreamerEntity *entity) const {
+  entity->index_meta_ = index_meta_;
+  entity->storage_ = storage_;
+  entity->segments_.reserve(segments_.size());
+  for (size_t i = 0; i < segments_.size(); ++i) {
+    entity->segments_.emplace_back(segments_[i]->clone());
+    if (!entity->segments_[i]) {
+      LOG_ERROR("Failed to clone Flat segment, index=%zu", i);
+      return false;
+    }
+  }
+  entity->meta_ = meta_;
+  entity->key_info_map_lock_ = key_info_map_lock_;
+  entity->key_info_map_ = key_info_map_;
+  entity->id_key_vector_ = id_key_vector_;
+  entity->withid_key_info_map_ = withid_key_info_map_;
+  entity->withid_key_map_ = withid_key_map_;
+  entity->filter_same_key_ = filter_same_key_;
+  entity->use_key_info_map_ = use_key_info_map_;
+  entity->vec_unit_size_ = vec_unit_size_;
+  entity->vec_cols_ = vec_cols_;
+  return true;
+}
+
+int FlatStreamerEntity::get_vector_by_position(
+    uint32_t id, IndexStorage::MemoryBlock &block) const {
+  if (id >= withid_key_info_map_.size()) {
+    return -1;
+  }
+  const VectorLocation &loc = withid_key_info_map_[id];
+  auto segment = this->get_segment(loc.segment_id);
+  if (!segment ||
+      segment->read(loc.offset, block, index_meta_.element_size()) !=
+          index_meta_.element_size()) {
+    LOG_ERROR("Failed to read vector by position, id=%u size=%u", id,
+              index_meta_.element_size());
+    return -1;
+  }
+  return 0;
+}
+
+int FlatContiguousStreamerEntity::build_contiguous_memory(void) {
+  degrade_to_storage();
+
+  // Number of vectors to materialize densely into the contiguous array.
+  // In key-info-map mode only live (non-deleted) vectors are tracked by the
+  // id->key vector, so vector_count() (which counts every slot ever added,
+  // including deleted ones) would overrun it and fail the lookup below. In
+  // with-id mode every slot is addressable by dense position.
+  const size_t count = use_key_info_map() ? id_key_count() : vector_count();
+  if (count == 0) {
+    return 0;
+  }
+
+  const size_t vector_size = meta().element_size();
+  const size_t stride =
+      (vector_size + kVectorAlignment - 1) & ~(kVectorAlignment - 1);
+  const size_t data_size = count * stride;
+  const size_t allocation_size =
+      ailego::MemoryHelper::AlignHugePageSize(data_size);
+  char *raw = static_cast<char *>(
+      ailego::MemoryHelper::AllocateHugePage(allocation_size));
+  if (!raw) {
+    LOG_ERROR("Failed to allocate Flat contiguous memory, size=%zu",
+              allocation_size);
+    return IndexError_Runtime;
+  }
+
+  auto view = std::make_shared<ContiguousView>();
+  view->memory = std::shared_ptr<char>(raw, ContiguousDeleter{allocation_size});
+  view->base = raw;
+  view->stride = stride;
+  view->count = count;
+  view->use_key_info_map = use_key_info_map();
+  if (use_key_info_map()) {
+    view->key_to_position.reserve(count);
+  }
+
+  for (uint32_t id = 0; id < count; ++id) {
+    IndexStorage::MemoryBlock block;
+    int ret = 0;
+    if (use_key_info_map()) {
+      const uint64_t vector_key = key(id);
+      ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
+      // Overwrite (not emplace) so duplicate keys resolve to their last
+      // occurrence, matching the base key_info_map_ semantics.
+      if (ret == 0) {
+        view->key_to_position[vector_key] = id;
+      }
+    } else {
+      ret = get_vector_by_position(id, block);
+    }
+    if (ret != 0 || block.data() == nullptr) {
+      LOG_ERROR("Failed to load Flat vector into contiguous memory, id=%u", id);
+      return IndexError_ReadData;
+    }
+    std::memcpy(raw + static_cast<size_t>(id) * stride, block.data(),
+                vector_size);
+  }
+
+  // Publish the fully-built, immutable snapshot atomically.
+  std::atomic_store(&view_, std::shared_ptr<ContiguousView>(std::move(view)));
+  LOG_INFO(
+      "Built Flat contiguous memory: vectors=%zu vector_size=%zu "
+      "vector_stride=%zu memory=%zu",
+      count, vector_size, stride, allocation_size);
+  return 0;
+}
+
+void FlatContiguousStreamerEntity::degrade_to_storage(void) {
+  // Atomically detach the snapshot. Readers that already loaded it keep the
+  // buffer alive via their own shared_ptr; it is freed once the last of them
+  // (including MemoryBlocks handed out) releases its reference.
+  auto old = std::atomic_exchange(&view_, std::shared_ptr<ContiguousView>());
+  if (old) {
+    LOG_INFO("Flat contiguous entity degraded to storage mode for insertion");
+  }
+}
+
+int FlatContiguousStreamerEntity::close(void) {
+  degrade_to_storage();
+  return FlatStreamerEntity::close();
+}
+
+int FlatContiguousStreamerEntity::add(uint64_t key, const void *vec,
+                                      size_t size) {
+  degrade_to_storage();
+  return FlatStreamerEntity::add(key, vec, size);
+}
+
+int FlatContiguousStreamerEntity::add_vector_with_id(uint32_t id,
+                                                     const void *query,
+                                                     uint32_t element_size) {
+  degrade_to_storage();
+  return FlatStreamerEntity::add_vector_with_id(id, query, element_size);
+}
+
+const void *FlatContiguousStreamerEntity::get_vector_by_key(
+    uint64_t key) const {
+  // The bare-pointer API carries no lifetime handle for the caller, so it
+  // cannot safely expose the (async-freed) snapshot buffer. Always serve it
+  // from the stable mmap storage; the contiguous fast path is reached via the
+  // MemoryBlock overload, whose block owns a keep-alive reference.
+  return FlatStreamerEntity::get_vector_by_key(key);
+}
+
+int FlatContiguousStreamerEntity::get_vector_by_key(
+    uint64_t key, IndexStorage::MemoryBlock &block) const {
+  auto view = std::atomic_load(&view_);
+  if (view) {
+    const void *vector = view->locate(key);
+    if (vector) {
+      // Hand out a non-owning pointer into the snapshot, but attach the
+      // snapshot buffer as a keep-alive so it outlives this block regardless
+      // of a concurrent degrade/rebuild.
+      block.reset(const_cast<void *>(vector),
+                  std::static_pointer_cast<const void>(view->memory));
+      return 0;
+    }
+  }
+  return FlatStreamerEntity::get_vector_by_key(key, block);
+}
+
+FlatStreamerEntity::Pointer FlatContiguousStreamerEntity::clone(void) const {
+  auto *entity = new (std::nothrow) FlatContiguousStreamerEntity(stats());
+  if (!entity) {
+    LOG_ERROR("Failed to create FlatContiguousStreamerEntity clone");
+    return nullptr;
+  }
+  if (!copy_state_to(entity)) {
+    delete entity;
+    return nullptr;
+  }
+  // Share the same immutable snapshot with the clone (zero-copy, lifetime
+  // shared via shared_ptr).
+  std::atomic_store(&entity->view_, std::atomic_load(&view_));
   return FlatStreamerEntity::Pointer(entity);
 }
 

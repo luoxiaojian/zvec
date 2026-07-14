@@ -25,6 +25,8 @@ int FlatIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   proxima_index_params_.set(core::PARAM_FLAT_COLUMN_MAJOR_ORDER,
                             param_.major_order == IndexMeta::MO_COLUMN);
   proxima_index_params_.set(core::PARAM_FLAT_USE_ID_MAP, param_.use_id_map);
+  proxima_index_params_.set(core::PARAM_FLAT_USE_CONTIGUOUS_MEMORY,
+                            param_.use_contiguous_memory);
   if (is_sparse_) {
     streamer_ = core::IndexFactory::CreateStreamer("FlatSparseStreamer");
   } else {

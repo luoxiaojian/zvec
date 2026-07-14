@@ -98,6 +98,10 @@ class FlatIndexParamBuilder
     : public BaseIndexParamBuilder<FlatIndexParamBuilder, FlatIndexParam> {
  public:
   FlatIndexParamBuilder() = default;
+  FlatIndexParamBuilder &WithUseContiguousMemory(bool use_contiguous_memory) {
+    param->use_contiguous_memory = use_contiguous_memory;
+    return *this;
+  }
   std::shared_ptr<FlatIndexParam> Build() override {
     return param;
   }

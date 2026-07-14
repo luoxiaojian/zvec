@@ -278,6 +278,7 @@ struct FlatIndexParam : public BaseIndexParam {
   FlatIndexParam() : BaseIndexParam(IndexType::kFlat) {}
 
   IndexMeta::MajorOrder major_order = IndexMeta::MajorOrder::MO_ROW;
+  bool use_contiguous_memory = false;
 
  protected:
   bool DeserializeFromJsonObject(const ailego::JsonObject &json_obj) override;

@@ -30,7 +30,7 @@ namespace core {
   std::unique_lock<ailego::ReadLock> LOCK_NAME(read_lock, std::defer_lock);
 
 template <size_t BATCH_SIZE>
-FlatStreamer<BATCH_SIZE>::FlatStreamer() : entity_(stats_) {}
+FlatStreamer<BATCH_SIZE>::FlatStreamer() = default;
 
 template <size_t BATCH_SIZE>
 FlatStreamer<BATCH_SIZE>::~FlatStreamer() {
@@ -102,17 +102,7 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
   read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
   params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
   params.get(PARAM_FLAT_USE_ID_MAP, &use_key_info_map_);
-
-  // entity init
-  uint32_t block_vector_count = kDefaultBlockVecCount;
-  uint32_t segment_size = kDefaultSegmentSize;
-  bool filter_same_key = true;
-  entity_.set_block_vector_count(block_vector_count);
-  entity_.set_segment_size(segment_size);
-  entity_.enable_filter_same_key(filter_same_key);
-  entity_.set_linear_list_count(1);
-  entity_.set_use_key_info_map(use_key_info_map_);
-  *entity_.mutable_meta() = meta_;
+  params.get(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, &use_contiguous_memory_);
 
   state_ = STATE_INITED;
 
@@ -143,10 +133,36 @@ int FlatStreamer<BATCH_SIZE>::open(IndexStorage::Pointer stg) {
 
   LOG_DEBUG("FlatStreamer open with %s", stg->name().c_str());
 
-  int ret = entity_.open(std::move(stg), meta_);
+  const bool can_use_contiguous =
+      stg->memory_block_type() != IndexStorage::MemoryBlock::MBT_BUFFERPOOL;
+  const bool use_contiguous = use_contiguous_memory_ && can_use_contiguous;
+  if (use_contiguous) {
+    entity_ = std::make_unique<FlatContiguousStreamerEntity>(stats_);
+  } else {
+    entity_ = std::make_unique<FlatStreamerEntity>(stats_);
+  }
+
+  entity_->set_block_vector_count(kDefaultBlockVecCount);
+  entity_->set_segment_size(kDefaultSegmentSize);
+  entity_->enable_filter_same_key(true);
+  entity_->set_linear_list_count(1);
+  entity_->set_use_key_info_map(use_key_info_map_);
+  *entity_->mutable_meta() = meta_;
+
+  int ret = entity_->open(std::move(stg), meta_);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Failed to open storage");
     return ret;
+  }
+  if (use_contiguous) {
+    ret = static_cast<FlatContiguousStreamerEntity *>(entity_.get())
+              ->build_contiguous_memory();
+    if (ret != 0) {
+      LOG_ERROR("Failed to build Flat contiguous memory");
+      entity_->close();
+      entity_.reset();
+      return ret;
+    }
   }
   magic_ = IndexContext::GenerateMagic();
 
@@ -159,14 +175,17 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::close(void) {
   LOG_DEBUG("FlatStreamer close");
 
-  entity_.flush_linear_meta();
+  entity_->flush_linear_meta();
 
   stats_.clear();
 
-  int ret = entity_.close();
+  int ret = entity_->close();
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
+  // NOTE: keep entity_ alive after close (matching Hnsw/Vamana streamers).
+  // open() unconditionally recreates it, and leaving it non-null avoids
+  // null dereferences from accessors such as entity() between close/open.
 
   state_ = STATE_INITED;
   return 0;
@@ -175,7 +194,7 @@ int FlatStreamer<BATCH_SIZE>::close(void) {
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::flush(uint64_t checkpoint) {
   LOG_INFO("FlatStreamer flush with checkpoint %zu", (size_t)checkpoint);
-  return entity_.flush(checkpoint);
+  return entity_->flush(checkpoint);
 }
 
 template <size_t BATCH_SIZE>
@@ -250,7 +269,7 @@ int FlatStreamer<BATCH_SIZE>::add_impl(uint64_t pkey, const void *query,
   //   return ret;
   // }
 
-  int ret = entity_.add(pkey, query, qmeta.element_size());
+  int ret = entity_->add(pkey, query, qmeta.element_size());
   if (ret != 0) {
     LOG_ERROR("Failed to add record for %s", IndexError::What(ret));
     (*stats_.mutable_discarded_count())++;
@@ -291,7 +310,7 @@ int FlatStreamer<BATCH_SIZE>::add_with_id_impl(uint32_t id, const void *query,
     return IndexError_Unsupported;
   }
 
-  int ret = entity_.add_vector_with_id(id, query, qmeta.element_size());
+  int ret = entity_->add_vector_with_id(id, query, qmeta.element_size());
   if (ret != 0) {
     LOG_ERROR("Failed to add record for %s", IndexError::What(ret));
     (*stats_.mutable_discarded_count())++;
@@ -331,7 +350,7 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
     auto *heap = bf_context->result_heap();
     auto *context_stats = bf_context->mutable_stats(q);
     uint32_t scan_count = 0;
-    int ret = entity_.search(query, filter, &scan_count, heap, context_stats);
+    int ret = entity_->search(query, filter, &scan_count, heap, context_stats);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Failed to search for %s", IndexError::What(ret));
       return ret;
@@ -369,18 +388,68 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
   bf_context->reset_results(count);
   auto &filter = bf_context->filter();
 
+  // Pin the contiguous snapshot once for the whole call: keeps it alive and
+  // enables lock-free per-candidate lookups (null for non-contiguous mode).
+  auto read_pin = entity_->acquire_read_pin();
+
+  // Scratch buffers for the one-to-many (batch) refine distance. Gathering the
+  // candidate vector pointers from the pinned contiguous snapshot lets us call
+  // the SIMD batch kernel once per query instead of one scalar distance call
+  // per candidate. Declared outside the query loop so their capacity is reused
+  // across queries (a single amortized allocation per search call).
+  std::vector<const void *> batch_ptrs;
+  std::vector<uint64_t> batch_keys;
+  std::vector<float> batch_dists;
+
   for (size_t q = 0; q < count; ++q) {
     auto *heap = bf_context->result_heap();
-    for (node_id_t idx = 0; idx < p_keys[q].size(); ++idx) {
-      uint64_t key = p_keys[q][idx];
-      if (!filter.is_valid() || !filter(key)) {
-        dist_t dist = 0;
-        IndexStorage::MemoryBlock block;
-        if (entity_.get_vector_by_key(key, block) != 0) continue;
-        entity_.row_major_distance(query, block.data(), 1, &dist);
-        heap->emplace(key, dist);
+    const auto &cand = p_keys[q];
+
+    if (read_pin) {
+      // Contiguous mode: gather stable pointers into the pinned snapshot and
+      // refine with the SIMD one-to-many kernel. Candidates missing from the
+      // snapshot (e.g. inserted after it was built) fall back to scalar.
+      batch_ptrs.clear();
+      batch_keys.clear();
+      batch_ptrs.reserve(cand.size());
+      batch_keys.reserve(cand.size());
+      for (node_id_t idx = 0; idx < cand.size(); ++idx) {
+        uint64_t key = cand[idx];
+        if (filter.is_valid() && filter(key)) continue;
+        const void *vector = read_pin->locate(key);
+        if (vector) {
+          batch_ptrs.push_back(vector);
+          batch_keys.push_back(key);
+        } else {
+          dist_t dist = 0;
+          IndexStorage::MemoryBlock block;
+          if (entity_->get_vector_by_key(key, block) != 0) continue;
+          entity_->row_major_distance(query, block.data(), 1, &dist);
+          heap->emplace(key, dist);
+        }
+      }
+      size_t n = batch_ptrs.size();
+      if (n) {
+        batch_dists.resize(n);
+        entity_->row_major_batch_distance(query, batch_ptrs.data(), n,
+                                          batch_dists.data());
+        for (size_t i = 0; i < n; ++i) {
+          heap->emplace(batch_keys[i], batch_dists[i]);
+        }
+      }
+    } else {
+      for (node_id_t idx = 0; idx < cand.size(); ++idx) {
+        uint64_t key = cand[idx];
+        if (!filter.is_valid() || !filter(key)) {
+          dist_t dist = 0;
+          IndexStorage::MemoryBlock block;
+          if (entity_->get_vector_by_key(key, block) != 0) continue;
+          entity_->row_major_distance(query, block.data(), 1, &dist);
+          heap->emplace(key, dist);
+        }
       }
     }
+
     heap->sort();
     bf_context->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
@@ -409,17 +478,23 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     return bf_context->group_by()(key);
   };
 
-  auto iterator = entity_.creater_iterator();
+  auto iterator = entity_->creater_iterator();
+
+  auto read_pin = entity_->acquire_read_pin();
 
   for (size_t q = 0; q < count; ++q) {
     bf_context->group_topk_heaps().clear();
-    for (node_id_t id = 0; id < entity_.vector_count(); ++id) {
-      uint64_t key = entity_.key(id);
+    for (node_id_t id = 0; id < entity_->vector_count(); ++id) {
+      uint64_t key = entity_->key(id);
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
-        if (entity_.get_vector_by_key(key, block) != 0) continue;
-        entity_.row_major_distance(query, block.data(), 1, &dist);
+        const void *vector = read_pin ? read_pin->locate(key) : nullptr;
+        if (!vector) {
+          if (entity_->get_vector_by_key(key, block) != 0) continue;
+          vector = block.data();
+        }
+        entity_->row_major_distance(query, vector, 1, &dist);
 
         std::string group_id = group_by(key);
         auto &topk_heap = bf_context->group_topk_heaps()[group_id];
@@ -457,7 +532,9 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     return bf_context->group_by()(key);
   };
 
-  auto iterator = entity_.creater_iterator();
+  auto iterator = entity_->creater_iterator();
+
+  auto read_pin = entity_->acquire_read_pin();
 
   for (size_t q = 0; q < count; ++q) {
     bf_context->group_topk_heaps().clear();
@@ -466,8 +543,12 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
-        if (entity_.get_vector_by_key(key, block) != 0) continue;
-        entity_.row_major_distance(query, block.data(), 1, &dist);
+        const void *vector = read_pin ? read_pin->locate(key) : nullptr;
+        if (!vector) {
+          if (entity_->get_vector_by_key(key, block) != 0) continue;
+          vector = block.data();
+        }
+        entity_->row_major_distance(query, vector, 1, &dist);
 
         std::string group_id = group_by(key);
         auto &topk_heap = bf_context->group_topk_heaps()[group_id];

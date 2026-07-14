@@ -305,6 +305,7 @@ class CollectionImpl : public Collection {
     // CombinedVectorColumnIndexer / per-query engine param conversion.
     bool use_direct_index{false};
     core_interface::Index::Pointer raw_index;
+    core_interface::Index::Pointer raw_reference_index;
     core_interface::BaseIndexQueryParam::Pointer engine_query_param;
   };
 
@@ -2102,6 +2103,7 @@ Status CollectionImpl::AnnBenchPrepare(const std::string &field_name) {
 
   cache.use_direct_index = false;
   cache.raw_index.reset();
+  cache.raw_reference_index.reset();
   cache.engine_query_param.reset();
   if (cache.segments.size() == 1) {
     const auto &entry = cache.segments[0];
@@ -2110,6 +2112,10 @@ Status CollectionImpl::AnnBenchPrepare(const std::string &field_name) {
       if (primary) {
         cache.raw_index = primary->debug_get_index();
         cache.use_direct_index = (cache.raw_index != nullptr);
+        auto reference = entry.indexer->ann_bench_reference_indexer();
+        if (reference) {
+          cache.raw_reference_index = reference->debug_get_index();
+        }
       }
     }
   }
@@ -2146,6 +2152,16 @@ void CollectionImpl::ann_bench_rebuild_engine_query_param_unlocked() {
   if (!engine_qp) {
     ann_bench_.use_direct_index = false;
     return;
+  }
+  if (ann_bench_.query_params->is_using_refiner()) {
+    if (!ann_bench_.raw_reference_index) {
+      ann_bench_.use_direct_index = false;
+      return;
+    }
+    engine_qp.value()->refiner_param =
+        std::make_shared<core_interface::RefinerParam>();
+    engine_qp.value()->refiner_param->reference_index =
+        ann_bench_.raw_reference_index;
   }
   ann_bench_.engine_query_param =
       std::shared_ptr<core_interface::BaseIndexQueryParam>(

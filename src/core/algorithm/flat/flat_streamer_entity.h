@@ -43,7 +43,7 @@ class FlatStreamerEntity {
   int open(IndexStorage::Pointer storage, const IndexMeta &mt);
 
   //! Close the entity
-  int close(void);
+  virtual int close(void);
 
   //! Flush Linear Meta information to storage
   int flush_linear_meta(void);
@@ -52,7 +52,7 @@ class FlatStreamerEntity {
   int flush(uint64_t checkpoint);
 
   //! Add vector to linear index
-  int add(uint64_t key, const void *vec, size_t size);
+  virtual int add(uint64_t key, const void *vec, size_t size);
 
   //! Search in linear list with filter
   int search(const void *query, const IndexFilter &filter, uint32_t *scan_count,
@@ -110,10 +110,10 @@ class FlatStreamerEntity {
   }
 
   //! Retrieve vector by local id
-  const void *get_vector_by_key(uint64_t key) const;
+  virtual const void *get_vector_by_key(uint64_t key) const;
 
-  int get_vector_by_key(const uint64_t key,
-                        IndexStorage::MemoryBlock &block) const;
+  virtual int get_vector_by_key(const uint64_t key,
+                                IndexStorage::MemoryBlock &block) const;
 
   //! Create a new iterator
   IndexProvider::Iterator::Pointer creater_iterator(void) const;
@@ -161,8 +161,80 @@ class FlatStreamerEntity {
     }
   }
 
-  int add_vector_with_id(const uint32_t id, const void *query,
-                         const uint32_t element_size);
+  //! Whether a SIMD one-to-many (batch) distance kernel is available for the
+  //! current metric/data type. When true, row_major_batch_distance() dispatches
+  //! to the turbo batch kernel instead of a per-vector scalar loop.
+  inline bool has_batch_distance(void) const {
+    return static_cast<bool>(batch_distance_);
+  }
+
+  /*! One-to-many distance: compute the distance from a single query to `fnum`
+   *  feature vectors addressed by the `features` pointer array, writing `fnum`
+   *  results to `out`. Used by the refine stage over unquantized (raw) vectors
+   *  to amortize the query load and exploit the metric's SIMD batch kernel.
+   *  Falls back to the scalar per-vector distance when no batch kernel exists.
+   */
+  inline void row_major_batch_distance(const void *query,
+                                       const void **features, size_t fnum,
+                                       float *out) const {
+    if (batch_distance_) {
+      batch_distance_(features, query, fnum, index_meta_.dimension(), out);
+      return;
+    }
+    for (size_t f = 0; f < fnum; ++f) {
+      row_distance_(query, features[f], index_meta_.dimension(), out + f);
+    }
+  }
+
+  virtual int add_vector_with_id(const uint32_t id, const void *query,
+                                 const uint32_t element_size);
+
+  //! Whether vector lookups currently use a contiguous in-memory array.
+  virtual bool is_contiguous(void) const {
+    return false;
+  }
+
+  /*! Pinned, immutable snapshot for lock-free repeated vector lookups within
+   *  a single search call. Holding the returned shared_ptr keeps the backing
+   *  memory alive across a concurrent degrade/rebuild, so pointers returned by
+   *  locate() stay valid for the pin's lifetime.
+   */
+  class ReadPin {
+   public:
+    virtual ~ReadPin(void) = default;
+    //! Pointer to the vector for `key`, or nullptr if absent from this
+    //! snapshot (caller must fall back to get_vector_by_key()).
+    virtual const void *locate(uint64_t key) const = 0;
+  };
+
+  //! Acquire a read pin. Base entities have no snapshot and return nullptr,
+  //! so callers transparently fall back to get_vector_by_key().
+  virtual std::shared_ptr<const ReadPin> acquire_read_pin(void) const {
+    return nullptr;
+  }
+
+ protected:
+  //! Copy the common entity state into a clone.
+  bool copy_state_to(FlatStreamerEntity *entity) const;
+
+  //! Retrieve a vector by its dense insertion position.
+  int get_vector_by_position(uint32_t id,
+                             IndexStorage::MemoryBlock &block) const;
+
+  //! Number of vectors tracked in the id->key vector. In key-info-map mode
+  //! this is the count of live (non-deleted) vectors, which can be smaller
+  //! than vector_count() when deletions exist.
+  size_t id_key_count(void) const {
+    return id_key_vector_.size();
+  }
+
+  bool use_key_info_map(void) const {
+    return use_key_info_map_;
+  }
+
+  IndexStreamer::Stats &stats(void) const {
+    return stats_;
+  }
 
  private:
   //! Disable them
@@ -388,6 +460,7 @@ class FlatStreamerEntity {
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
+  IndexMetric::MatrixBatchDistance batch_distance_{};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
@@ -401,6 +474,84 @@ class FlatStreamerEntity {
   uint32_t vec_cols_{0};
   mutable std::string vec_buf_{};
   StreamerLinearMeta meta_{};
+};
+
+/*! Flat contiguous streamer entity.
+ *
+ * Materializes the immutable row-major vector payload into one hugepage-backed
+ * array. Refine lookups can then address vectors directly instead of acquiring
+ * a storage block for every candidate.
+ */
+class FlatContiguousStreamerEntity : public FlatStreamerEntity {
+ public:
+  explicit FlatContiguousStreamerEntity(IndexStreamer::Stats &stats)
+      : FlatStreamerEntity(stats) {}
+  ~FlatContiguousStreamerEntity(void) override = default;
+
+  int build_contiguous_memory(void);
+  int close(void) override;
+
+  int add(uint64_t key, const void *vec, size_t size) override;
+  int add_vector_with_id(uint32_t id, const void *query,
+                         uint32_t element_size) override;
+
+  const void *get_vector_by_key(uint64_t key) const override;
+  int get_vector_by_key(uint64_t key,
+                        IndexStorage::MemoryBlock &block) const override;
+
+  FlatStreamerEntity::Pointer clone(void) const override;
+
+  bool is_contiguous(void) const override {
+    return std::atomic_load(&view_) != nullptr;
+  }
+
+  std::shared_ptr<const ReadPin> acquire_read_pin(void) const override {
+    return std::atomic_load(&view_);
+  }
+
+ private:
+  struct ContiguousDeleter {
+    size_t size;
+    void operator()(char *ptr) const {
+      ailego::MemoryHelper::FreeHugePage(ptr, size);
+    }
+  };
+
+  /*! Immutable snapshot of the materialized contiguous vector array.
+   *
+   * Published as a single shared_ptr and swapped atomically. Readers load
+   * their own shared_ptr, so a concurrent degrade/rebuild can never free the
+   * buffer out from under an in-flight lookup, and the map is never mutated
+   * after publication (no read/write data race).
+   */
+  struct ContiguousView : public ReadPin {
+    std::shared_ptr<char> memory{};  //!< owns the hugepage (via ContiguousDeleter)
+    const char *base{nullptr};
+    size_t stride{0};
+    size_t count{0};  //!< dense slot count; bounds the with-id direct address
+    bool use_key_info_map{false};
+    std::unordered_map<uint64_t, uint32_t> key_to_position{};
+
+    const void *locate(uint64_t key) const override {
+      size_t position = key;
+      if (use_key_info_map) {
+        auto it = key_to_position.find(key);
+        if (it == key_to_position.end()) {
+          return nullptr;
+        }
+        position = it->second;
+      } else if (key >= count) {
+        return nullptr;
+      }
+      return base + position * stride;
+    }
+  };
+
+  void degrade_to_storage(void);
+
+  static constexpr size_t kVectorAlignment = 64;
+  //! Access exclusively via std::atomic_load / std::atomic_store.
+  std::shared_ptr<ContiguousView> view_{};
 };
 
 }  // namespace core

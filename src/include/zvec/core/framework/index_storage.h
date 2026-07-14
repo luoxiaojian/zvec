@@ -66,7 +66,7 @@ class IndexStorage : public IndexModule {
     MemoryBlock(const MemoryBlock &rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
-          this->reset(rhs.data_);
+          this->reset(rhs.data_, rhs.keepalive_);
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
           this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_, rhs.data_);
@@ -86,7 +86,7 @@ class IndexStorage : public IndexModule {
     MemoryBlock(MemoryBlock &&rhs) {
       switch (rhs.type_) {
         case MemoryBlockType::MBT_MMAP:
-          this->reset(std::move(rhs.data_));
+          this->reset(std::move(rhs.data_), std::move(rhs.keepalive_));
           break;
         case MemoryBlockType::MBT_BUFFERPOOL:
           this->reset(std::move(rhs.buffer_pool_handle_),
@@ -111,7 +111,7 @@ class IndexStorage : public IndexModule {
       if (this != &rhs) {
         switch (rhs.type_) {
           case MemoryBlockType::MBT_MMAP:
-            this->reset(rhs.data_);
+            this->reset(rhs.data_, rhs.keepalive_);
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
             this->reset(rhs.buffer_pool_handle_, rhs.buffer_block_id_,
@@ -133,7 +133,7 @@ class IndexStorage : public IndexModule {
       if (this != &rhs) {
         switch (rhs.type_) {
           case MemoryBlockType::MBT_MMAP:
-            this->reset(std::move(rhs.data_));
+            this->reset(std::move(rhs.data_), std::move(rhs.keepalive_));
             break;
           case MemoryBlockType::MBT_BUFFERPOOL:
             this->reset(std::move(rhs.buffer_pool_handle_),
@@ -172,6 +172,7 @@ class IndexStorage : public IndexModule {
         default:
           break;
       }
+      keepalive_.reset();
       data_ = nullptr;
       scratch_size_ = 0;
     }
@@ -187,6 +188,7 @@ class IndexStorage : public IndexModule {
       } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
         release_owned();
       }
+      keepalive_.reset();
       type_ = MemoryBlockType::MBT_BUFFERPOOL;
       buffer_pool_handle_ = buffer_pool_handle;
       buffer_block_id_ = block_id;
@@ -200,8 +202,18 @@ class IndexStorage : public IndexModule {
       } else if (type_ == MemoryBlockType::MBT_HEAP_SCRATCH) {
         release_owned();
       }
+      keepalive_.reset();
       type_ = MemoryBlockType::MBT_MMAP;
       data_ = data;
+    }
+
+    //! Reset to an MBT_MMAP block whose `data` points into a refcounted
+    //! buffer. `keepalive` shares ownership of that buffer so it outlives the
+    //! MemoryBlock, making the pointer safe to hold and copy across threads
+    //! even if the producer releases its own reference concurrently.
+    void reset(void *data, std::shared_ptr<const void> keepalive) {
+      this->reset(data);
+      keepalive_ = std::move(keepalive);
     }
 
     MemoryBlockType type_{MBT_UNKNOWN};
@@ -212,6 +224,9 @@ class IndexStorage : public IndexModule {
     //! when type_ == MBT_HEAP_SCRATCH.  Required for safe deep-copy on
     //! copy-construction / copy-assignment of HEAP_SCRATCH blocks.
     size_t scratch_size_{0};
+    //! Optional shared owner that keeps an MBT_MMAP `data_` alive (e.g. the
+    //! Flat contiguous snapshot buffer). Null for plain mmap/storage pointers.
+    std::shared_ptr<const void> keepalive_{};
 
    private:
     void release_owned() {
@@ -240,6 +255,7 @@ class IndexStorage : public IndexModule {
         default:
           break;
       }
+      keepalive_.reset();
       data_ = nullptr;
       type_ = MemoryBlockType::MBT_UNKNOWN;
     }

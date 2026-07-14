@@ -1749,8 +1749,9 @@ Status SegmentImpl::create_vector_index(
       BlockID block_id = allocate_block_id();
 
       auto field_with_flat = std::make_shared<FieldSchema>(*field);
-      field_with_flat->set_index_params(
-          MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
+      field_with_flat->set_index_params(MakeDefaultVectorIndexParams(
+          vector_index_params->metric_type(),
+          vector_index_params->use_contiguous_memory()));
 
       std::string index_file_path = FileHelper::MakeVectorIndexPath(
           path_, column, segment_meta_->id(), block_id);
@@ -4030,8 +4031,9 @@ Status SegmentImpl::load_vector_index_blocks() {
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
-          new_field_params.set_index_params(
-              MakeDefaultVectorIndexParams(vector_index_params->metric_type()));
+          new_field_params.set_index_params(MakeDefaultVectorIndexParams(
+              vector_index_params->metric_type(),
+              vector_index_params->use_contiguous_memory()));
         }
       } else {
         if (!segment_meta_->vector_indexed(column)) {
@@ -4144,8 +4146,8 @@ Status SegmentImpl::init_memory_components() {
     if (index_params->quantize_type() == QuantizeType::UNDEFINED) {
       // create normal vector indexer
       FieldSchema normal_field(*field);
-      normal_field.set_index_params(
-          MakeDefaultVectorIndexParams(index_params->metric_type()));
+      normal_field.set_index_params(MakeDefaultVectorIndexParams(
+          index_params->metric_type(), index_params->use_contiguous_memory()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);
@@ -4157,8 +4159,8 @@ Status SegmentImpl::init_memory_components() {
     } else {
       // first create normal vector indexer
       FieldSchema normal_field(*field);
-      normal_field.set_index_params(
-          MakeDefaultVectorIndexParams(index_params->metric_type()));
+      normal_field.set_index_params(MakeDefaultVectorIndexParams(
+          index_params->metric_type(), index_params->use_contiguous_memory()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);

@@ -57,6 +57,11 @@ class CombinedVectorColumnIndexer {
     return indexers_.empty() ? nullptr : indexers_[0];
   }
 
+  //! Raw-vector reference block used by the primary index's refiner.
+  VectorColumnIndexer::Ptr ann_bench_reference_indexer() const {
+    return normal_indexers_.empty() ? nullptr : normal_indexers_[0];
+  }
+
  protected:
   /**
    * A filter wrapper that applies an offset to document IDs before

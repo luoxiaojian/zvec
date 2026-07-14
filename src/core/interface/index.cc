@@ -626,11 +626,6 @@ int Index::SearchDocIds(const VectorData &vector_data,
     LOG_ERROR("SearchDocIds does not support sparse indexes");
     return core::IndexError_Unsupported;
   }
-  if (search_param->refiner_param != nullptr) {
-    LOG_ERROR("SearchDocIds does not support refiner queries");
-    return core::IndexError_Unsupported;
-  }
-
   auto &context = acquire_context();
   if (!context) {
     LOG_ERROR("Failed to acquire context");
@@ -643,8 +638,53 @@ int Index::SearchDocIds(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
-  const int ret =
-      _dense_search_doc_ids(vector_data, search_param, output_ids, topk, context);
+  int ret = 0;
+  if (search_param->refiner_param == nullptr) {
+    // Keep the non-refine hot path unchanged: write graph-search doc ids
+    // directly into the caller-owned output buffer.
+    ret =
+        _dense_search_doc_ids(vector_data, search_param, output_ids, topk, context);
+    context->reset();
+    return ret;
+  }
+
+  // Refine path: retain the same coarse candidate semantics as Search(), but
+  // send the candidate keys directly to Flat::SearchDocIds so neither stage
+  // materializes vectors/scores in the final result.
+  auto &reference_index = search_param->refiner_param->reference_index;
+  if (reference_index == nullptr) {
+    LOG_ERROR("Reference index is not set");
+    context->reset();
+    return core::IndexError_Runtime;
+  }
+  if (reference_index->param_.index_type != IndexType::kFlat) {
+    LOG_ERROR("Reference index is not flat");
+    context->reset();
+    return core::IndexError_Runtime;
+  }
+
+  context->set_topk(_get_coarse_search_topk(search_param));
+  context->set_fetch_vector(false);
+  if (_execute_dense_search(vector_data, search_param, context) != 0) {
+    LOG_ERROR("Failed to search");
+    context->reset();
+    return core::IndexError_Runtime;
+  }
+
+  const auto &base_result = context->result();
+  auto keys = std::make_shared<std::vector<uint64_t>>(base_result.size());
+  for (size_t i = 0; i < base_result.size(); ++i) {
+    (*keys)[i] = base_result[i].key();
+  }
+
+  auto flat_search_param = std::make_shared<FlatQueryParam>();
+  flat_search_param->topk = static_cast<uint32_t>(topk);
+  flat_search_param->fetch_vector = false;
+  flat_search_param->filter = search_param->filter;
+  flat_search_param->bf_pks = std::move(keys);
+
+  ret = reference_index->SearchDocIds(vector_data, flat_search_param, output_ids,
+                                      topk);
   context->reset();
   return ret;
 }
