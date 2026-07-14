@@ -22,7 +22,8 @@ HnswIndexParams::OPtr ProtoConverter::FromPb(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()), params_pb.m(),
       params_pb.ef_construction(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      params_pb.use_contiguous_memory());
+      params_pb.use_contiguous_memory(),
+      params_pb.use_flat_contiguous_memory());
 
   return params;
 }
@@ -36,6 +37,8 @@ proto::HnswIndexParams ProtoConverter::ToPb(const HnswIndexParams *params) {
   params_pb.set_ef_construction(params->ef_construction());
   params_pb.set_m(params->m());
   params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
+  params_pb.set_use_flat_contiguous_memory(
+      params->use_flat_contiguous_memory());
   return params_pb;
 }
 
@@ -70,7 +73,8 @@ FlatIndexParams::OPtr ProtoConverter::FromPb(
     const proto::FlatIndexParams &params_pb) {
   return std::make_shared<FlatIndexParams>(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()),
-      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
+      params_pb.use_contiguous_memory());
 }
 
 proto::FlatIndexParams ProtoConverter::ToPb(const FlatIndexParams *params) {
@@ -79,6 +83,7 @@ proto::FlatIndexParams ProtoConverter::ToPb(const FlatIndexParams *params) {
       MetricTypeCodeBook::Get(params->metric_type()));
   params_pb.mutable_base()->set_quantize_type(
       QuantizeTypeCodeBook::Get(params->quantize_type()));
+  params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
   return params_pb;
 }
 
@@ -110,8 +115,9 @@ VamanaIndexParams::OPtr ProtoConverter::FromPb(
       MetricTypeCodeBook::Get(params_pb.base().metric_type()),
       params_pb.max_degree(), params_pb.search_list_size(), params_pb.alpha(),
       params_pb.saturate_graph(), params_pb.use_contiguous_memory(),
-      params_pb.use_id_map(),
-      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()));
+      params_pb.use_id_map(), params_pb.two_pass_build(),
+      QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
+      params_pb.use_flat_contiguous_memory());
 }
 
 proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
@@ -126,6 +132,9 @@ proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
   params_pb.set_saturate_graph(params->saturate_graph());
   params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
   params_pb.set_use_id_map(params->use_id_map());
+  params_pb.set_use_flat_contiguous_memory(
+      params->use_flat_contiguous_memory());
+  params_pb.set_two_pass_build(params->two_pass_build());
   return params_pb;
 }
 

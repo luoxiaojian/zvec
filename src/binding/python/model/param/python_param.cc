@@ -425,13 +425,14 @@ Examples:
     {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8', 'use_contiguous_memory': True}
 )pbdoc");
   hnsw_params
-      .def(py::init<MetricType, int, int, QuantizeType, bool>(),
+      .def(py::init<MetricType, int, int, QuantizeType, bool, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
-           py::arg("use_contiguous_memory") = false)
+           py::arg("use_contiguous_memory") = false,
+           py::arg("use_flat_contiguous_memory") = false)
       .def_property_readonly(
           "m", &HnswIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -443,6 +444,11 @@ Examples:
           "bool: Whether to allocate a single contiguous memory arena for "
           "all HNSW graph nodes. Improves cache locality and search "
           "throughput at the cost of peak memory usage. Defaults to False.")
+      .def_property_readonly(
+          "use_flat_contiguous_memory",
+          &HnswIndexParams::use_flat_contiguous_memory,
+          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "memory for refine. Defaults to False.")
       .def(
           "to_dict",
           [](const HnswIndexParams &self) -> py::dict {
@@ -454,6 +460,8 @@ Examples:
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
+            dict["use_flat_contiguous_memory"] =
+                self.use_flat_contiguous_memory();
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -468,20 +476,25 @@ Examples:
                     ", \"quantize_type\":" +
                     quantize_type_to_string(self.quantize_type()) +
                     ", \"use_contiguous_memory\":" +
-                    (self.use_contiguous_memory() ? "true" : "false") + "}";
+                    (self.use_contiguous_memory() ? "true" : "false") +
+                    ", \"use_flat_contiguous_memory\":" +
+                    (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    "}";
            })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.m(),
                                   self.ef_construction(), self.quantize_type(),
-                                  self.use_contiguous_memory());
+                                  self.use_contiguous_memory(),
+                                  self.use_flat_contiguous_memory());
           },
           [](py::tuple t) {
-            if (t.size() != 5)
+            if (t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<QuantizeType>(), t[4].cast<bool>());
+                t[3].cast<QuantizeType>(), t[4].cast<bool>(),
+                t.size() == 6 ? t[5].cast<bool>() : false);
           }));
 
   // binding hnsw rabitq index params
@@ -616,7 +629,7 @@ Attributes:
         db layer always supplies consecutive ids so this is currently
         ignored by the engine. Default is False.
     two_pass_build (bool): If True, run the full-graph two-pass Vamana refine
-        before dumping the index. Default is True.
+        before dumping the index. Default is False.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -633,7 +646,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType>(),
+                    QuantizeType, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -643,8 +656,9 @@ Examples:
                core_interface::kDefaultVamanaSaturateGraph,
            py::arg("use_contiguous_memory") = false,
            py::arg("use_id_map") = false,
-           py::arg("two_pass_build") = true,
-           py::arg("quantize_type") = QuantizeType::UNDEFINED)
+           py::arg("two_pass_build") = false,
+           py::arg("quantize_type") = QuantizeType::UNDEFINED,
+           py::arg("use_flat_contiguous_memory") = false)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -670,6 +684,11 @@ Examples:
           "two_pass_build", &VamanaIndexParams::two_pass_build,
           "bool: Whether to run full-graph two-pass Vamana refinement before "
           "dumping the index.")
+      .def_property_readonly(
+          "use_flat_contiguous_memory",
+          &VamanaIndexParams::use_flat_contiguous_memory,
+          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "memory for refine.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -683,6 +702,8 @@ Examples:
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_id_map"] = self.use_id_map();
             dict["two_pass_build"] = self.two_pass_build();
+            dict["use_flat_contiguous_memory"] =
+                self.use_flat_contiguous_memory();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -708,6 +729,9 @@ Examples:
                     std::string(self.use_id_map() ? "true" : "false") +
                     ", \"two_pass_build\":" +
                     std::string(self.two_pass_build() ? "true" : "false") +
+                    ", \"use_flat_contiguous_memory\":" +
+                    std::string(self.use_flat_contiguous_memory() ? "true"
+                                                                  : "false") +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
@@ -718,22 +742,30 @@ Examples:
                                   self.saturate_graph(),
                                   self.use_contiguous_memory(),
                                   self.use_id_map(), self.two_pass_build(),
-                                  self.quantize_type());
+                                  self.quantize_type(),
+                                  self.use_flat_contiguous_memory());
           },
           [](py::tuple t) {
-            if (t.size() != 8 && t.size() != 9)
+            if (t.size() != 8 && t.size() != 9 && t.size() != 10)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
                   t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                   t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
-                  t[6].cast<bool>(), true, t[7].cast<QuantizeType>());
+                  t[6].cast<bool>(), false, t[7].cast<QuantizeType>());
+            }
+            if (t.size() == 9) {
+              return std::make_shared<VamanaIndexParams>(
+                  t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
+                  t[6].cast<bool>(), t[7].cast<bool>(),
+                  t[8].cast<QuantizeType>());
             }
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(),
-                t[8].cast<QuantizeType>());
+                t[8].cast<QuantizeType>(), t[9].cast<bool>());
           }));
 
   // FlatIndexParams

@@ -202,6 +202,9 @@ class HnswIndexParam(VectorIndexParam):
             single contiguous memory arena for all graph nodes, improving cache
             locality and search throughput at the cost of peak memory usage.
             Default is False.
+        use_flat_contiguous_memory (bool): If True, the raw-vector Flat
+            reference index used by refine also uses contiguous memory.
+            Default is False.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -224,6 +227,7 @@ class HnswIndexParam(VectorIndexParam):
         ef_construction: typing.SupportsInt = 500,
         quantize_type: _zvec.typing.QuantizeType = ...,
         use_contiguous_memory: bool = False,
+        use_flat_contiguous_memory: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -251,6 +255,9 @@ class HnswIndexParam(VectorIndexParam):
         HNSW graph nodes. Improves cache locality and search throughput at
         the cost of peak memory usage. Defaults to False.
         """
+    @property
+    def use_flat_contiguous_memory(self) -> bool:
+        """bool: Whether the refine Flat reference index uses contiguous memory."""
 
 class HnswQueryParam(QueryParam):
     """
@@ -584,8 +591,9 @@ class VamanaIndexParam(VectorIndexParam):
         alpha (float): RobustPrune alpha factor. Default is 1.2.
         saturate_graph (bool): Force every node to reach max_degree. Default is False.
         use_contiguous_memory (bool): Allocate contiguous memory arena. Default is False.
+        use_flat_contiguous_memory (bool): Allocate contiguous memory for the refine Flat reference index. Default is False.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
-        two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is True.
+        two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is False.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
 
     Examples:
@@ -601,8 +609,9 @@ class VamanaIndexParam(VectorIndexParam):
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
-        two_pass_build: bool = True,
+        two_pass_build: bool = False,
         quantize_type: _zvec.typing.QuantizeType = ...,
+        use_flat_contiguous_memory: bool = False,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -622,6 +631,9 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def use_contiguous_memory(self) -> bool:
         """bool: Whether to allocate a single contiguous memory arena."""
+    @property
+    def use_flat_contiguous_memory(self) -> bool:
+        """bool: Whether the refine Flat reference index uses contiguous memory."""
     @property
     def use_id_map(self) -> bool:
         """bool: Reserved flag for engine-level id remapping."""

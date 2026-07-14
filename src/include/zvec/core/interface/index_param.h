@@ -355,7 +355,7 @@ struct VamanaIndexParam : public BaseIndexParam {
   int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
-  bool two_pass_build = true;
+  bool two_pass_build = false;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 

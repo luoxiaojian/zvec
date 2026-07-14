@@ -154,6 +154,9 @@ class VectorIndexParams : public IndexParams {
   virtual bool use_contiguous_memory() const {
     return false;
   }
+  virtual bool use_flat_contiguous_memory() const {
+    return false;
+  }
 
  protected:
   MetricType metric_type_;
@@ -169,11 +172,13 @@ class HnswIndexParams : public VectorIndexParams {
       MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      bool use_contiguous_memory = false)
+      bool use_contiguous_memory = false,
+      bool use_flat_contiguous_memory = false)
       : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type),
         m_(m),
         ef_construction_(ef_construction),
-        use_contiguous_memory_(use_contiguous_memory) {}
+        use_contiguous_memory_(use_contiguous_memory),
+        use_flat_contiguous_memory_(use_flat_contiguous_memory) {}
 
   using OPtr = std::shared_ptr<HnswIndexParams>;
 
@@ -181,7 +186,8 @@ class HnswIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
                                              quantize_type_,
-                                             use_contiguous_memory_);
+                                             use_contiguous_memory_,
+                                             use_flat_contiguous_memory_);
   }
 
   std::string to_string() const override {
@@ -190,7 +196,9 @@ class HnswIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",m:" << m_ << ",ef_construction:" << ef_construction_
         << ",use_contiguous_memory:"
-        << (use_contiguous_memory_ ? "true" : "false") << "}";
+        << (use_contiguous_memory_ ? "true" : "false")
+        << ",use_flat_contiguous_memory:"
+        << (use_flat_contiguous_memory_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -204,7 +212,10 @@ class HnswIndexParams : public VectorIndexParams {
            quantize_type() ==
                static_cast<const HnswIndexParams &>(other).quantize_type() &&
            use_contiguous_memory_ == static_cast<const HnswIndexParams &>(other)
-                                         .use_contiguous_memory_;
+                                         .use_contiguous_memory_ &&
+           use_flat_contiguous_memory_ ==
+               static_cast<const HnswIndexParams &>(other)
+                   .use_flat_contiguous_memory_;
   }
 
   void set_m(int m) {
@@ -226,6 +237,12 @@ class HnswIndexParams : public VectorIndexParams {
   bool use_contiguous_memory() const override {
     return use_contiguous_memory_;
   }
+  void set_use_flat_contiguous_memory(bool use_flat_contiguous_memory) {
+    use_flat_contiguous_memory_ = use_flat_contiguous_memory;
+  }
+  bool use_flat_contiguous_memory() const override {
+    return use_flat_contiguous_memory_;
+  }
 
  protected:
   int m_;
@@ -235,6 +252,7 @@ class HnswIndexParams : public VectorIndexParams {
   // the cost of peak memory usage. Defaults to false for backward
   // compatibility.
   bool use_contiguous_memory_{false};
+  bool use_flat_contiguous_memory_{false};
 };
 
 class HnswRabitqIndexParams : public VectorIndexParams {
@@ -557,8 +575,9 @@ class VamanaIndexParams : public VectorIndexParams {
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
-      bool two_pass_build = true,
-      QuantizeType quantize_type = QuantizeType::UNDEFINED)
+      bool two_pass_build = false,
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      bool use_flat_contiguous_memory = false)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
@@ -566,7 +585,8 @@ class VamanaIndexParams : public VectorIndexParams {
         saturate_graph_(saturate_graph),
         use_contiguous_memory_(use_contiguous_memory),
         use_id_map_(use_id_map),
-        two_pass_build_(two_pass_build) {}
+        two_pass_build_(two_pass_build),
+        use_flat_contiguous_memory_(use_flat_contiguous_memory) {}
 
   VamanaIndexParams(MetricType metric_type, int max_degree,
                     int search_list_size, float alpha, bool saturate_graph,
@@ -574,7 +594,7 @@ class VamanaIndexParams : public VectorIndexParams {
                     QuantizeType quantize_type)
       : VamanaIndexParams(metric_type, max_degree, search_list_size, alpha,
                           saturate_graph, use_contiguous_memory, use_id_map,
-                          true, quantize_type) {}
+                          false, quantize_type) {}
 
   using OPtr = std::shared_ptr<VamanaIndexParams>;
 
@@ -582,7 +602,8 @@ class VamanaIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<VamanaIndexParams>(
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
-        use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_);
+        use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_,
+        use_flat_contiguous_memory_);
   }
 
   std::string to_string() const override {
@@ -595,7 +616,9 @@ class VamanaIndexParams : public VectorIndexParams {
         << ",use_contiguous_memory:"
         << (use_contiguous_memory_ ? "true" : "false")
         << ",use_id_map:" << (use_id_map_ ? "true" : "false")
-        << ",two_pass_build:" << (two_pass_build_ ? "true" : "false") << "}";
+        << ",two_pass_build:" << (two_pass_build_ ? "true" : "false")
+        << ",use_flat_contiguous_memory:"
+        << (use_flat_contiguous_memory_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -611,7 +634,8 @@ class VamanaIndexParams : public VectorIndexParams {
            saturate_graph_ == rhs.saturate_graph_ &&
            use_contiguous_memory_ == rhs.use_contiguous_memory_ &&
            use_id_map_ == rhs.use_id_map_ &&
-           two_pass_build_ == rhs.two_pass_build_;
+           two_pass_build_ == rhs.two_pass_build_ &&
+           use_flat_contiguous_memory_ == rhs.use_flat_contiguous_memory_;
   }
 
   int max_degree() const {
@@ -664,6 +688,13 @@ class VamanaIndexParams : public VectorIndexParams {
     two_pass_build_ = two_pass_build;
   }
 
+  bool use_flat_contiguous_memory() const override {
+    return use_flat_contiguous_memory_;
+  }
+  void set_use_flat_contiguous_memory(bool use_flat_contiguous_memory) {
+    use_flat_contiguous_memory_ = use_flat_contiguous_memory;
+  }
+
  private:
   int max_degree_;
   int search_list_size_;
@@ -675,6 +706,7 @@ class VamanaIndexParams : public VectorIndexParams {
   bool use_contiguous_memory_;
   bool use_id_map_;
   bool two_pass_build_;
+  bool use_flat_contiguous_memory_;
 };
 
 /*

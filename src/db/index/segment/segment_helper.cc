@@ -690,7 +690,7 @@ Status SegmentHelper::ReduceVectorIndex(
       auto field_without_quantize = std::make_shared<FieldSchema>(*field);
       field_without_quantize->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
-          vector_index_params->use_contiguous_memory()));
+          vector_index_params->use_flat_contiguous_memory()));
 
       VectorColumnIndexer::Ptr vector_indexer;
       s = MergeWithOptionalReuse(
