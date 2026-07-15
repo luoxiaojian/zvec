@@ -110,6 +110,12 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       get_vector_enabled_, force_padding_topk_enabled_,
       two_pass_build_enabled_);
 
+  const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
+  build_finalized_.store(false);
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
+  stats_.mutable_attributes()->set("vamana_initial_build_alpha",
+                                   initial_build_alpha);
   state_ = STATE_INITED;
   return 0;
 }
@@ -144,6 +150,7 @@ int VamanaStreamer::cleanup(void) {
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
   two_pass_build_enabled_ = false;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -158,7 +165,11 @@ int VamanaStreamer::setup_entity() {
   entity_->set_max_degree(max_degree_);
   entity_->set_search_list_size(search_list_size_);
   entity_->set_max_occlusion_size(max_occlusion_size_);
-  entity_->set_alpha(alpha_);
+  // Standard Vamana two-pass construction builds the graph from scratch with
+  // alpha=1.0, then revisits every point once with the configured target alpha.
+  // Single-pass construction continues to use the configured alpha directly.
+  const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
+  entity_->set_alpha(initial_build_alpha);
   entity_->set_saturate_graph(saturate_graph_);
 
   int ret = entity_->init(docs_hard_limit_);
@@ -211,6 +222,11 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   if (ret != 0) {
     cleanup_on_error();
     return ret;
+  }
+  if (entity_->doc_cnt() == 0) {
+    LOG_INFO("Vamana initial graph build configured with alpha=%.2f%s",
+             entity_->alpha(),
+             two_pass_build_enabled_ ? " (two-pass first pass)" : "");
   }
 
   // Handle IndexMeta
@@ -355,6 +371,27 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
+  update_entry_point_to_medoid();
+
+  int ret = finalize_build_locked(false);
+  if (ret != 0) {
+    LOG_ERROR("Vamana two-pass graph refine failed: %s", IndexError::What(ret));
+    return ret;
+  }
+
+  meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
+                     ailego::Params());
+
+  ret = IndexHelper::SerializeToDumper(meta_, dumper.get());
+  if (ret != 0) {
+    LOG_ERROR("Failed to serialize meta into dumper.");
+    return ret;
+  }
+
+  return entity_->dump(dumper);
+}
+
+void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
   // UNIFORM_UINT8 stores shifted int8 values followed by an int32 sum_sq tail:
@@ -374,27 +411,35 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
       entity_->update_entry_point(medoid);
     }
   }
-
-  int ret = refine_graph_before_dump();
-  if (ret != 0) {
-    LOG_ERROR("Vamana two-pass graph refine failed: %s", IndexError::What(ret));
-    return ret;
-  }
-
-  meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
-                     ailego::Params());
-
-  ret = IndexHelper::SerializeToDumper(meta_, dumper.get());
-  if (ret != 0) {
-    LOG_ERROR("Failed to serialize meta into dumper.");
-    return ret;
-  }
-
-  return entity_->dump(dumper);
 }
 
-int VamanaStreamer::refine_graph_before_dump() {
-  if (!two_pass_build_enabled_ || entity_->doc_cnt() <= 1) {
+int VamanaStreamer::finalize_build() {
+  if (!two_pass_build_enabled_) {
+    return 0;
+  }
+
+  shared_mutex_.lock();
+  AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
+  return finalize_build_locked(true);
+}
+
+int VamanaStreamer::finalize_build_locked(bool update_medoid) {
+  if (!two_pass_build_enabled_ || build_finalized_.load()) {
+    return 0;
+  }
+
+  if (update_medoid) {
+    update_entry_point_to_medoid();
+  }
+
+  // The final persisted graph always records the configured target alpha,
+  // including the degenerate zero/one-document case.
+  entity_->set_alpha(alpha_);
+
+  uint32_t pass_count = 0;
+  if (entity_->doc_cnt() <= 1) {
+    stats_.mutable_attributes()->set("vamana_refine_pass_count", pass_count);
+    build_finalized_.store(true);
     return 0;
   }
 
@@ -418,18 +463,22 @@ int VamanaStreamer::refine_graph_before_dump() {
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
 
-  LOG_INFO("Vamana two-pass graph refine: alpha=1.0");
-  ret = alg_->refine_graph(ctx.get(), 1.0f);
+  // The incremental add path above is the first pass (alpha=1.0). Reuse that
+  // graph for exactly one full-graph second pass at the configured target
+  // alpha. Keep the entity alpha in sync because reverse-link pruning reads it.
+  LOG_INFO("Vamana two-pass second graph pass: alpha=%.2f", alpha_);
+  ret = alg_->refine_graph(ctx.get(), alpha_);
   if (ret != 0) return ret;
+  ++pass_count;
 
-  if (alpha_ > 1.0f + 1e-6f) {
-    LOG_INFO("Vamana two-pass graph refine: alpha=%.2f", alpha_);
-    ret = alg_->refine_graph(ctx.get(), alpha_);
-    if (ret != 0) return ret;
+  if (ctx->error()) {
+    return IndexError_Runtime;
   }
-
+  stats_.mutable_attributes()->set("vamana_refine_pass_count", pass_count);
+  stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{2});
+  build_finalized_.store(true);
   magic_ = IndexContext::GenerateMagic();
-  return ctx->error() ? IndexError_Runtime : 0;
+  return 0;
 }
 
 IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
@@ -564,6 +613,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }
@@ -635,6 +685,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
     return IndexError_Runtime;
   }
   (*stats_.mutable_added_count())++;
+  build_finalized_.store(false);
 
   return 0;
 }

@@ -100,11 +100,11 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 // ============================================================================
 // refine_graph: Full-graph Vamana refinement pass.
 //
-// DiskANN/ParlayANN-style Vamana construction improves graph quality by running
-// an additional pass after all points are visible. For each point we search the
-// current graph, merge those candidates with its existing out-neighbors, prune,
-// and repair reverse links. Callers can invoke this with alpha=1.0 followed by
-// the configured alpha for a two-stage build.
+// DiskANN/ParlayANN-style Vamana construction improves graph quality by
+// revisiting every point after the alpha=1.0 initial graph pass. For each point
+// we search the current graph, merge those candidates with its existing
+// out-neighbors, prune at the configured target alpha, and repair reverse
+// links.
 // ============================================================================
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {

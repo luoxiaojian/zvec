@@ -44,6 +44,13 @@ class IndexStreamer : public IndexRunner {
   //! Flush index
   virtual int flush(uint64_t check_point) = 0;
 
+  //! Finalize a completed build before persistence. Streaming indexes that
+  //! need a whole-graph post-build phase override this hook. The default is a
+  //! no-op so existing streamers keep their current merge/flush behavior.
+  virtual int finalize_build(void) {
+    return 0;
+  }
+
   //! Close index
   virtual int close(void) = 0;
 

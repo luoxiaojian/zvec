@@ -1073,6 +1073,17 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to reduce");
     return core::IndexError_Runtime;
   }
+  // All source vectors are now present in the target streamer. Give streaming
+  // graph indexes a single pre-persistence finalization point (Vamana uses it
+  // for the optional configured-alpha second graph pass).
+  if (streamer_ != nullptr) {
+    int ret = streamer_->finalize_build();
+    if (ret != 0) {
+      LOG_ERROR("Failed to finalize merged index, err: %s",
+                core::IndexError::What(ret));
+      return ret;
+    }
+  }
   PersistTrainedMetaToStreamer(proxima_index_meta_, streamer_);
   is_trained_ = true;
   return 0;
