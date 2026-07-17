@@ -14,7 +14,6 @@
 
 #include "python_collection.h"
 
-#include "zvec/db/ann_bench_timer.h"
 #include <cstring>
 #include <limits>
 #include <pybind11/numpy.h>
@@ -405,26 +404,10 @@ void ZVecPyCollection::bind_dql_methods(
             int64_t *out_ptr = output.mutable_data();
             {
               py::gil_scoped_release release;
-              zvec::ScopedTimer _t(1);
               self.AnnBenchSearchFast(ptr, topk, out_ptr);
             }
           },
           py::arg("vector"), py::arg("output"))
-      .def(
-          "ann_bench_timer_reset",
-          [](const Collection &) { zvec::AnnBenchTimer::reset(); })
-      .def(
-          "ann_bench_timer_get_ns",
-          [](const Collection &, int slot) {
-            return zvec::AnnBenchTimer::get_ns(slot);
-          },
-          py::arg("slot"))
-      .def(
-          "ann_bench_timer_get_count",
-          [](const Collection &, int slot) {
-            return zvec::AnnBenchTimer::get_count(slot);
-          },
-          py::arg("slot"))
       // Batch version of fast_query_doc_ids_only: process all queries in a
       // single C++ loop with the GIL released, eliminating per-query Python
       // dispatch overhead. Input: (nq, dim) array. Output: (nq, topk) int64.

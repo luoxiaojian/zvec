@@ -14,8 +14,6 @@
 #include "hnsw_algorithm.h"
 #include <type_traits>
 
-#include "zvec/db/ann_bench_timer.h"
-
 namespace zvec {
 namespace core {
 
@@ -463,13 +461,10 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
     const bool avx2_ok =
         zvec::ailego::internal::CpuFeatures::static_flags_.AVX2;
 
-    {
-      zvec::ScopedTimer _t(3);
-      HnswFastSearchRunner<EntityType>{entity,  dc,     ctx,  *entry_point,
-                                       *dist,   topk_v, ef_v, prefetch_lines,
-                                       avx2_ok, topk}
-          .run(ctx->visit_filter());
-    }
+    HnswFastSearchRunner<EntityType>{entity,  dc,     ctx,  *entry_point,
+                                     *dist,   topk_v, ef_v, prefetch_lines,
+                                     avx2_ok, topk}
+        .run(ctx->visit_filter());
   } else {
     auto filter = [](node_id_t) { return false; };
     dual_heap_search_neighbors<EntityType, MemBlockType>(

@@ -23,8 +23,6 @@
 #include <variant>
 #include <vector>
 
-#include "zvec/db/ann_bench_timer.h"
-
 #include <ailego/io/file_lock.h>
 #include <arrow/array.h>
 #include <arrow/chunked_array.h>
@@ -2287,7 +2285,6 @@ Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
 
 void CollectionImpl::AnnBenchSearchFast(const void *query_vector, int topk,
                                         int64_t *output_ids) const {
-  zvec::ScopedTimer _t(2);
   // Minimal hot path for ann-benchmarks: no locks, no validation.
   // Assumes: AnnBenchPrepare called (single segment), serial access.
 
