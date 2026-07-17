@@ -62,6 +62,49 @@ static inline const int32_t *tail(const void *ptr, size_t orig_dim) {
       reinterpret_cast<const uint8_t *>(ptr) + orig_dim);
 }
 
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+
+// Sign-extend 32 stored int8 values, subtract without int8 overflow, and use
+// VNNI's signed-word dot product to accumulate pairs of squared differences
+// into 16 int32 lanes.  The full stored range [-128, 127] produces differences
+// in [-255, 255], so every int16 product and two-product int32 lane is exact.
+static ailego_force_inline __m512i squared_diff_32(__m512i acc,
+                                                   const int8_t *lhs,
+                                                   const int8_t *rhs) {
+  const __m512i lhs16 = _mm512_cvtepi8_epi16(
+      _mm256_loadu_si256(reinterpret_cast<const __m256i *>(lhs)));
+  const __m512i rhs16 = _mm512_cvtepi8_epi16(
+      _mm256_loadu_si256(reinterpret_cast<const __m256i *>(rhs)));
+  const __m512i diff16 = _mm512_sub_epi16(lhs16, rhs16);
+  return _mm512_dpwssd_epi32(acc, diff16, diff16);
+}
+
+static ailego_force_inline __m512i squared_diff_masked_32(__m512i acc,
+                                                          const int8_t *lhs,
+                                                          const int8_t *rhs,
+                                                          __mmask32 mask) {
+  const __m512i lhs16 = _mm512_cvtepi8_epi16(
+      _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(lhs)));
+  const __m512i rhs16 = _mm512_cvtepi8_epi16(
+      _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(rhs)));
+  const __m512i diff16 = _mm512_sub_epi16(lhs16, rhs16);
+  return _mm512_dpwssd_epi32(acc, diff16, diff16);
+}
+
+// Widen before the horizontal sum.  A valid uint8 squared distance can exceed
+// INT32_MAX even at moderate dimensions (e.g. 65,536 * 255^2), so reducing as
+// int32 would silently wrap despite every individual accumulator lane being
+// in range.
+static ailego_force_inline int64_t reduce_add_epi32_to_int64(__m512i acc) {
+  const __m256i lo32 = _mm512_castsi512_si256(acc);
+  const __m256i hi32 = _mm512_extracti64x4_epi64(acc, 1);
+  const __m512i lo64 = _mm512_cvtepi32_epi64(lo32);
+  const __m512i hi64 = _mm512_cvtepi32_epi64(hi32);
+  return _mm512_reduce_add_epi64(_mm512_add_epi64(lo64, hi64));
+}
+
+#endif
+
 }  // namespace
 
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
@@ -74,12 +117,67 @@ void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
 
   const auto *lhs = reinterpret_cast<const int8_t *>(a);
   const auto *rhs = reinterpret_cast<const int8_t *>(b);
+
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+  // Four independent dependency chains cover 128 bytes per iteration.  Each
+  // VPDPWSSD lane receives two squares, whose maximum contribution is
+  // 2 * 255^2 = 130,050.  Flush every 8,192 unrolled iterations so each int32
+  // lane stays below 1.1 billion even for extremely long vectors.
+  constexpr size_t kBlockBytes = 32;
+  constexpr size_t kUnrolledBytes = 4 * kBlockBytes;
+  constexpr size_t kFlushIterations = 8192;
+
+  __m512i acc0 = _mm512_setzero_si512();
+  __m512i acc1 = _mm512_setzero_si512();
+  __m512i acc2 = _mm512_setzero_si512();
+  __m512i acc3 = _mm512_setzero_si512();
+  int64_t dist = 0;
+
+  size_t d = 0;
+  size_t iterations_since_flush = 0;
+  for (; d + kUnrolledBytes <= orig_dim; d += kUnrolledBytes) {
+    acc0 = squared_diff_32(acc0, lhs + d, rhs + d);
+    acc1 = squared_diff_32(acc1, lhs + d + 32, rhs + d + 32);
+    acc2 = squared_diff_32(acc2, lhs + d + 64, rhs + d + 64);
+    acc3 = squared_diff_32(acc3, lhs + d + 96, rhs + d + 96);
+
+    if (++iterations_since_flush == kFlushIterations) {
+      dist += reduce_add_epi32_to_int64(acc0);
+      dist += reduce_add_epi32_to_int64(acc1);
+      dist += reduce_add_epi32_to_int64(acc2);
+      dist += reduce_add_epi32_to_int64(acc3);
+      acc0 = _mm512_setzero_si512();
+      acc1 = _mm512_setzero_si512();
+      acc2 = _mm512_setzero_si512();
+      acc3 = _mm512_setzero_si512();
+      iterations_since_flush = 0;
+    }
+  }
+
+  for (; d + kBlockBytes <= orig_dim; d += kBlockBytes) {
+    acc0 = squared_diff_32(acc0, lhs + d, rhs + d);
+  }
+
+  if (d < orig_dim) {
+    const size_t remaining = orig_dim - d;
+    const __mmask32 mask =
+        static_cast<__mmask32>((uint32_t{1} << remaining) - 1);
+    acc0 = squared_diff_masked_32(acc0, lhs + d, rhs + d, mask);
+  }
+
+  dist += reduce_add_epi32_to_int64(acc0);
+  dist += reduce_add_epi32_to_int64(acc1);
+  dist += reduce_add_epi32_to_int64(acc2);
+  dist += reduce_add_epi32_to_int64(acc3);
+  *distance = static_cast<float>(dist);
+#else
   int64_t dist = 0;
   for (size_t i = 0; i < orig_dim; ++i) {
-    int diff = static_cast<int>(lhs[i]) - static_cast<int>(rhs[i]);
+    const int diff = static_cast<int>(lhs[i]) - static_cast<int>(rhs[i]);
     dist += diff * diff;
   }
   *distance = static_cast<float>(dist);
+#endif
 }
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))

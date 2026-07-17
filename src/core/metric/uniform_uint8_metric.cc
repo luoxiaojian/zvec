@@ -48,11 +48,22 @@ void UniformUint8StoredSquaredEuclidean(const void *a, const void *b,
   *distance = static_cast<float>(dist);
 }
 
+IndexMetric::MatrixDistance UniformUint8StoredDistance() {
+  static const IndexMetric::MatrixDistance distance = []() {
+    auto turbo_distance = turbo::get_distance_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUniformUint8);
+    return turbo_distance ? turbo_distance : UniformUint8StoredSquaredEuclidean;
+  }();
+  return distance;
+}
+
 void UniformUint8StoredSquaredEuclideanBatch(const void *const *vectors,
                                              const void *query, size_t n,
                                              size_t dim, float *distances) {
+  const auto distance = UniformUint8StoredDistance();
   for (size_t i = 0; i < n; ++i) {
-    UniformUint8StoredSquaredEuclidean(vectors[i], query, dim, distances + i);
+    distance(vectors[i], query, dim, distances + i);
   }
 }
 
@@ -169,18 +180,12 @@ class UniformUint8QueryMetric : public IndexMetric {
 class UniformUint8Metric : public UniformUint8QueryMetric {
  public:
   MatrixDistance distance(void) const override {
-    return UniformUint8StoredSquaredEuclidean;
+    return UniformUint8StoredDistance();
   }
 
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (m == 1 && n == 1) {
-      auto turbo_ret = turbo::get_distance_func(
-          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kUniformUint8);
-      if (turbo_ret) {
-        return turbo_ret;
-      }
-      return UniformUint8StoredSquaredEuclidean;
+      return UniformUint8StoredDistance();
     }
     return nullptr;
   }

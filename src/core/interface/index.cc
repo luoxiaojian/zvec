@@ -25,6 +25,95 @@ namespace zvec::core_interface {
 
 namespace {
 
+// A multipass view over merge-source providers. Unlike
+// MultiPassIndexHolder this holder does not materialize a second in-memory
+// copy of every FP32 vector; each converter pass creates fresh provider
+// iterators and walks sources in their original order.
+class MergeSourceIndexHolder final : public core::IndexHolder {
+ public:
+  class Iterator final : public core::IndexHolder::Iterator {
+   public:
+    explicit Iterator(const std::vector<core::IndexProvider::Pointer> &sources)
+        : sources_(sources) {
+      advance_to_valid_source();
+    }
+
+    const void *data() const override {
+      return source_iter_->data();
+    }
+
+    bool is_valid() const override {
+      return source_iter_ != nullptr && source_iter_->is_valid();
+    }
+
+    uint64_t key() const override {
+      return source_iter_->key();
+    }
+
+    void next() override {
+      if (source_iter_ != nullptr) {
+        source_iter_->next();
+      }
+      advance_to_valid_source();
+    }
+
+   private:
+    void advance_to_valid_source() {
+      while (source_iter_ == nullptr || !source_iter_->is_valid()) {
+        source_iter_.reset();
+        if (source_index_ >= sources_.size()) {
+          return;
+        }
+        source_iter_ = sources_[source_index_++]->create_iterator();
+      }
+    }
+
+    const std::vector<core::IndexProvider::Pointer> &sources_;
+    size_t source_index_{0};
+    core::IndexHolder::Iterator::Pointer source_iter_{};
+  };
+
+  MergeSourceIndexHolder(std::vector<core::IndexProvider::Pointer> sources,
+                         size_t dimension, size_t element_size)
+      : sources_(std::move(sources)),
+        dimension_(dimension),
+        element_size_(element_size) {
+    for (const auto &source : sources_) {
+      count_ += source->count();
+    }
+  }
+
+  size_t count() const override {
+    return count_;
+  }
+
+  size_t dimension() const override {
+    return dimension_;
+  }
+
+  core::IndexMeta::DataType data_type() const override {
+    return core::IndexMeta::DataType::DT_FP32;
+  }
+
+  size_t element_size() const override {
+    return element_size_;
+  }
+
+  bool multipass() const override {
+    return true;
+  }
+
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<Iterator>(sources_);
+  }
+
+ private:
+  std::vector<core::IndexProvider::Pointer> sources_{};
+  size_t count_{0};
+  size_t dimension_{0};
+  size_t element_size_{0};
+};
+
 int TrainConverterFromMergeSources(
     const core::IndexConverter::Pointer &converter,
     const std::vector<Index::Pointer> &indexes,
@@ -33,27 +122,18 @@ int TrainConverterFromMergeSources(
     return core::IndexError_InvalidArgument;
   }
 
-  auto holder = std::make_shared<core::MultiPassIndexHolder<
-      core::IndexMeta::DataType::DT_FP32>>(input_meta.dimension());
+  std::vector<core::IndexProvider::Pointer> sources;
+  sources.reserve(indexes.size());
   for (const auto &index : indexes) {
     auto provider = index->create_index_provider();
     if (!provider) {
       continue;
     }
-    auto iter = provider->create_iterator();
-    if (!iter) {
-      continue;
-    }
-    for (; iter->is_valid(); iter->next()) {
-      ailego::NumericalVector<float> vec(std::string(
-          static_cast<const char *>(iter->data()),
-          input_meta.dimension() * input_meta.unit_size()));
-      if (!holder->emplace(iter->key(), vec)) {
-        LOG_ERROR("Failed to emplace vector into training holder");
-        return core::IndexError_Runtime;
-      }
-    }
+    sources.emplace_back(std::move(provider));
   }
+  auto holder = std::make_shared<MergeSourceIndexHolder>(
+      std::move(sources), input_meta.dimension(),
+      input_meta.dimension() * input_meta.unit_size());
   if (holder->count() == 0) {
     LOG_ERROR("No vectors available to train converter");
     return core::IndexError_InvalidArgument;
