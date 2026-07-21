@@ -70,6 +70,13 @@ const void *VamanaStreamerEntity::get_vector(node_id_t id) const {
   return ptr;
 }
 
+const void *VamanaStreamerEntity::get_extra_values(node_id_t id) const {
+  if (extra_values_size() == 0) return nullptr;
+  const void *vector = get_vector(id);
+  return vector ? static_cast<const char *>(vector) + vector_data_size()
+                : nullptr;
+}
+
 int VamanaStreamerEntity::get_vector(const node_id_t id,
                                      IndexStorage::MemoryBlock &block) const {
   auto loc = get_vector_chunk_loc(id);
@@ -491,6 +498,8 @@ const VamanaEntity::Pointer VamanaStreamerEntity::clone() const {
       broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("VamanaStreamerEntity new failed");
+  } else {
+    entity->set_extra_values_size(extra_values_size());
   }
   return VamanaEntity::Pointer(entity);
 }
@@ -512,6 +521,8 @@ const VamanaEntity::Pointer VamanaMmapStreamerEntity::clone() const {
       broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("VamanaMmapStreamerEntity new failed");
+  } else {
+    entity->set_extra_values_size(extra_values_size());
   }
   return VamanaEntity::Pointer(entity);
 }
@@ -535,6 +546,7 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
     LOG_ERROR("VamanaContiguousStreamerEntity new failed");
     return VamanaEntity::Pointer();
   }
+  entity->set_extra_values_size(extra_values_size());
 
   // Share contiguous memory with the clone (zero-copy)
   entity->vector_memory_ = vector_memory_;
@@ -543,6 +555,9 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->graph_memory_ = graph_memory_;
   entity->graph_base_ = graph_base_;
   entity->graph_stride_ = graph_stride_;
+  entity->extra_values_memory_ = extra_values_memory_;
+  entity->extra_values_base_ = extra_values_base_;
+  entity->extra_values_stride_ = extra_values_stride_;
 
   return VamanaEntity::Pointer(entity);
 }
@@ -567,17 +582,22 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   vector_stride_ = 0;
   graph_memory_.reset();
   graph_base_ = nullptr;
+  extra_values_memory_.reset();
+  extra_values_base_ = nullptr;
+  extra_values_stride_ = 0;
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
 
   const size_t per_node = node_size();
   const size_t vec_size = vector_size();
+  const size_t extra_size = extra_values_size();
+  const size_t vector_body_size = vector_data_size();
 
   // Pad per-vector stride up to kVectorAlignment (64B) so every vector
   // starts on a cache-line boundary.
   vector_stride_ =
-      (vec_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
+      (vector_body_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
   // graph_stride = key + neighbors (everything except vector)
   graph_stride_ = sizeof(key_t) + neighbors_size();
 
@@ -604,7 +624,29 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
   graph_base_ = raw_graph;
 
-  // Split node data from chunks into vector / graph arrays.
+  size_t extra_values_memory_size = 0;
+  if (extra_size > 0) {
+    extra_values_stride_ = extra_size;
+    const size_t total_extra_values =
+        static_cast<size_t>(total_docs) * extra_values_stride_;
+    extra_values_memory_size = AlignHugePageSize(total_extra_values);
+    char *raw_extra_values = allocate_contiguous(extra_values_memory_size);
+    if (!raw_extra_values) {
+      vector_memory_.reset();
+      vector_base_ = nullptr;
+      vector_stride_ = 0;
+      graph_memory_.reset();
+      graph_base_ = nullptr;
+      graph_stride_ = 0;
+      extra_values_stride_ = 0;
+      return IndexError_Runtime;
+    }
+    extra_values_memory_.reset(raw_extra_values,
+                               ContiguousDeleter{extra_values_memory_size});
+    extra_values_base_ = raw_extra_values;
+  }
+
+  // Populate vector, extra-values, and graph columns from inline records.
   // Original node layout: [vector (vec_size) | key (8B) | neighbors]
   // Padding bytes in vector_base_ are left zero (anon mmap is zero-filled).
   const auto &chunks = node_chunks_;
@@ -622,9 +664,14 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
       const char *node_src = src + static_cast<size_t>(i) * per_node;
       size_t global_id = static_cast<size_t>(base_id + i);
 
-      // Copy vector to flat vector array at padded stride
+      // Copy vector body to the cache-line-aligned flat array.
       std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
-                  vec_size);
+                  vector_body_size);
+
+      if (extra_values_base_) {
+        std::memcpy(extra_values_base_ + global_id * extra_values_stride_,
+                    node_src + vector_body_size, extra_size);
+      }
 
       // Copy key + neighbors to graph array
       std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
@@ -634,11 +681,12 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
 
   LOG_INFO(
       "Built Vamana contiguous memory: "
-      "vector_mem=%zu graph_mem=%zu total_docs=%u "
-      "node_chunks=%zu vector_size=%zu vector_stride=%zu "
-      "(cache-line aligned to %zuB)",
-      vector_memory_size, graph_memory_size, total_docs, chunks.size(),
-      vec_size, vector_stride_, kVectorAlignment);
+      "vector_mem=%zu graph_mem=%zu extra_values_mem=%zu total_docs=%u "
+      "node_chunks=%zu vector_size=%zu body_size=%zu vector_stride=%zu "
+      "extra_values_size=%zu extra_values_stride=%zu (body aligned to %zuB)",
+      vector_memory_size, graph_memory_size, extra_values_memory_size,
+      total_docs, chunks.size(), vec_size, vector_body_size, vector_stride_,
+      extra_size, extra_values_stride_, kVectorAlignment);
 
   return 0;
 }

@@ -178,7 +178,7 @@ class HnswDistCalculator {
   void batch_dist(const void **vecs, size_t num, dist_t *distances) {
     compare_cnt_++;
 
-    batch_distance_(vecs, query_, num, dim_, distances);
+    batch_distance_(vecs, query_, num, dim_, distances, nullptr);
   }
 
   inline dist_t batch_dist(node_id_t id) {
@@ -198,7 +198,7 @@ class HnswDistCalculator {
       return 0.0f;
     }
     dist_t score = 0;
-    batch_distance_(&feat, query_, 1, dim_, &score);
+    batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
 
     return score;
   }

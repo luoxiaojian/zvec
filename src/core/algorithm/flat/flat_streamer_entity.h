@@ -178,7 +178,8 @@ class FlatStreamerEntity {
                                        const void **features, size_t fnum,
                                        float *out) const {
     if (batch_distance_) {
-      batch_distance_(features, query, fnum, index_meta_.dimension(), out);
+      batch_distance_(features, query, fnum, index_meta_.dimension(), out,
+                      nullptr);
       return;
     }
     for (size_t f = 0; f < fnum; ++f) {

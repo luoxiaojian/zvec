@@ -27,9 +27,8 @@ void uniform_squared_euclidean_int8_distance(const void *a, const void *b,
 // Batch version: compute squared Euclidean distance between `n` INT8 database
 // vectors and a single INT8 query.  No query preprocessing is required (unlike
 // the record_quantized path which needs int8→uint8 shifting for dpbusd).
-void uniform_squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                                   const void *query, size_t n,
-                                                   size_t dim,
-                                                   float *distances);
+void uniform_squared_euclidean_int8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values = nullptr);
 
 }  // namespace zvec::turbo::avx512_vnni

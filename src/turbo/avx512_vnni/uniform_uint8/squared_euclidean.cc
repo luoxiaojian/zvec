@@ -14,8 +14,13 @@
 
 // AVX512-VNNI optimized score for UNIFORM_UINT8.
 //
-// Stored record layout: [ dim int8 values = uint8(value) - 128 | int32 sum_sq ].
-// Query layout:         [ dim raw uint8 values                         | int32 sum_sq ].
+// Stored inline record layout:
+//   [ dim int8 values = uint8(value) - 128 | int32 sum_sq ]
+// Query layout:
+//   [ dim raw uint8 values | int32 sum_sq ]
+// Storage exposes vector bodies and optional extra values independently.
+// Contiguous 128D search stores them as a dense 128-byte body column and a
+// packed int32 sum_sq column; mmap may point into the original inline record.
 //
 // Build-time pairwise distance uses true L2 between two stored shifted vectors.
 // Search-time batch score drops the query-only constant from true uint8 L2:
@@ -27,9 +32,11 @@
 //
 // Batch kernel design (hot path for graph search):
 //   - 4 vectors per block, two-phase load/compute to maximize MLP
-//   - software prefetch of future vectors INCLUDING the tail cache line
-//     (the tail lives past the last 64B chunk, e.g. bytes 128..135 of a
-//     192B-strided record for dim=128, i.e. a third cache line)
+//   - the inline kernel prefetches future vectors INCLUDING the tail cache
+//     line (the tail lives at bytes 128..131 of a 192B-strided record for
+//     dim=128, i.e. a third cache line)
+//   - the extra-values 128D kernel consumes exactly two body cache lines plus
+//     the pointed-to sum_sq value, and reuses two query loads for the batch
 //   - no per-vector scalar epilogue: the 4 accumulators are reduced with a
 //     single SIMD 4-to-1 horizontal reduction, the 4 tails are gathered with
 //     SIMD, and the final distance formula is evaluated on int32x4 lanes:
@@ -60,6 +67,10 @@ static inline size_t original_dim(size_t dim) {
 static inline const int32_t *tail(const void *ptr, size_t orig_dim) {
   return reinterpret_cast<const int32_t *>(
       reinterpret_cast<const uint8_t *>(ptr) + orig_dim);
+}
+
+static ailego_force_inline int32_t load_extra_sum_sq(const void *extra_values) {
+  return *reinterpret_cast<const int32_t *>(extra_values);
 }
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
@@ -204,12 +215,54 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0,
                        _mm256_extracti128_si256(d, 1));
 }
 
-// Compute distances for exactly 4 vectors against the (already signed)
-// query. `prefetch_ptrs[j]`, when non-null, points to a future vector whose
-// full record (including the tail line) is prefetched.
+// SIFT hot path. Keep a fixed-size kernel that loads the two query cache lines
+// once per batch call and has no dimension loop or tail branch.
+static ailego_force_inline void uniform_sq_l2_uint8_extra_batch4_128(
+    const void *const *vectors, __m512i query0, __m512i query1,
+    const void *const *extra_values, float *distances) {
+  const auto *v0 = reinterpret_cast<const __m512i *>(vectors[0]);
+  const auto *v1 = reinterpret_cast<const __m512i *>(vectors[1]);
+  const auto *v2 = reinterpret_cast<const __m512i *>(vectors[2]);
+  const auto *v3 = reinterpret_cast<const __m512i *>(vectors[3]);
+
+  // Load all four first cache lines before issuing VNNI operations to expose
+  // four independent memory requests to the core.
+  const __m512i v00 = _mm512_loadu_si512(v0);
+  const __m512i v10 = _mm512_loadu_si512(v1);
+  const __m512i v20 = _mm512_loadu_si512(v2);
+  const __m512i v30 = _mm512_loadu_si512(v3);
+
+  __m512i a0 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v00);
+  __m512i a1 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v10);
+  __m512i a2 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v20);
+  __m512i a3 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v30);
+
+  const __m512i v01 = _mm512_loadu_si512(v0 + 1);
+  const __m512i v11 = _mm512_loadu_si512(v1 + 1);
+  const __m512i v21 = _mm512_loadu_si512(v2 + 1);
+  const __m512i v31 = _mm512_loadu_si512(v3 + 1);
+
+  a0 = _mm512_dpbusd_epi32(a0, query1, v01);
+  a1 = _mm512_dpbusd_epi32(a1, query1, v11);
+  a2 = _mm512_dpbusd_epi32(a2, query1, v21);
+  a3 = _mm512_dpbusd_epi32(a3, query1, v31);
+
+  const __m128i inner_products = reduce_add_4x16_epi32(a0, a1, a2, a3);
+  const __m128i norms = _mm_set_epi32(
+      load_extra_sum_sq(extra_values[3]), load_extra_sum_sq(extra_values[2]),
+      load_extra_sum_sq(extra_values[1]), load_extra_sum_sq(extra_values[0]));
+  const __m128i scores =
+      _mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1));
+  _mm_storeu_ps(distances, _mm_cvtepi32_ps(scores));
+}
+
+// Compute distances for exactly 4 vectors. In the ordinary layout the norm
+// follows each vector body; otherwise it is supplied by the corresponding
+// extra-values pointer. The template keeps that choice out of the hot stream.
+template <bool HasExtraValues>
 static ailego_force_inline void uniform_sq_l2_uint8_batch4(
-    const void *const *vectors, const uint8_t *raw_query,
-    size_t orig_dim, const void *const *prefetch_ptrs,
+    const void *const *vectors, const uint8_t *raw_query, size_t orig_dim,
+    const void *const *prefetch_ptrs, const void *const *extra_values,
     float *distances) {
   __m512i a0 = _mm512_setzero_si512();
   __m512i a1 = _mm512_setzero_si512();
@@ -241,13 +294,13 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     a3 = _mm512_dpbusd_epi32(a3, q, r3);
   }
 
-  // Prefetch the tail cache line of future vectors; the main loop above only
-  // covers full 64B chunks, and the 8-byte tail lands past them.
   for (int j = 0; j < 4; ++j) {
     if (prefetch_ptrs[j]) {
-      _mm_prefetch(
-          reinterpret_cast<const char *>(prefetch_ptrs[j]) + orig_dim,
-          _MM_HINT_T0);
+      if constexpr (!HasExtraValues) {
+        _mm_prefetch(
+            reinterpret_cast<const char *>(prefetch_ptrs[j]) + orig_dim,
+            _MM_HINT_T0);
+      }
     }
   }
 
@@ -269,19 +322,25 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     ip4 = _mm_load_si128(reinterpret_cast<const __m128i *>(tmp));
   }
 
-  __m128i sqs =
-      _mm_set_epi32(tail(v3, orig_dim)[0], tail(v2, orig_dim)[0],
-                    tail(v1, orig_dim)[0], tail(v0, orig_dim)[0]);
+  __m128i sqs;
+  if constexpr (HasExtraValues) {
+    sqs = _mm_set_epi32(
+        load_extra_sum_sq(extra_values[3]), load_extra_sum_sq(extra_values[2]),
+        load_extra_sum_sq(extra_values[1]), load_extra_sum_sq(extra_values[0]));
+  } else {
+    sqs = _mm_set_epi32(tail(v3, orig_dim)[0], tail(v2, orig_dim)[0],
+                        tail(v1, orig_dim)[0], tail(v0, orig_dim)[0]);
+  }
 
   __m128i dist = _mm_sub_epi32(sqs, _mm_slli_epi32(ip4, 1));
   _mm_storeu_ps(distances, _mm_cvtepi32_ps(dist));
 }
 
-// Single-vector path against the (already signed) query, used for the
-// n % 4 remainder of a batch.
+// Single-vector path used for the n % 4 remainder of a batch.
+template <bool HasExtraValues>
 static ailego_force_inline void uniform_sq_l2_uint8_single(
     const void *vector, const uint8_t *raw_query, size_t orig_dim,
-    float *distance) {
+    const void *extra_values, float *distance) {
   const auto *vec = reinterpret_cast<const int8_t *>(vector);
   __m512i acc = _mm512_setzero_si512();
   size_t d = 0;
@@ -296,18 +355,28 @@ static ailego_force_inline void uniform_sq_l2_uint8_single(
   for (; d < orig_dim; ++d) {
     dot += static_cast<int>(vec[d]) * static_cast<int>(raw_query[d]);
   }
-  const int32_t *vec_tail = tail(vector, orig_dim);
-  *distance = static_cast<float>(static_cast<int64_t>(vec_tail[0]) - 2 * dot);
+  const int32_t sum_sq = HasExtraValues ? load_extra_sum_sq(extra_values)
+                                        : tail(vector, orig_dim)[0];
+  *distance = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
 }
 
 }  // namespace
 
 #endif  // AVX512
 
+static void uniform_squared_euclidean_uint8_extra_batch_distance(
+    const void *const *vectors, const void *const *extra_values,
+    const void *query, size_t n, size_t dim, float *distances);
+
 template <bool QueryPreprocessed>
 void uniform_squared_euclidean_uint8_batch_distance_impl(
-    const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances) {
+    const void *const *vectors, const void *const *extra_values,
+    const void *query, size_t n, size_t dim, float *distances) {
+  if (extra_values != nullptr) {
+    uniform_squared_euclidean_uint8_extra_batch_distance(
+        vectors, extra_values, query, n, dim, distances);
+    return;
+  }
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const size_t orig_dim = original_dim(dim);
   if (orig_dim == 0) {
@@ -328,11 +397,12 @@ void uniform_squared_euclidean_uint8_batch_distance_impl(
       size_t pi = i + j + batch_size * prefetch_step;
       pf[j] = (pi < n) ? vectors[pi] : nullptr;
     }
-    uniform_sq_l2_uint8_batch4(&vectors[i], raw_query, orig_dim, pf,
-                               distances + i);
+    uniform_sq_l2_uint8_batch4<false>(&vectors[i], raw_query, orig_dim, pf,
+                                      nullptr, distances + i);
   }
   for (; i < n; ++i) {
-    uniform_sq_l2_uint8_single(vectors[i], raw_query, orig_dim, distances + i);
+    uniform_sq_l2_uint8_single<false>(vectors[i], raw_query, orig_dim, nullptr,
+                                      distances + i);
   }
 #else
   (void)vectors;
@@ -343,20 +413,71 @@ void uniform_squared_euclidean_uint8_batch_distance_impl(
 #endif
 }
 
-void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances) {
+static void uniform_squared_euclidean_uint8_extra_batch_distance(
+    const void *const *vectors, const void *const *extra_values,
+    const void *query, size_t n, size_t dim, float *distances) {
+  const size_t orig_dim = original_dim(dim);
+  if (orig_dim == 0 || extra_values == nullptr) {
+    return;
+  }
+
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+  static constexpr size_t batch_size = 4;
+
+  size_t i = 0;
+  if (orig_dim == 128) {
+    const __m512i query0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(raw_query));
+    const __m512i query1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(raw_query + 64));
+    for (; i + batch_size <= n; i += batch_size) {
+      uniform_sq_l2_uint8_extra_batch4_128(&vectors[i], query0, query1,
+                                           &extra_values[i], distances + i);
+    }
+    for (; i < n; ++i) {
+      uniform_sq_l2_uint8_single<true>(vectors[i], raw_query, orig_dim,
+                                       extra_values[i], distances + i);
+    }
+    return;
+  }
+
+  const void *pf[batch_size] = {nullptr, nullptr, nullptr, nullptr};
+  for (; i + batch_size <= n; i += batch_size) {
+    uniform_sq_l2_uint8_batch4<true>(&vectors[i], raw_query, orig_dim, pf,
+                                     &extra_values[i], distances + i);
+  }
+  for (; i < n; ++i) {
+    uniform_sq_l2_uint8_single<true>(vectors[i], raw_query, orig_dim,
+                                     extra_values[i], distances + i);
+  }
+#else
+  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+  for (size_t i = 0; i < n; ++i) {
+    const auto *vector = reinterpret_cast<const int8_t *>(vectors[i]);
+    int64_t dot = 0;
+    for (size_t d = 0; d < orig_dim; ++d) {
+      dot += static_cast<int>(vector[d]) * static_cast<int>(raw_query[d]);
+    }
+    const int32_t sum_sq = load_extra_sum_sq(extra_values[i]);
+    distances[i] = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
+  }
+#endif
+}
+
+void uniform_squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values) {
   uniform_squared_euclidean_uint8_batch_distance_impl<false>(
-      vectors, query, n, dim, distances);
+      vectors, extra_values, query, n, dim, distances);
 }
 
 #if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
 void uniform_squared_euclidean_uint8_preprocessed_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances) {
+    float *distances, const void *const *extra_values) {
   uniform_squared_euclidean_uint8_batch_distance_impl<true>(
-      vectors, query, n, dim, distances);
+      vectors, extra_values, query, n, dim, distances);
 }
 
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {

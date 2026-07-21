@@ -60,7 +60,8 @@ IndexMetric::MatrixDistance UniformUint8StoredDistance() {
 
 void UniformUint8StoredSquaredEuclideanBatch(const void *const *vectors,
                                              const void *query, size_t n,
-                                             size_t dim, float *distances) {
+                                             size_t dim, float *distances,
+                                             const void *const * /*extras*/) {
   const auto distance = UniformUint8StoredDistance();
   for (size_t i = 0; i < n; ++i) {
     distance(vectors[i], query, dim, distances + i);
@@ -80,11 +81,28 @@ void UniformUint8StoredQueryScore(const void *stored, const void *query,
   *distance = static_cast<float>(static_cast<int64_t>(lhs_tail[0]) - 2 * dot);
 }
 
-void UniformUint8StoredQueryScoreBatch(
-    const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances) {
+void UniformUint8StoredQueryScoreBatch(const void *const *vectors,
+                                       const void *query, size_t n, size_t dim,
+                                       float *distances,
+                                       const void *const *extra_values) {
+  if (!extra_values) {
+    for (size_t i = 0; i < n; ++i) {
+      UniformUint8StoredQueryScore(vectors[i], query, dim, distances + i);
+    }
+    return;
+  }
+
+  const size_t orig_dim = original_dim(dim);
+  const auto *rhs = reinterpret_cast<const uint8_t *>(query);
   for (size_t i = 0; i < n; ++i) {
-    UniformUint8StoredQueryScore(vectors[i], query, dim, distances + i);
+    const auto *lhs = reinterpret_cast<const int8_t *>(vectors[i]);
+    int64_t dot = 0;
+    for (size_t d = 0; d < orig_dim; ++d) {
+      dot += static_cast<int>(lhs[d]) * static_cast<int>(rhs[d]);
+    }
+    const int32_t sum_sq =
+        *reinterpret_cast<const int32_t *>(extra_values[i]);
+    distances[i] = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
   }
 }
 
@@ -150,6 +168,10 @@ class UniformUint8QueryMetric : public IndexMetric {
     return UniformUint8StoredQueryScoreBatch;
   }
 
+  size_t extra_values_size_per_vector(void) const override {
+    return kTailBytes;
+  }
+
   const ailego::Params &params(void) const override {
     return params_;
   }
@@ -192,6 +214,12 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
 
   MatrixBatchDistance batch_distance(void) const override {
     return UniformUint8StoredSquaredEuclideanBatch;
+  }
+
+  // Extra values are query-to-record metadata. Graph construction keeps using
+  // the symmetric stored-to-stored distance on the ordinary encoded record.
+  size_t extra_values_size_per_vector(void) const override {
+    return 0;
   }
 
   Pointer query_metric(void) const override {

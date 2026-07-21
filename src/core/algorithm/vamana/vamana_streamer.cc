@@ -283,6 +283,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   }
   add_distance_ = metric_->distance();
   add_batch_distance_ = metric_->batch_distance();
+  size_t extra_values_size = metric_->extra_values_size_per_vector();
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
 
@@ -290,7 +291,10 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   if (query_metric && query_metric->distance() && query_metric->batch_distance()) {
     search_distance_ = query_metric->distance();
     search_batch_distance_ = query_metric->batch_distance();
+    extra_values_size = std::max(
+        extra_values_size, query_metric->extra_values_size_per_vector());
   }
+  entity_->set_extra_values_size(extra_values_size);
 
   // Create algorithm based on entity storage mode
   switch (entity_->storage_mode()) {

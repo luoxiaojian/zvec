@@ -32,15 +32,14 @@ namespace zvec::turbo::avx512_vnni {
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 
-void uniform_squared_euclidean_uint8_batch_distance(const void *const *vectors,
-                                                    const void *query, size_t n,
-                                                    size_t dim,
-                                                    float *distances);
+void uniform_squared_euclidean_uint8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values = nullptr);
 
 #if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
 void uniform_squared_euclidean_uint8_preprocessed_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances);
+    float *distances, const void *const *extra_values = nullptr);
 
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim);
 #endif

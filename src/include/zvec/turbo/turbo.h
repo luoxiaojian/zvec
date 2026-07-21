@@ -27,8 +27,9 @@ namespace zvec::turbo {
 
 using DistanceFunc =
     std::function<void(const void *m, const void *q, size_t dim, float *out)>;
-using BatchDistanceFunc = std::function<void(
-    const void **m, const void *q, size_t num, size_t dim, float *out)>;
+using BatchDistanceFunc =
+    std::function<void(const void **m, const void *q, size_t num, size_t dim,
+                       float *out, const void **extra_values)>;
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 

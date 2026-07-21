@@ -35,7 +35,8 @@ struct BaseDistance {
 
   // If Distance has ComputeBatch, use it; otherwise fall back to _ComputeBatch.
   static inline void ComputeBatch(const ValueType **m, const ValueType *q,
-                                  size_t num, size_t dim, float *out) {
+                                  size_t num, size_t dim, float *out,
+                                  const void ** /*extra_values*/ = nullptr) {
     if constexpr (std::is_same_v<DistanceType<ValueType, 1, 1>,
                                  CosineDistanceMatrix<ValueType, 1, 1>>) {
       return DistanceBatch::CosineDistanceBatch<

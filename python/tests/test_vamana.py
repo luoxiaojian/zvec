@@ -72,6 +72,7 @@ DEFAULT_SATURATE_GRAPH = False
 def _build_schema(
     name: str,
     *,
+    dimension: int = DIMENSION,
     metric_type: MetricType = MetricType.IP,
     quantize_type: QuantizeType = QuantizeType.UNDEFINED,
     max_degree: int = 32,
@@ -94,7 +95,7 @@ def _build_schema(
             VectorSchema(
                 "dense",
                 DataType.VECTOR_FP32,
-                dimension=DIMENSION,
+                dimension=dimension,
                 index_param=VamanaIndexParam(
                     metric_type=metric_type,
                     max_degree=max_degree,
@@ -502,43 +503,113 @@ class TestVamanaEndToEnd:
         finally:
             coll.destroy()
 
+    @pytest.mark.parametrize(
+        "use_contiguous_memory", [False, True], ids=["inline", "columns"]
+    )
     def test_uniform_uint8_optimize_then_query(
-        self, tmp_path_factory, collection_option
+        self, tmp_path_factory, collection_option, use_contiguous_memory
     ):
-        """UNIFORM_UINT8 uses a query metric with preprocessed query bytes."""
+        """Exercise the 128B vector + packed extra-values columns."""
+        dimension = 128
+        num_docs = 1100  # Exceed Vamana's brute-force threshold.
         schema = _build_schema(
-            "vamana_uniform_uint8_e2e",
+            f"vamana_uniform_uint8_e2e_{int(use_contiguous_memory)}",
+            dimension=dimension,
             metric_type=MetricType.L2,
             quantize_type=QuantizeType.UNIFORM_UINT8,
-            max_degree=16,
-            search_list_size=32,
-            use_contiguous_memory=True,
+            max_degree=64,
+            search_list_size=500,
+            use_contiguous_memory=use_contiguous_memory,
         )
-        path = tmp_path_factory.mktemp("zvec") / "vamana_uniform_uint8_e2e"
+        path = (
+            tmp_path_factory.mktemp("zvec")
+            / f"vamana_uniform_uint8_e2e_{int(use_contiguous_memory)}"
+        )
         coll = zvec.create_and_open(
             path=str(path), schema=schema, option=collection_option
         )
         try:
             docs = []
-            for i in range(NUM_DOCS):
-                vec = np.zeros(DIMENSION, dtype=np.float32)
-                vec[i % DIMENSION] = float(i % 255)
-                vec[(i * 7) % DIMENSION] += float((i * 3) % 255)
+            uint8_rng = np.random.default_rng(20260721)
+            for i in range(num_docs):
+                vec = uint8_rng.integers(0, 219, size=dimension).astype(np.float32)
                 docs.append(
                     Doc(id=str(i), fields={"id": i}, vectors={"dense": vec.tolist()})
                 )
-            for r in coll.insert(docs=docs):
-                assert r.ok()
+            for start in range(0, len(docs), 512):
+                for r in coll.insert(docs=docs[start : start + 512]):
+                    assert r.ok()
 
             coll.optimize()
 
-            for probe in (0, 13, 71, NUM_DOCS - 1):
+            for probe in (0, 13, 71, num_docs - 1):
                 ids = _query_topk(
-                    coll, docs[probe].vector("dense"), ef_search=128
+                    coll, docs[probe].vector("dense"), ef_search=num_docs
                 )
                 assert ids[0] == str(probe), (
                     f"expected self-recall at probe={probe}, got top-1 id={ids[0]} "
                     f"(top-{TOPK}={ids})"
                 )
+
+            # Also cover Vamana's filtered dual-heap path, which must consume
+            # the vector/extra-values representation like the fast pool path.
+            probe = 71
+            filtered = coll.query(
+                Query(
+                    field_name="dense",
+                    vector=docs[probe].vector("dense"),
+                    param=VamanaQueryParam(ef_search=num_docs),
+                ),
+                topk=TOPK,
+                filter=f"id >= {probe}",
+            )
+            assert filtered[0].id == str(probe)
+        finally:
+            coll.destroy()
+
+    @pytest.mark.parametrize(
+        "use_contiguous_memory", [False, True], ids=["inline", "columns"]
+    )
+    def test_uniform_uint8_extra_values_bruteforce(
+        self, tmp_path_factory, collection_option, use_contiguous_memory
+    ):
+        """The extra-values column is also used below the BF threshold."""
+        dimension = 128
+        num_docs = 64
+        schema = _build_schema(
+            f"vamana_uniform_uint8_extra_bf_{int(use_contiguous_memory)}",
+            dimension=dimension,
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT8,
+            use_contiguous_memory=use_contiguous_memory,
+        )
+        path = (
+            tmp_path_factory.mktemp("zvec")
+            / f"vamana_uniform_uint8_extra_bf_{int(use_contiguous_memory)}"
+        )
+        coll = zvec.create_and_open(
+            path=str(path), schema=schema, option=collection_option
+        )
+        try:
+            uint8_rng = np.random.default_rng(20260722)
+            docs = [
+                Doc(
+                    id=str(i),
+                    fields={"id": i},
+                    vectors={
+                        "dense": uint8_rng.integers(0, 219, size=dimension)
+                        .astype(np.float32)
+                        .tolist()
+                    },
+                )
+                for i in range(num_docs)
+            ]
+            for r in coll.insert(docs=docs):
+                assert r.ok()
+            coll.optimize()
+
+            for probe in (0, 13, num_docs - 1):
+                ids = _query_topk(coll, docs[probe].vector("dense"))
+                assert ids[0] == str(probe)
         finally:
             coll.destroy()

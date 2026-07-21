@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -85,10 +86,68 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float batch_results[2] = {};
-    batch_distance(vectors, rhs.data(), 2, encoded_dimension, batch_results);
+    batch_distance(vectors, rhs.data(), 2, encoded_dimension, batch_results,
+                   nullptr);
     EXPECT_EQ(ScalarReference(lhs, rhs, original_dimension), batch_results[0]);
     EXPECT_EQ(0.0f, batch_results[1]);
   }
+}
+
+TEST(UniformUint8Metric, ExtraValuesQueryDistanceMatchesInlineRecordExactly) {
+  constexpr size_t original_dimension = 128;
+  constexpr size_t encoded_dimension = original_dimension + kTailBytes;
+  constexpr size_t vector_count = 11;
+  constexpr size_t extra_values_count = 37;
+
+  auto metric = CreateUniformUint8Metric(original_dimension);
+  ASSERT_NE(nullptr, metric);
+  auto query_metric = metric->query_metric();
+  ASSERT_NE(nullptr, query_metric);
+
+  auto batch_distance = query_metric->batch_distance();
+  ASSERT_TRUE(static_cast<bool>(batch_distance));
+  EXPECT_EQ(kTailBytes, query_metric->extra_values_size_per_vector());
+
+  std::mt19937 generator(20260721);
+  std::uniform_int_distribution<int> raw_byte_distribution(0, 255);
+  std::vector<std::vector<int8_t>> records(
+      vector_count, std::vector<int8_t>(encoded_dimension, 0));
+  std::vector<int32_t> extra_values(extra_values_count, 0);
+  std::vector<const void *> extra_value_ptrs(vector_count);
+  std::vector<uint32_t> extra_value_ids = {31, 2,  19, 7,  13, 29,
+                                           3,  23, 5,  17, 11};
+  std::vector<const void *> inline_vectors(vector_count);
+  std::vector<const void *> body_vectors(vector_count);
+
+  for (size_t i = 0; i < vector_count; ++i) {
+    int32_t sum_sq = 0;
+    for (size_t d = 0; d < original_dimension; ++d) {
+      const int raw_value = raw_byte_distribution(generator);
+      records[i][d] = static_cast<int8_t>(raw_value - 128);
+      sum_sq += raw_value * raw_value;
+    }
+    std::memcpy(records[i].data() + original_dimension, &sum_sq,
+                sizeof(sum_sq));
+    extra_values[extra_value_ids[i]] = sum_sq;
+    extra_value_ptrs[i] = &extra_values[extra_value_ids[i]];
+    inline_vectors[i] = records[i].data();
+    body_vectors[i] = records[i].data();
+  }
+
+  std::vector<uint8_t> query(encoded_dimension, 0);
+  for (size_t d = 0; d < original_dimension; ++d) {
+    query[d] = static_cast<uint8_t>(raw_byte_distribution(generator));
+  }
+
+  std::vector<float> inline_scores(vector_count, 0.0f);
+  std::vector<float> extra_values_scores(vector_count, 0.0f);
+  batch_distance(inline_vectors.data(), query.data(), vector_count,
+                 encoded_dimension, inline_scores.data(), nullptr);
+  batch_distance(body_vectors.data(), query.data(), vector_count,
+                 encoded_dimension, extra_values_scores.data(),
+                 extra_value_ptrs.data());
+
+  EXPECT_EQ(inline_scores, extra_values_scores);
 }
 
 }  // namespace
