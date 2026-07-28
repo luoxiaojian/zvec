@@ -1149,6 +1149,14 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
       return core::IndexError_Runtime;
     }
   }
+  if (streamer_ != nullptr) {
+    int ret = streamer_->begin_bulk_build();
+    if (ret != 0) {
+      LOG_ERROR("Failed to begin bulk build, err: %s",
+                core::IndexError::What(ret));
+      return ret;
+    }
+  }
   if (reducer->reduce(filter) != 0) {
     LOG_ERROR("Failed to reduce");
     return core::IndexError_Runtime;

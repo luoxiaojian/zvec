@@ -111,7 +111,9 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       two_pass_build_enabled_);
 
   const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
+  bulk_build_active_ = false;
   build_finalized_.store(false);
+  stats_.mutable_attributes()->set("vamana_bulk_build_used", uint32_t{0});
   stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
   stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
   stats_.mutable_attributes()->set("vamana_initial_build_alpha",
@@ -150,6 +152,7 @@ int VamanaStreamer::cleanup(void) {
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
   two_pass_build_enabled_ = false;
+  bulk_build_active_ = false;
   build_finalized_.store(false);
 
   return 0;
@@ -288,11 +291,12 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   search_batch_distance_ = add_batch_distance_;
 
   auto query_metric = metric_->query_metric();
-  if (query_metric && query_metric->distance() && query_metric->batch_distance()) {
+  if (query_metric && query_metric->distance() &&
+      query_metric->batch_distance()) {
     search_distance_ = query_metric->distance();
     search_batch_distance_ = query_metric->batch_distance();
-    extra_values_size = std::max(
-        extra_values_size, query_metric->extra_values_size_per_vector());
+    extra_values_size = std::max(extra_values_size,
+                                 query_metric->extra_values_size_per_vector());
   }
   entity_->set_extra_values_size(extra_values_size);
 
@@ -375,12 +379,16 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
 
-  update_entry_point_to_medoid();
-
-  int ret = finalize_build_locked(false);
+  const bool regular_one_pass_build = !two_pass_build_enabled_ &&
+                                      !bulk_build_active_ &&
+                                      !build_finalized_.load();
+  int ret = finalize_build_locked(true);
   if (ret != 0) {
     LOG_ERROR("Vamana two-pass graph refine failed: %s", IndexError::What(ret));
     return ret;
+  }
+  if (regular_one_pass_build) {
+    update_entry_point_to_medoid();
   }
 
   meta_.set_searcher("VamanaSearcher", VamanaEntity::kRevision,
@@ -417,8 +425,32 @@ void VamanaStreamer::update_entry_point_to_medoid() {
   }
 }
 
+int VamanaStreamer::begin_bulk_build() {
+  if (state_ != STATE_OPENED) {
+    LOG_ERROR("Cannot begin Vamana bulk build before opening the streamer");
+    return IndexError_NoReady;
+  }
+
+  // begin_bulk_build() is called for every merge. Always leave an ineligible
+  // target in normal streaming mode, including a second merge into an index
+  // that previously used the bulk path.
+  bulk_build_active_ = false;
+  if (entity_->storage_mode() != VamanaStorageMode::kContiguous ||
+      entity_->doc_cnt() != 0) {
+    return 0;
+  }
+
+  bulk_build_active_ = true;
+  stats_.mutable_attributes()->set("vamana_bulk_build_used", uint32_t{1});
+  LOG_INFO(
+      "Vamana bulk build selected for empty contiguous merge target "
+      "(two_pass=%u)",
+      two_pass_build_enabled_);
+  return 0;
+}
+
 int VamanaStreamer::finalize_build() {
-  if (!two_pass_build_enabled_) {
+  if (!two_pass_build_enabled_ && !bulk_build_active_) {
     return 0;
   }
 
@@ -427,9 +459,75 @@ int VamanaStreamer::finalize_build() {
   return finalize_build_locked(true);
 }
 
-int VamanaStreamer::finalize_build_locked(bool update_medoid) {
-  if (!two_pass_build_enabled_ || build_finalized_.load()) {
+int VamanaStreamer::build_bulk_graph_locked() {
+  if (!bulk_build_active_) {
     return 0;
+  }
+
+  auto &contiguous_entity =
+      static_cast<VamanaContiguousStreamerEntity &>(*entity_);
+  int ret = contiguous_entity.build_contiguous_records_for_build();
+  if (ret != 0) {
+    LOG_ERROR("Failed to materialize Vamana bulk-build records, ret=%d", ret);
+    return ret;
+  }
+
+  VamanaEntity::Pointer entity_ref(entity_.get(), [](VamanaEntity *) {});
+  auto ctx =
+      std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
+  ctx->set_ef(ef_);
+  ctx->set_max_scan_limit(max_scan_limit_);
+  ctx->set_min_scan_limit(min_scan_limit_);
+  ctx->set_max_scan_ratio(max_scan_ratio_);
+  ctx->set_magic(magic_);
+  ctx->set_force_padding_topk(force_padding_topk_enabled_);
+  ctx->set_bruteforce_threshold(bruteforce_threshold_);
+
+  // The physical entity already contains every transformed vector, but graph
+  // construction must retain the same logical prefix growth as streaming
+  // insertion.
+  ret = ctx->init(VamanaContext::kStreamerContext, 0);
+  if (ret != 0) {
+    LOG_ERROR("Init Vamana bulk-build context failed");
+    return ret;
+  }
+  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+
+  const uint32_t total_docs = entity_->doc_cnt();
+  LOG_INFO("Vamana bulk graph pass: docs=%u alpha=%.2f", total_docs,
+           entity_->alpha());
+  for (node_id_t id = 0; id < total_docs; ++id) {
+    if (entity_->get_key(id) == kInvalidKey) continue;
+    ctx->clear();
+    ctx->check_need_adjuct_ctx(id);
+    ret = alg_->add_node(id, ctx.get());
+    if (ailego_unlikely(ret != 0)) {
+      LOG_ERROR("Vamana bulk graph pass failed at node %u", id);
+      return ret;
+    }
+    if (ailego_unlikely(ctx->error())) {
+      LOG_ERROR("Vamana bulk graph distance error at node %u", id);
+      return IndexError_Runtime;
+    }
+  }
+
+  // The bulk state covers only reducer ingestion and this deferred graph pass.
+  // Subsequent Add/Merge calls must immediately return to normal insertion.
+  bulk_build_active_ = false;
+  return 0;
+}
+
+int VamanaStreamer::finalize_build_locked(bool update_medoid) {
+  if (build_finalized_.load()) {
+    return 0;
+  }
+  if (!two_pass_build_enabled_ && !bulk_build_active_) {
+    return 0;
+  }
+
+  int ret = build_bulk_graph_locked();
+  if (ret != 0) {
+    return ret;
   }
 
   if (update_medoid) {
@@ -444,12 +542,21 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   if (entity_->doc_cnt() <= 1) {
     stats_.mutable_attributes()->set("vamana_refine_pass_count", pass_count);
     build_finalized_.store(true);
+    magic_ = IndexContext::GenerateMagic();
+    return 0;
+  }
+
+  if (!two_pass_build_enabled_) {
+    stats_.mutable_attributes()->set("vamana_refine_pass_count", pass_count);
+    stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
+    build_finalized_.store(true);
+    magic_ = IndexContext::GenerateMagic();
     return 0;
   }
 
   VamanaEntity::Pointer entity_ref(entity_.get(), [](VamanaEntity *) {});
-  auto ctx = std::make_unique<VamanaContext>(meta_.dimension(), metric_,
-                                             entity_ref);
+  auto ctx =
+      std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
   ctx->set_ef(ef_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
@@ -458,7 +565,7 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
 
-  int ret = ctx->init(VamanaContext::kStreamerContext);
+  ret = ctx->init(VamanaContext::kStreamerContext);
   if (ret != 0) {
     LOG_ERROR("Init Vamana refine context failed");
     return ret;
@@ -583,9 +690,11 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
   }
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
-  ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  if (!bulk_build_active_) {
+    ctx->clear();
+    ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+    ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -603,6 +712,12 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
     LOG_ERROR("Vamana streamer add vector failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
+  }
+
+  if (bulk_build_active_) {
+    (*stats_.mutable_added_count())++;
+    build_finalized_.store(false);
+    return 0;
   }
 
   ret = alg_->add_node(id, ctx);
@@ -656,9 +771,11 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
   }
   AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
 
-  ctx->clear();
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
-  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  if (!bulk_build_active_) {
+    ctx->clear();
+    ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+    ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  }
 
   if (metric_->support_train()) {
     const std::lock_guard<std::mutex> lk(mutex_);
@@ -675,6 +792,12 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
     LOG_ERROR("Vamana streamer add vector failed");
     (*stats_.mutable_discarded_count())++;
     return ret;
+  }
+
+  if (bulk_build_active_) {
+    (*stats_.mutable_added_count())++;
+    build_finalized_.store(false);
+    return 0;
   }
 
   ret = alg_->add_node(id, ctx);

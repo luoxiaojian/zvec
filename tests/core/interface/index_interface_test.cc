@@ -574,11 +574,11 @@ TEST(IndexInterface, Merge) {
   }
 }
 
-TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
+TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
   constexpr uint32_t kDimension = 16;
   constexpr uint32_t kVectorCount = 64;
-  const std::string source_name{"vamana_two_pass_source.index"};
-  const std::string target_name{"vamana_two_pass_target.index"};
+  const std::string source_name{"vamana_bulk_source.index"};
+  const std::string target_name{"vamana_bulk_target.index"};
 
   auto remove_files = [](const std::string &path) {
     zvec::test_util::RemoveTestFiles(path);
@@ -608,25 +608,34 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
     ASSERT_EQ(0, source->Add(data, i));
   }
 
-  auto run_merge = [&](bool two_pass_build) {
+  auto run_merge = [&](bool two_pass_build, bool use_contiguous_memory,
+                       QuantizerType quantizer_type) {
     remove_files(target_name);
-    auto target_param =
-        VamanaIndexParamBuilder()
-            .WithMetricType(MetricType::kL2sq)
-            .WithDataType(DataType::DT_FP32)
-            .WithDimension(kDimension)
-            .WithIsSparse(false)
-            .WithMaxDegree(16)
-            .WithSearchListSize(32)
-            .WithAlpha(1.5f)
-            .WithTwoPassBuild(two_pass_build)
-            .Build();
+    VamanaIndexParamBuilder target_builder;
+    target_builder.WithMetricType(MetricType::kL2sq)
+        .WithDataType(DataType::DT_FP32)
+        .WithDimension(kDimension)
+        .WithIsSparse(false)
+        .WithMaxDegree(16)
+        .WithSearchListSize(32)
+        .WithAlpha(1.5f)
+        .WithUseContiguousMemory(use_contiguous_memory)
+        .WithTwoPassBuild(two_pass_build);
+    if (quantizer_type != QuantizerType::kNone) {
+      target_builder.WithQuantizerParam(QuantizerParam(quantizer_type));
+    }
+    auto target_param = target_builder.Build();
     auto target = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, target);
     ASSERT_EQ(0, target->Open(
                      target_name, {StorageOptions::StorageType::kMMAP, true}));
     ASSERT_EQ(0, target->Merge({source}, IndexFilter()));
     ASSERT_EQ(kVectorCount, target->GetDocCount());
+
+    uint32_t bulk_build_used = 0;
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_bulk_build_used", &bulk_build_used));
+    EXPECT_EQ(use_contiguous_memory ? 1U : 0U, bulk_build_used);
 
     const uint32_t expected_refine_passes = two_pass_build ? 1U : 0U;
     const uint32_t expected_build_passes = two_pass_build ? 2U : 1U;
@@ -677,8 +686,10 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
     ASSERT_EQ(0, reopened->Close());
   };
 
-  run_merge(false);
-  run_merge(true);
+  run_merge(false, false, QuantizerType::kNone);
+  run_merge(false, true, QuantizerType::kUniformUint8);
+  run_merge(true, true, QuantizerType::kUniformUint8);
+  run_merge(true, true, QuantizerType::kInt8);
 
   ASSERT_EQ(0, source->Close());
   remove_files(source_name);

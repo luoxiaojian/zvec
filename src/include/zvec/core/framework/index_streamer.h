@@ -63,6 +63,14 @@ class IndexStreamer : public IndexRunner {
   //! paths (e.g. FlatStreamer serializes meta at dump time); streamers that
   //! rely on flush to persist trained meta override this.
   virtual void merge_trained_meta(const IndexMeta & /*trained_meta*/) {}
+
+  //! Enter an optional reducer-driven bulk-build lifecycle. Index::Merge calls
+  //! this after converter/reformer training and before transformed records are
+  //! written. Streamers decide eligibility internally; the default preserves
+  //! the normal streaming path.
+  virtual int begin_bulk_build(void) {
+    return 0;
+  }
 };
 
 }  // namespace core

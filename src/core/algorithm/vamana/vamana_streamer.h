@@ -35,6 +35,10 @@ class VamanaStreamer : public IndexStreamer {
   //! Merge converter/reformer params produced after deferred training.
   void merge_trained_meta(const IndexMeta &trained_meta) override;
 
+  //! Automatically enter the reducer-driven bulk path when the target is an
+  //! empty contiguous Vamana index.
+  int begin_bulk_build(void) override;
+
   //! Run the optional configured-alpha second graph pass exactly once.
   //! Called by Index::Merge before the final flush.
   int finalize_build(void) override;
@@ -133,6 +137,7 @@ class VamanaStreamer : public IndexStreamer {
 
   int setup_entity();
   int update_context(VamanaContext *ctx) const;
+  int build_bulk_graph_locked();
   int finalize_build_locked(bool update_medoid);
   void update_entry_point_to_medoid();
 
@@ -190,6 +195,7 @@ class VamanaStreamer : public IndexStreamer {
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
   bool two_pass_build_enabled_{false};
+  bool bulk_build_active_{false};
   std::atomic<bool> build_finalized_{false};
 
   ailego::SharedMutex shared_mutex_{};

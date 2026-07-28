@@ -108,9 +108,9 @@ class VamanaStreamerEntity : public VamanaEntity {
   }
 
   int init(size_t max_doc_cnt);
-  int flush(uint64_t checkpoint);
+  virtual int flush(uint64_t checkpoint);
   int open(IndexStorage::Pointer stg, uint64_t max_index_size, bool check_crc);
-  int close();
+  virtual int close();
 
   int set_index_meta(const IndexMeta &meta) const {
     return IndexHelper::SerializeToStorage(meta, broker_->storage().get());
@@ -620,19 +620,14 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   // Build contiguous memory from chunks after open.
   int build_contiguous_memory();
 
+  // Materialize the complete stored vector records and mutable graph columns
+  // after a reducer has loaded an empty target. Keeping the complete record is
+  // required for build-time query preprocessing and asymmetric metrics.
+  int build_contiguous_records_for_build();
+
   //! Degrade to mmap mode by releasing contiguous memory and falling back
-  //! to chunk-based access.
-  void degrade_to_mmap() {
-    vector_memory_.reset();
-    vector_base_ = nullptr;
-    vector_stride_ = 0;
-    graph_memory_.reset();
-    graph_base_ = nullptr;
-    extra_values_memory_.reset();
-    extra_values_base_ = nullptr;
-    extra_values_stride_ = 0;
-    LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
-  }
+  //! to chunk-based access. Mutable graph columns are persisted first.
+  int degrade_to_mmap();
 
   bool is_contiguous() const {
     return vector_base_ != nullptr;
@@ -645,23 +640,51 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return vector_stride_;
   }
 
-  int add_vector(key_t key, const void *vec, node_id_t *id) override {
-    if (ailego_unlikely(is_contiguous())) degrade_to_mmap();
-    return VamanaMmapStreamerEntity::add_vector(key, vec, id);
+  int add_vector(key_t key, const void *vec, node_id_t *id) override;
+
+  int add_vector_with_id(node_id_t id, const void *vec) override;
+
+  int flush(uint64_t checkpoint) override;
+  int close() override;
+
+  key_t get_key(node_id_t id) const override {
+    if (ailego_likely(key_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? key_base_[id] : id;
+    }
+    return VamanaMmapStreamerEntity::get_key(id);
   }
 
-  int add_vector_with_id(node_id_t id, const void *vec) override {
-    if (ailego_unlikely(is_contiguous())) degrade_to_mmap();
-    return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
+  const Neighbors get_neighbors(node_id_t id) const override {
+    if (ailego_likely(degree_base_ != nullptr && adjacency_base_ != nullptr &&
+                      id < graph_capacity_)) {
+      return Neighbors(
+          degree_base_[id],
+          adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_);
+    }
+    return VamanaMmapStreamerEntity::get_neighbors(id);
+  }
+
+  int update_neighbors(
+      node_id_t id,
+      const std::vector<std::pair<node_id_t, dist_t>> &neighbors) override;
+
+  void add_neighbor(node_id_t id, uint32_t size,
+                    node_id_t neighbor_id) override;
+
+  const void *get_vector(node_id_t id) const override {
+    if (ailego_likely(build_record_layout_ && vector_base_ != nullptr &&
+                      id < graph_capacity_)) {
+      return vector_base_ + static_cast<size_t>(id) * vector_stride_;
+    }
+    return VamanaMmapStreamerEntity::get_vector(id);
   }
 
   ailego_force_inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    if (ailego_likely(graph_base_ != nullptr)) {
-      // graph layout: [key (sizeof(key_t)) | NeighborsHeader + neighbors]
-      const char *ptr =
-          graph_base_ + static_cast<size_t>(id) * graph_stride_ + sizeof(key_t);
-      MmapMemoryBlock block(const_cast<char *>(ptr));
-      return TypedNeighbors(std::move(block));
+    if (ailego_likely(degree_base_ != nullptr && adjacency_base_ != nullptr &&
+                      id < graph_capacity_)) {
+      return TypedNeighbors(
+          degree_base_[id],
+          adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_);
     }
     return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
@@ -682,11 +705,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (ailego_likely(graph_base_ != nullptr)) {
-      if (!use_key_info_map_) return id;
-      // key is at offset 0 within each graph node
-      const char *ptr = graph_base_ + static_cast<size_t>(id) * graph_stride_;
-      return *reinterpret_cast<const key_t *>(ptr);
+    if (ailego_likely(key_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? key_base_[id] : id;
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }
@@ -707,6 +727,11 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline const void *get_extra_values_ptr(node_id_t id) const {
+    if (ailego_likely(build_record_layout_ && vector_base_ != nullptr)) {
+      if (extra_values_size() == 0) return nullptr;
+      return vector_base_ + static_cast<size_t>(id) * vector_stride_ +
+             vector_data_size();
+    }
     if (ailego_likely(extra_values_base_ != nullptr)) {
       if (ailego_likely(extra_values_stride_ == sizeof(int32_t))) {
         return extra_values_base_ + static_cast<size_t>(id) * sizeof(int32_t);
@@ -718,7 +743,10 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline const void *get_extra_values_ptr(
-      node_id_t id, const void * /*vector*/) const {
+      node_id_t id, const void *vector) const {
+    if (ailego_likely(build_record_layout_)) {
+      return get_extra_values_from_vector(vector);
+    }
     return get_extra_values_ptr(id);
   }
 
@@ -741,10 +769,17 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
   size_t vector_stride_{0};
 
-  //! Graph array: [key | neighbors] stored densely (stride = graph_stride_).
-  std::shared_ptr<char> graph_memory_{};
-  char *graph_base_{nullptr};
-  size_t graph_stride_{0};  // sizeof(key_t) + neighbors_size()
+  //! Structure-of-arrays graph layout. Adjacency has graph_capacity_ rows and
+  //! max_degree() node IDs per row.
+  std::shared_ptr<char> key_memory_{};
+  key_t *key_base_{nullptr};
+  std::shared_ptr<char> degree_memory_{};
+  uint32_t *degree_base_{nullptr};
+  std::shared_ptr<char> adjacency_memory_{};
+  node_id_t *adjacency_base_{nullptr};
+  size_t adjacency_stride_{0};
+  uint32_t graph_capacity_{0};
+  bool graph_columns_dirty_{false};
 
   //! Packed trailing metadata. Unlike vector bodies, extra-value records are
   //! not cache-line padded (4 bytes per UniformUint8 norm).
@@ -752,11 +787,18 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   char *extra_values_base_{nullptr};
   size_t extra_values_stride_{0};
 
+  //! True when vector_base_ contains complete stored records rather than the
+  //! split search-time vector-body layout.
+  bool build_record_layout_{false};
+
   //! Cache-line alignment used for per-vector stride in the flat array.
   static constexpr size_t kVectorAlignment = 64;
 
  private:
   static char *allocate_contiguous(size_t size);
+  void reset_contiguous_memory();
+  int allocate_graph_columns(uint32_t capacity);
+  int sync_graph_columns_to_chunks();
 };
 
 }  // namespace core

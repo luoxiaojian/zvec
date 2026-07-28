@@ -46,6 +46,10 @@ VamanaContext::~VamanaContext() {
 }
 
 int VamanaContext::init(ContextType type) {
+  return init(type, entity_->doc_cnt());
+}
+
+int VamanaContext::init(ContextType type, uint32_t streamer_doc_cnt) {
   int ret;
   uint32_t doc_cnt;
 
@@ -76,7 +80,7 @@ int VamanaContext::init(ContextType type) {
       break;
 
     case kStreamerContext:
-      doc_cnt = entity_->doc_cnt();
+      doc_cnt = streamer_doc_cnt;
       max_scan_num_ = compute_max_scan_num(doc_cnt);
       reserve_max_doc_cnt_ = doc_cnt + compute_reserve_cnt(doc_cnt);
       ret = visit_filter_.init(filter_mode_, reserve_max_doc_cnt_,
@@ -86,7 +90,7 @@ int VamanaContext::init(ContextType type) {
         return ret;
       }
       candidates_.limit(max_scan_num_);
-      check_need_adjuct_ctx();
+      check_need_adjuct_ctx(doc_cnt);
       break;
 
     default:

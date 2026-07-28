@@ -80,6 +80,7 @@ class VamanaContext : public IndexContext {
   int update(const ailego::Params &params) override;
 
   int init(ContextType type);
+  int init(ContextType type, uint32_t streamer_doc_cnt);
 
   int update_context(ContextType type, const IndexMeta &meta,
                      const IndexMetric::Pointer &metric,

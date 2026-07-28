@@ -552,12 +552,19 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->vector_memory_ = vector_memory_;
   entity->vector_base_ = vector_base_;
   entity->vector_stride_ = vector_stride_;
-  entity->graph_memory_ = graph_memory_;
-  entity->graph_base_ = graph_base_;
-  entity->graph_stride_ = graph_stride_;
+  entity->key_memory_ = key_memory_;
+  entity->key_base_ = key_base_;
+  entity->degree_memory_ = degree_memory_;
+  entity->degree_base_ = degree_base_;
+  entity->adjacency_memory_ = adjacency_memory_;
+  entity->adjacency_base_ = adjacency_base_;
+  entity->adjacency_stride_ = adjacency_stride_;
+  entity->graph_capacity_ = graph_capacity_;
+  entity->graph_columns_dirty_ = graph_columns_dirty_;
   entity->extra_values_memory_ = extra_values_memory_;
   entity->extra_values_base_ = extra_values_base_;
   entity->extra_values_stride_ = extra_values_stride_;
+  entity->build_record_layout_ = build_record_layout_;
 
   return VamanaEntity::Pointer(entity);
 }
@@ -576,15 +583,187 @@ char *VamanaContiguousStreamerEntity::allocate_contiguous(size_t size) {
   return static_cast<char *>(ptr);
 }
 
-int VamanaContiguousStreamerEntity::build_contiguous_memory() {
+void VamanaContiguousStreamerEntity::reset_contiguous_memory() {
   vector_memory_.reset();
   vector_base_ = nullptr;
   vector_stride_ = 0;
-  graph_memory_.reset();
-  graph_base_ = nullptr;
+  key_memory_.reset();
+  key_base_ = nullptr;
+  degree_memory_.reset();
+  degree_base_ = nullptr;
+  adjacency_memory_.reset();
+  adjacency_base_ = nullptr;
+  adjacency_stride_ = 0;
+  graph_capacity_ = 0;
+  graph_columns_dirty_ = false;
   extra_values_memory_.reset();
   extra_values_base_ = nullptr;
   extra_values_stride_ = 0;
+  build_record_layout_ = false;
+}
+
+int VamanaContiguousStreamerEntity::allocate_graph_columns(uint32_t capacity) {
+  key_memory_.reset();
+  key_base_ = nullptr;
+  degree_memory_.reset();
+  degree_base_ = nullptr;
+  adjacency_memory_.reset();
+  adjacency_base_ = nullptr;
+  adjacency_stride_ = 0;
+  graph_capacity_ = 0;
+  graph_columns_dirty_ = false;
+
+  if (capacity == 0) return 0;
+
+  const size_t key_bytes =
+      AlignHugePageSize(static_cast<size_t>(capacity) * sizeof(key_t));
+  const size_t degree_bytes =
+      AlignHugePageSize(static_cast<size_t>(capacity) * sizeof(uint32_t));
+  adjacency_stride_ = max_degree();
+  const size_t adjacency_bytes = AlignHugePageSize(
+      static_cast<size_t>(capacity) * adjacency_stride_ * sizeof(node_id_t));
+
+  char *raw_keys = allocate_contiguous(key_bytes);
+  if (raw_keys == nullptr) return IndexError_Runtime;
+  key_memory_.reset(raw_keys, ContiguousDeleter{key_bytes});
+  key_base_ = reinterpret_cast<key_t *>(raw_keys);
+
+  char *raw_degrees = allocate_contiguous(degree_bytes);
+  if (raw_degrees == nullptr) {
+    key_memory_.reset();
+    key_base_ = nullptr;
+    adjacency_stride_ = 0;
+    return IndexError_Runtime;
+  }
+  degree_memory_.reset(raw_degrees, ContiguousDeleter{degree_bytes});
+  degree_base_ = reinterpret_cast<uint32_t *>(raw_degrees);
+
+  char *raw_adjacency = allocate_contiguous(adjacency_bytes);
+  if (raw_adjacency == nullptr) {
+    key_memory_.reset();
+    key_base_ = nullptr;
+    degree_memory_.reset();
+    degree_base_ = nullptr;
+    adjacency_stride_ = 0;
+    return IndexError_Runtime;
+  }
+  adjacency_memory_.reset(raw_adjacency, ContiguousDeleter{adjacency_bytes});
+  adjacency_base_ = reinterpret_cast<node_id_t *>(raw_adjacency);
+  graph_capacity_ = capacity;
+
+  // Degree publishes the visible prefix of each adjacency row.
+  std::memset(degree_base_, 0,
+              static_cast<size_t>(capacity) * sizeof(uint32_t));
+  return 0;
+}
+
+int VamanaContiguousStreamerEntity::sync_graph_columns_to_chunks() {
+  if (!graph_columns_dirty_ || degree_base_ == nullptr ||
+      adjacency_base_ == nullptr) {
+    return 0;
+  }
+
+  for (node_id_t id = 0; id < graph_capacity_; ++id) {
+    auto loc = get_neighbor_chunk_loc(id);
+    const uint32_t degree =
+        std::min(degree_base_[id], static_cast<uint32_t>(max_degree()));
+    size_t written = loc.first->write(loc.second, &degree, sizeof(uint32_t));
+    if (ailego_unlikely(written != sizeof(uint32_t))) {
+      LOG_ERROR("Sync contiguous degree failed for node %u, ret=%zu", id,
+                written);
+      return IndexError_WriteData;
+    }
+    if (degree == 0) continue;
+
+    const node_id_t *row =
+        adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_;
+    const size_t row_bytes = static_cast<size_t>(degree) * sizeof(node_id_t);
+    written = loc.first->write(loc.second + sizeof(uint32_t), row, row_bytes);
+    if (ailego_unlikely(written != row_bytes)) {
+      LOG_ERROR("Sync contiguous adjacency failed for node %u, ret=%zu", id,
+                written);
+      return IndexError_WriteData;
+    }
+  }
+  graph_columns_dirty_ = false;
+  return 0;
+}
+
+int VamanaContiguousStreamerEntity::degrade_to_mmap() {
+  int ret = sync_graph_columns_to_chunks();
+  if (ret != 0) return ret;
+  reset_contiguous_memory();
+  LOG_INFO("Vamana contiguous entity degraded to mmap mode for insertion");
+  return 0;
+}
+
+int VamanaContiguousStreamerEntity::add_vector(key_t key, const void *vec,
+                                               node_id_t *id) {
+  if (ailego_unlikely(is_contiguous())) {
+    int ret = degrade_to_mmap();
+    if (ret != 0) return ret;
+  }
+  return VamanaMmapStreamerEntity::add_vector(key, vec, id);
+}
+
+int VamanaContiguousStreamerEntity::add_vector_with_id(node_id_t id,
+                                                       const void *vec) {
+  if (ailego_unlikely(is_contiguous())) {
+    int ret = degrade_to_mmap();
+    if (ret != 0) return ret;
+  }
+  return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
+}
+
+int VamanaContiguousStreamerEntity::flush(uint64_t checkpoint) {
+  int ret = sync_graph_columns_to_chunks();
+  if (ret != 0) return ret;
+  return VamanaMmapStreamerEntity::flush(checkpoint);
+}
+
+int VamanaContiguousStreamerEntity::close() {
+  int ret = sync_graph_columns_to_chunks();
+  if (ret != 0) return ret;
+  reset_contiguous_memory();
+  return VamanaMmapStreamerEntity::close();
+}
+
+int VamanaContiguousStreamerEntity::update_neighbors(
+    node_id_t id, const std::vector<std::pair<node_id_t, dist_t>> &neighbors) {
+  if (ailego_unlikely(degree_base_ == nullptr || adjacency_base_ == nullptr ||
+                      id >= graph_capacity_)) {
+    return VamanaMmapStreamerEntity::update_neighbors(id, neighbors);
+  }
+
+  const uint32_t count = std::min(static_cast<uint32_t>(neighbors.size()),
+                                  static_cast<uint32_t>(max_degree()));
+  node_id_t *row =
+      adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_;
+  for (uint32_t i = 0; i < count; ++i) {
+    row[i] = neighbors[i].first;
+  }
+  degree_base_[id] = count;
+  graph_columns_dirty_ = true;
+  return 0;
+}
+
+void VamanaContiguousStreamerEntity::add_neighbor(node_id_t id, uint32_t size,
+                                                  node_id_t neighbor_id) {
+  if (ailego_unlikely(degree_base_ == nullptr || adjacency_base_ == nullptr ||
+                      id >= graph_capacity_)) {
+    VamanaMmapStreamerEntity::add_neighbor(id, size, neighbor_id);
+    return;
+  }
+  if (size >= max_degree()) return;
+  node_id_t *row =
+      adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_;
+  row[size] = neighbor_id;
+  degree_base_[id] = size + 1;
+  graph_columns_dirty_ = true;
+}
+
+int VamanaContiguousStreamerEntity::build_contiguous_memory() {
+  reset_contiguous_memory();
 
   const uint32_t total_docs = doc_cnt();
   if (total_docs == 0) return 0;
@@ -598,8 +777,6 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   // starts on a cache-line boundary.
   vector_stride_ =
       (vector_body_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
-  // graph_stride = key + neighbors (everything except vector)
-  graph_stride_ = sizeof(key_t) + neighbors_size();
 
   // Allocate flat vector array (stride = vector_stride_, padded for 64B)
   const size_t total_vec_data =
@@ -610,19 +787,11 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   vector_memory_.reset(raw_vec, ContiguousDeleter{vector_memory_size});
   vector_base_ = raw_vec;
 
-  // Allocate graph array (stride = sizeof(key_t) + neighbors_size)
-  const size_t total_graph_data =
-      static_cast<size_t>(total_docs) * graph_stride_;
-  size_t graph_memory_size = AlignHugePageSize(total_graph_data);
-  char *raw_graph = allocate_contiguous(graph_memory_size);
-  if (!raw_graph) {
-    vector_memory_.reset();
-    vector_base_ = nullptr;
-    vector_stride_ = 0;
-    return IndexError_Runtime;
+  int ret = allocate_graph_columns(total_docs);
+  if (ret != 0) {
+    reset_contiguous_memory();
+    return ret;
   }
-  graph_memory_.reset(raw_graph, ContiguousDeleter{graph_memory_size});
-  graph_base_ = raw_graph;
 
   size_t extra_values_memory_size = 0;
   if (extra_size > 0) {
@@ -632,13 +801,7 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
     extra_values_memory_size = AlignHugePageSize(total_extra_values);
     char *raw_extra_values = allocate_contiguous(extra_values_memory_size);
     if (!raw_extra_values) {
-      vector_memory_.reset();
-      vector_base_ = nullptr;
-      vector_stride_ = 0;
-      graph_memory_.reset();
-      graph_base_ = nullptr;
-      graph_stride_ = 0;
-      extra_values_stride_ = 0;
+      reset_contiguous_memory();
       return IndexError_Runtime;
     }
     extra_values_memory_.reset(raw_extra_values,
@@ -653,16 +816,22 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
     const void *chunk_data = nullptr;
-    size_t data_size = chunks[chunk_idx]->data_size();
-    chunks[chunk_idx]->read(0, &chunk_data, data_size);
+    const size_t data_size = chunks[chunk_idx]->data_size();
+    const size_t read_size = chunks[chunk_idx]->read(0, &chunk_data, data_size);
+    if (ailego_unlikely(read_size != data_size || chunk_data == nullptr)) {
+      reset_contiguous_memory();
+      return IndexError_ReadData;
+    }
 
-    uint32_t base_id = chunk_idx * nodes_per_chunk;
-    uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
+    const uint32_t base_id = static_cast<uint32_t>(chunk_idx) * nodes_per_chunk;
+    if (base_id >= total_docs) break;
+    const uint32_t count_in_chunk =
+        std::min(nodes_per_chunk, total_docs - base_id);
 
     const char *src = static_cast<const char *>(chunk_data);
     for (uint32_t i = 0; i < count_in_chunk; ++i) {
       const char *node_src = src + static_cast<size_t>(i) * per_node;
-      size_t global_id = static_cast<size_t>(base_id + i);
+      const size_t global_id = static_cast<size_t>(base_id + i);
 
       // Copy vector body to the cache-line-aligned flat array.
       std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
@@ -673,21 +842,111 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
                     node_src + vector_body_size, extra_size);
       }
 
-      // Copy key + neighbors to graph array
-      std::memcpy(graph_base_ + global_id * graph_stride_, node_src + vec_size,
-                  graph_stride_);
+      key_base_[global_id] =
+          *reinterpret_cast<const key_t *>(node_src + vec_size);
+      const auto *neighbors = reinterpret_cast<const NeighborsHeader *>(
+          node_src + vec_size + sizeof(key_t));
+      const uint32_t degree = std::min(neighbors->neighbor_cnt,
+                                       static_cast<uint32_t>(max_degree()));
+      node_id_t *row = adjacency_base_ + global_id * adjacency_stride_;
+      if (degree > 0) {
+        std::memcpy(row, neighbors->neighbors,
+                    static_cast<size_t>(degree) * sizeof(node_id_t));
+      }
+      degree_base_[global_id] = degree;
     }
   }
 
+  const size_t key_bytes =
+      AlignHugePageSize(static_cast<size_t>(total_docs) * sizeof(key_t));
+  const size_t degree_bytes =
+      AlignHugePageSize(static_cast<size_t>(total_docs) * sizeof(uint32_t));
+  const size_t adjacency_bytes = AlignHugePageSize(
+      static_cast<size_t>(total_docs) * adjacency_stride_ * sizeof(node_id_t));
   LOG_INFO(
       "Built Vamana contiguous memory: "
-      "vector_mem=%zu graph_mem=%zu extra_values_mem=%zu total_docs=%u "
+      "vector_mem=%zu key_mem=%zu degree_mem=%zu adjacency_mem=%zu "
+      "extra_values_mem=%zu total_docs=%u "
       "node_chunks=%zu vector_size=%zu body_size=%zu vector_stride=%zu "
-      "extra_values_size=%zu extra_values_stride=%zu (body aligned to %zuB)",
-      vector_memory_size, graph_memory_size, extra_values_memory_size,
-      total_docs, chunks.size(), vec_size, vector_body_size, vector_stride_,
-      extra_size, extra_values_stride_, kVectorAlignment);
+      "extra_values_size=%zu extra_values_stride=%zu adjacency_stride=%zu",
+      vector_memory_size, key_bytes, degree_bytes, adjacency_bytes,
+      extra_values_memory_size, total_docs, chunks.size(), vec_size,
+      vector_body_size, vector_stride_, extra_size, extra_values_stride_,
+      adjacency_stride_);
 
+  return 0;
+}
+
+int VamanaContiguousStreamerEntity::build_contiguous_records_for_build() {
+  reset_contiguous_memory();
+
+  const uint32_t total_docs = doc_cnt();
+  if (total_docs == 0) return 0;
+
+  const size_t record_size = vector_size();
+  vector_stride_ =
+      (record_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
+  const size_t total_vector_data =
+      static_cast<size_t>(total_docs) * vector_stride_;
+  const size_t vector_memory_size = AlignHugePageSize(total_vector_data);
+  char *raw_vector = allocate_contiguous(vector_memory_size);
+  if (raw_vector == nullptr) {
+    vector_stride_ = 0;
+    return IndexError_Runtime;
+  }
+  vector_memory_.reset(raw_vector, ContiguousDeleter{vector_memory_size});
+  vector_base_ = raw_vector;
+
+  int ret = allocate_graph_columns(total_docs);
+  if (ret != 0) {
+    reset_contiguous_memory();
+    return ret;
+  }
+
+  const size_t per_node = node_size();
+  const size_t record_size_with_key = record_size + sizeof(key_t);
+  const auto &chunks = node_chunks_;
+  const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
+  for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
+    const void *chunk_data = nullptr;
+    const size_t data_size = chunks[chunk_idx]->data_size();
+    const size_t read_size = chunks[chunk_idx]->read(0, &chunk_data, data_size);
+    if (ailego_unlikely(read_size != data_size || chunk_data == nullptr)) {
+      reset_contiguous_memory();
+      return IndexError_ReadData;
+    }
+
+    const uint32_t base_id = static_cast<uint32_t>(chunk_idx) * nodes_per_chunk;
+    if (base_id >= total_docs) break;
+    const uint32_t count_in_chunk =
+        std::min(nodes_per_chunk, total_docs - base_id);
+    const char *src = static_cast<const char *>(chunk_data);
+    for (uint32_t i = 0; i < count_in_chunk; ++i) {
+      const size_t global_id = static_cast<size_t>(base_id + i);
+      const char *node_src = src + static_cast<size_t>(i) * per_node;
+      std::memcpy(vector_base_ + global_id * vector_stride_, node_src,
+                  record_size);
+      key_base_[global_id] =
+          *reinterpret_cast<const key_t *>(node_src + record_size);
+
+      const auto *neighbors = reinterpret_cast<const NeighborsHeader *>(
+          node_src + record_size_with_key);
+      const uint32_t degree = std::min(neighbors->neighbor_cnt,
+                                       static_cast<uint32_t>(max_degree()));
+      node_id_t *row = adjacency_base_ + global_id * adjacency_stride_;
+      if (degree > 0) {
+        std::memcpy(row, neighbors->neighbors,
+                    static_cast<size_t>(degree) * sizeof(node_id_t));
+      }
+      degree_base_[global_id] = degree;
+    }
+  }
+
+  build_record_layout_ = true;
+  LOG_INFO(
+      "Built Vamana bulk-build columns: docs=%u vector_stride=%zu "
+      "adjacency_stride=%zu",
+      total_docs, vector_stride_, adjacency_stride_);
   return 0;
 }
 
