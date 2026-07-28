@@ -46,6 +46,10 @@ class VamanaAlgorithmBase {
   // links, matching the second-stage Vamana/DiskANN construction pattern.
   virtual int refine_graph(VamanaContext *ctx, float alpha) = 0;
 
+  // Prune any construction-only reverse-link overflow rows back to
+  // max_degree. Used at graph-pass boundaries and before persistence.
+  virtual int flush_reverse_overflow(VamanaContext *ctx) = 0;
+
   virtual int init() = 0;
 };
 
@@ -84,6 +88,8 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // Full graph refinement pass.
   int refine_graph(VamanaContext *ctx, float alpha) override;
 
+  int flush_reverse_overflow(VamanaContext *ctx) override;
+
  private:
   // GreedySearch: starting from entry_point, greedily expand the closest
   // unvisited candidate until the search list is exhausted or scan limit
@@ -110,6 +116,10 @@ class VamanaAlgorithm : public VamanaAlgorithmBase {
   // pruning, and if so, prune neighbor_id's neighbor list.
   void reverse_update_neighbor(node_id_t id, node_id_t neighbor_id, dist_t dist,
                                VamanaContext *ctx);
+
+  bool add_neighbor_candidate(node_id_t center_id, node_id_t neighbor_id,
+                              uint32_t idx, const dist_t *stable_dists,
+                              TopkHeap *candidates, VamanaContext *ctx) const;
 
  private:
   VamanaAlgorithm(const VamanaAlgorithm &) = delete;

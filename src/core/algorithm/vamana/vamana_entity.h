@@ -277,6 +277,19 @@ class VamanaEntity {
     return nullptr;
   }
 
+  // Retrieve one cached center-to-neighbor distance. Construction entities
+  // may temporarily expose more than max_degree neighbors while batching
+  // reverse-prune updates, so the overflow slots need not be part of the
+  // persisted max_degree-wide distance row.
+  virtual bool get_neighbor_dist(node_id_t id, uint32_t idx,
+                                 dist_t *dist) const {
+    if (dist == nullptr || idx >= max_degree()) return false;
+    const dist_t *dists = get_neighbor_dists(id);
+    if (dists == nullptr) return false;
+    *dist = dists[idx];
+    return true;
+  }
+
   // Update all neighbor distances for node `id` from a prune result.
   virtual void update_neighbor_dists(
       node_id_t /*id*/,

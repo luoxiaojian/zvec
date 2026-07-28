@@ -200,6 +200,12 @@ class VamanaContext : public IndexContext {
   inline uint32_t pl() const {
     return pl_;
   }
+  inline void set_reverse_prune_batch_size(uint32_t v) {
+    reverse_prune_batch_size_ = std::max(1U, v);
+  }
+  inline uint32_t reverse_prune_batch_size() const {
+    return reverse_prune_batch_size_;
+  }
   inline void set_max_scan_ratio(float v) {
     max_scan_ratio_ = v;
   }
@@ -321,6 +327,7 @@ class VamanaContext : public IndexContext {
   uint32_t ef_{VamanaEntity::kDefaultEf};
   uint32_t po_{8};
   uint32_t pl_{0};
+  uint32_t reverse_prune_batch_size_{1};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};

@@ -561,6 +561,10 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->adjacency_stride_ = adjacency_stride_;
   entity->graph_capacity_ = graph_capacity_;
   entity->graph_columns_dirty_ = graph_columns_dirty_;
+  entity->overflow_distance_memory_ = overflow_distance_memory_;
+  entity->overflow_distance_base_ = overflow_distance_base_;
+  entity->overflow_distance_stride_ = overflow_distance_stride_;
+  entity->reverse_prune_batch_size_ = reverse_prune_batch_size_;
   entity->extra_values_memory_ = extra_values_memory_;
   entity->extra_values_base_ = extra_values_base_;
   entity->extra_values_stride_ = extra_values_stride_;
@@ -594,6 +598,9 @@ void VamanaContiguousStreamerEntity::reset_contiguous_memory() {
   adjacency_memory_.reset();
   adjacency_base_ = nullptr;
   adjacency_stride_ = 0;
+  overflow_distance_memory_.reset();
+  overflow_distance_base_ = nullptr;
+  overflow_distance_stride_ = 0;
   graph_capacity_ = 0;
   graph_columns_dirty_ = false;
   extra_values_memory_.reset();
@@ -619,9 +626,20 @@ int VamanaContiguousStreamerEntity::allocate_graph_columns(uint32_t capacity) {
       AlignHugePageSize(static_cast<size_t>(capacity) * sizeof(key_t));
   const size_t degree_bytes =
       AlignHugePageSize(static_cast<size_t>(capacity) * sizeof(uint32_t));
-  adjacency_stride_ = max_degree();
+  // Batch size 1 uses the original max_degree-wide row. Larger batches keep
+  // up to batch_size-1 newly added reverse neighbors visible to GreedySearch;
+  // reserve one additional slot as well so the construction capacity is
+  // exactly max_degree + batch_size.
+  adjacency_stride_ =
+      max_degree() +
+      (reverse_prune_batch_size_ > 1 ? reverse_prune_batch_size_ : 0);
   const size_t adjacency_bytes = AlignHugePageSize(
       static_cast<size_t>(capacity) * adjacency_stride_ * sizeof(node_id_t));
+  const size_t overflow_distance_bytes =
+      reverse_prune_batch_size_ > 1
+          ? AlignHugePageSize(static_cast<size_t>(capacity) *
+                              reverse_prune_batch_size_ * sizeof(dist_t))
+          : 0;
 
   char *raw_keys = allocate_contiguous(key_bytes);
   if (raw_keys == nullptr) return IndexError_Runtime;
@@ -649,6 +667,25 @@ int VamanaContiguousStreamerEntity::allocate_graph_columns(uint32_t capacity) {
   }
   adjacency_memory_.reset(raw_adjacency, ContiguousDeleter{adjacency_bytes});
   adjacency_base_ = reinterpret_cast<node_id_t *>(raw_adjacency);
+
+  if (overflow_distance_bytes > 0) {
+    char *raw_overflow_distances = allocate_contiguous(overflow_distance_bytes);
+    if (!raw_overflow_distances) {
+      key_memory_.reset();
+      key_base_ = nullptr;
+      degree_memory_.reset();
+      degree_base_ = nullptr;
+      adjacency_memory_.reset();
+      adjacency_base_ = nullptr;
+      adjacency_stride_ = 0;
+      return IndexError_Runtime;
+    }
+    overflow_distance_memory_.reset(raw_overflow_distances,
+                                    ContiguousDeleter{overflow_distance_bytes});
+    overflow_distance_base_ =
+        reinterpret_cast<dist_t *>(raw_overflow_distances);
+    overflow_distance_stride_ = reverse_prune_batch_size_;
+  }
   graph_capacity_ = capacity;
 
   // Degree publishes the visible prefix of each adjacency row.
@@ -665,8 +702,14 @@ int VamanaContiguousStreamerEntity::sync_graph_columns_to_chunks() {
 
   for (node_id_t id = 0; id < graph_capacity_; ++id) {
     auto loc = get_neighbor_chunk_loc(id);
-    const uint32_t degree =
-        std::min(degree_base_[id], static_cast<uint32_t>(max_degree()));
+    if (ailego_unlikely(degree_base_[id] > max_degree())) {
+      LOG_ERROR(
+          "Cannot persist Vamana construction overflow: node=%u degree=%u "
+          "max_degree=%zu",
+          id, degree_base_[id], max_degree());
+      return IndexError_Runtime;
+    }
+    const uint32_t degree = degree_base_[id];
     size_t written = loc.first->write(loc.second, &degree, sizeof(uint32_t));
     if (ailego_unlikely(written != sizeof(uint32_t))) {
       LOG_ERROR("Sync contiguous degree failed for node %u, ret=%zu", id,
@@ -754,12 +797,48 @@ void VamanaContiguousStreamerEntity::add_neighbor(node_id_t id, uint32_t size,
     VamanaMmapStreamerEntity::add_neighbor(id, size, neighbor_id);
     return;
   }
-  if (size >= max_degree()) return;
+  if (size >= adjacency_stride_) return;
   node_id_t *row =
       adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_;
   row[size] = neighbor_id;
   degree_base_[id] = size + 1;
   graph_columns_dirty_ = true;
+}
+
+bool VamanaContiguousStreamerEntity::get_neighbor_dist(node_id_t id,
+                                                       uint32_t idx,
+                                                       dist_t *dist) const {
+  if (dist == nullptr) return false;
+  const uint32_t max_deg = static_cast<uint32_t>(max_degree());
+  if (idx < max_deg) {
+    return VamanaStreamerEntity::get_neighbor_dist(id, idx, dist);
+  }
+  const uint32_t overflow_idx = idx - max_deg;
+  if (overflow_distance_base_ == nullptr || id >= graph_capacity_ ||
+      overflow_idx >= overflow_distance_stride_) {
+    return false;
+  }
+  *dist = overflow_distance_base_[static_cast<size_t>(id) *
+                                      overflow_distance_stride_ +
+                                  overflow_idx];
+  return true;
+}
+
+void VamanaContiguousStreamerEntity::set_neighbor_dist(node_id_t id,
+                                                       uint32_t idx,
+                                                       dist_t dist) {
+  const uint32_t max_deg = static_cast<uint32_t>(max_degree());
+  if (idx < max_deg) {
+    VamanaStreamerEntity::set_neighbor_dist(id, idx, dist);
+    return;
+  }
+  const uint32_t overflow_idx = idx - max_deg;
+  if (overflow_distance_base_ == nullptr || id >= graph_capacity_ ||
+      overflow_idx >= overflow_distance_stride_) {
+    return;
+  }
+  overflow_distance_base_[static_cast<size_t>(id) * overflow_distance_stride_ +
+                          overflow_idx] = dist;
 }
 
 int VamanaContiguousStreamerEntity::build_contiguous_memory() {
@@ -863,16 +942,21 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
       AlignHugePageSize(static_cast<size_t>(total_docs) * sizeof(uint32_t));
   const size_t adjacency_bytes = AlignHugePageSize(
       static_cast<size_t>(total_docs) * adjacency_stride_ * sizeof(node_id_t));
+  const size_t overflow_distance_bytes =
+      overflow_distance_stride_ > 0
+          ? AlignHugePageSize(static_cast<size_t>(total_docs) *
+                              overflow_distance_stride_ * sizeof(dist_t))
+          : 0;
   LOG_INFO(
       "Built Vamana contiguous memory: "
       "vector_mem=%zu key_mem=%zu degree_mem=%zu adjacency_mem=%zu "
-      "extra_values_mem=%zu total_docs=%u "
+      "overflow_distance_mem=%zu extra_values_mem=%zu total_docs=%u "
       "node_chunks=%zu vector_size=%zu body_size=%zu vector_stride=%zu "
       "extra_values_size=%zu extra_values_stride=%zu adjacency_stride=%zu",
       vector_memory_size, key_bytes, degree_bytes, adjacency_bytes,
-      extra_values_memory_size, total_docs, chunks.size(), vec_size,
-      vector_body_size, vector_stride_, extra_size, extra_values_stride_,
-      adjacency_stride_);
+      overflow_distance_bytes, extra_values_memory_size, total_docs,
+      chunks.size(), vec_size, vector_body_size, vector_stride_, extra_size,
+      extra_values_stride_, adjacency_stride_);
 
   return 0;
 }
@@ -943,10 +1027,24 @@ int VamanaContiguousStreamerEntity::build_contiguous_records_for_build() {
   }
 
   build_record_layout_ = true;
+  const size_t key_bytes =
+      AlignHugePageSize(static_cast<size_t>(total_docs) * sizeof(key_t));
+  const size_t degree_bytes =
+      AlignHugePageSize(static_cast<size_t>(total_docs) * sizeof(uint32_t));
+  const size_t adjacency_bytes = AlignHugePageSize(
+      static_cast<size_t>(total_docs) * adjacency_stride_ * sizeof(node_id_t));
+  const size_t overflow_distance_bytes =
+      overflow_distance_stride_ > 0
+          ? AlignHugePageSize(static_cast<size_t>(total_docs) *
+                              overflow_distance_stride_ * sizeof(dist_t))
+          : 0;
   LOG_INFO(
-      "Built Vamana bulk-build columns: docs=%u vector_stride=%zu "
-      "adjacency_stride=%zu",
-      total_docs, vector_stride_, adjacency_stride_);
+      "Built Vamana bulk-build contiguous columns: vector_mem=%zu key_mem=%zu "
+      "degree_mem=%zu adjacency_mem=%zu overflow_distance_mem=%zu docs=%u "
+      "record_size=%zu vector_stride=%zu adjacency_stride=%zu chunks=%zu",
+      vector_memory_size, key_bytes, degree_bytes, adjacency_bytes,
+      overflow_distance_bytes, total_docs, record_size, vector_stride_,
+      adjacency_stride_, chunks.size());
   return 0;
 }
 

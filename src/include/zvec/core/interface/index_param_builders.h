@@ -253,6 +253,11 @@ class VamanaIndexParamBuilder
     param->two_pass_build = two_pass_build;
     return *this;
   }
+  VamanaIndexParamBuilder &WithReversePruneBatchSize(
+      int reverse_prune_batch_size) {
+    param->reverse_prune_batch_size = reverse_prune_batch_size;
+    return *this;
+  }
 
   std::shared_ptr<VamanaIndexParam> Build() override {
     return param;

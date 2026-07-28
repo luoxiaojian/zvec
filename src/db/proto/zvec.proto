@@ -148,6 +148,9 @@ message VamanaIndexParams {
   // Controls the raw-vector Flat reference index used by refine.
   bool use_flat_contiguous_memory = 8;
   bool two_pass_build = 9;
+  // Number of pending reverse edges accumulated before RobustPrune runs.
+  // A value of 1 preserves the original immediate-prune behavior.
+  int32 reverse_prune_batch_size = 10;
 }
 
 message FtsIndexParams {

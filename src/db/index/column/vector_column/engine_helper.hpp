@@ -504,6 +504,8 @@ class ProximaEngineHelper {
             db_index_params->use_contiguous_memory());
         index_param_builder->WithTwoPassBuild(
             db_index_params->two_pass_build());
+        index_param_builder->WithReversePruneBatchSize(
+            db_index_params->reverse_prune_batch_size());
         // db_index_params->use_id_map() is intentionally ignored here:
         // db ensures id is consecutive (see _build_common_index_param), so
         // the engine-level use_id_map is forced to false in the common

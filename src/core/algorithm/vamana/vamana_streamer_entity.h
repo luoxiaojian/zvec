@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -625,6 +626,14 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   // required for build-time query preprocessing and asymmetric metrics.
   int build_contiguous_records_for_build();
 
+  // Configure the number of reverse-link overflows accumulated before a
+  // RobustPrune. A value of 1 preserves the original immediate 65->64 path.
+  // Values >1 reserve visible construction-only adjacency slots; the
+  // persisted graph still has max_degree rows.
+  void set_reverse_prune_batch_size(uint32_t batch_size) {
+    reverse_prune_batch_size_ = std::max(1U, batch_size);
+  }
+
   //! Degrade to mmap mode by releasing contiguous memory and falling back
   //! to chunk-based access. Mutable graph columns are persisted first.
   int degrade_to_mmap();
@@ -670,6 +679,10 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
   void add_neighbor(node_id_t id, uint32_t size,
                     node_id_t neighbor_id) override;
+
+  bool get_neighbor_dist(node_id_t id, uint32_t idx,
+                         dist_t *dist) const override;
+  void set_neighbor_dist(node_id_t id, uint32_t idx, dist_t dist) override;
 
   const void *get_vector(node_id_t id) const override {
     if (ailego_likely(build_record_layout_ && vector_base_ != nullptr &&
@@ -769,17 +782,27 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
   size_t vector_stride_{0};
 
-  //! Structure-of-arrays graph layout. Adjacency has graph_capacity_ rows and
-  //! max_degree() node IDs per row.
+  //! Structure-of-arrays graph layout. Each column is independently allocated
+  //! with huge pages. During ordinary operation the adjacency matrix has
+  //! max_degree() entries per row. Reverse-prune batching reserves a small
+  //! construction-only suffix in each row.
   std::shared_ptr<char> key_memory_{};
   key_t *key_base_{nullptr};
   std::shared_ptr<char> degree_memory_{};
   uint32_t *degree_base_{nullptr};
   std::shared_ptr<char> adjacency_memory_{};
   node_id_t *adjacency_base_{nullptr};
-  size_t adjacency_stride_{0};
+  size_t adjacency_stride_{0};  // node IDs per row, including build overflow
   uint32_t graph_capacity_{0};
   bool graph_columns_dirty_{false};
+
+  //! Construction-only distances for visible adjacency slots beyond
+  //! max_degree. Stable slots [0, max_degree) continue to use the persisted
+  //! neighbor-distance chunks.
+  std::shared_ptr<char> overflow_distance_memory_{};
+  dist_t *overflow_distance_base_{nullptr};
+  size_t overflow_distance_stride_{0};
+  uint32_t reverse_prune_batch_size_{1};
 
   //! Packed trailing metadata. Unlike vector bodies, extra-value records are
   //! not cache-line padded (4 bytes per UniformUint8 norm).

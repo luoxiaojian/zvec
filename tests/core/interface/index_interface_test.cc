@@ -815,6 +815,7 @@ TEST(IndexInterface, Serialize) {
                      .WithMaxDegree(32)
                      .WithSearchListSize(100)
                      .WithAlpha(1.2f)
+                     .WithReversePruneBatchSize(8)
                      .Build();
 
     std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
@@ -833,6 +834,10 @@ TEST(IndexInterface, Serialize) {
                 param->SerializeToJson());
     ASSERT_TRUE(deserialized_param->SerializeToJson(true) ==
                 param->SerializeToJson(true));
+    auto vamana_param =
+        std::dynamic_pointer_cast<VamanaIndexParam>(deserialized_param);
+    ASSERT_NE(nullptr, vamana_param.get());
+    ASSERT_EQ(8, vamana_param->reverse_prune_batch_size);
   }
 
   {

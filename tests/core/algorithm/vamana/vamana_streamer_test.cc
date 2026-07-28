@@ -467,6 +467,7 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
     ailego::Params extra;
     extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
     extra.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass_build);
+    extra.set(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE, 8U);
     extra.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 16U);
     extra.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 32U);
     extra.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
@@ -537,6 +538,23 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
     }
 
     ASSERT_EQ(0, streamer->flush(0UL));
+    ASSERT_EQ(0, streamer->close());
+
+    // Reopening proves that all construction-only overflow rows were pruned
+    // back to max_degree before the graph was persisted.
+    ASSERT_EQ(0, streamer->open(storage));
+    for (uint32_t key : {0U, 17U, kVectorCount - 1, kVectorCount + 1}) {
+      if (key < kVectorCount) {
+        for (size_t d = 0; d < kDim; ++d) {
+          vec[d] = static_cast<float>((key * 17 + d * 13) % 101);
+        }
+      } else {
+        for (size_t d = 0; d < kDim; ++d) {
+          vec[d] = static_cast<float>(1000 + key * 7 + d);
+        }
+      }
+      expect_top1(key, vec);
+    }
     ASSERT_EQ(0, streamer->close());
   }
 }

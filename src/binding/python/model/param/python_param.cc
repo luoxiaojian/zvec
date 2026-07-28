@@ -630,6 +630,10 @@ Attributes:
         ignored by the engine. Default is False.
     two_pass_build (bool): If True, run the full-graph two-pass Vamana refine
         before dumping the index. Default is False.
+    reverse_prune_batch_size (int): Number of pending reverse edges accumulated
+        before RobustPrune runs during bulk construction. ``1`` preserves the
+        original immediate-prune behavior; values greater than one reduce
+        repeated 65-to-64 pruning work. Valid range is 1 to 64. Default is 1.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -646,7 +650,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool>(),
+                    QuantizeType, bool, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -655,10 +659,11 @@ Examples:
            py::arg("saturate_graph") =
                core_interface::kDefaultVamanaSaturateGraph,
            py::arg("use_contiguous_memory") = false,
-           py::arg("use_id_map") = false,
-           py::arg("two_pass_build") = false,
+           py::arg("use_id_map") = false, py::arg("two_pass_build") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
-           py::arg("use_flat_contiguous_memory") = false)
+           py::arg("use_flat_contiguous_memory") = false,
+           py::arg("reverse_prune_batch_size") =
+               core_interface::kDefaultVamanaReversePruneBatchSize)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -689,6 +694,10 @@ Examples:
           &VamanaIndexParams::use_flat_contiguous_memory,
           "bool: Whether the raw-vector Flat reference index uses contiguous "
           "memory for refine.")
+      .def_property_readonly(
+          "reverse_prune_batch_size",
+          &VamanaIndexParams::reverse_prune_batch_size,
+          "int: Number of pending reverse edges per node before RobustPrune.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -704,6 +713,7 @@ Examples:
             dict["two_pass_build"] = self.two_pass_build();
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
+            dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -732,21 +742,24 @@ Examples:
                     ", \"use_flat_contiguous_memory\":" +
                     std::string(self.use_flat_contiguous_memory() ? "true"
                                                                   : "false") +
+                    ", \"reverse_prune_batch_size\":" +
+                    std::to_string(self.reverse_prune_batch_size()) +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
       .def(py::pickle(
           [](const VamanaIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.max_degree(),
-                                  self.search_list_size(), self.alpha(),
-                                  self.saturate_graph(),
-                                  self.use_contiguous_memory(),
-                                  self.use_id_map(), self.two_pass_build(),
-                                  self.quantize_type(),
-                                  self.use_flat_contiguous_memory());
+            return py::make_tuple(
+                self.metric_type(), self.max_degree(), self.search_list_size(),
+                self.alpha(), self.saturate_graph(),
+                self.use_contiguous_memory(), self.use_id_map(),
+                self.two_pass_build(), self.quantize_type(),
+                self.use_flat_contiguous_memory(),
+                self.reverse_prune_batch_size());
           },
           [](py::tuple t) {
-            if (t.size() != 8 && t.size() != 9 && t.size() != 10)
+            if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
+                t.size() != 11)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -761,11 +774,18 @@ Examples:
                   t[6].cast<bool>(), t[7].cast<bool>(),
                   t[8].cast<QuantizeType>());
             }
+            if (t.size() == 10) {
+              return std::make_shared<VamanaIndexParams>(
+                  t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
+                  t[6].cast<bool>(), t[7].cast<bool>(),
+                  t[8].cast<QuantizeType>(), t[9].cast<bool>());
+            }
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
-                t[6].cast<bool>(), t[7].cast<bool>(),
-                t[8].cast<QuantizeType>(), t[9].cast<bool>());
+                t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
+                t[9].cast<bool>(), t[10].cast<int>());
           }));
 
   // FlatIndexParams

@@ -117,7 +117,10 @@ VamanaIndexParams::OPtr ProtoConverter::FromPb(
       params_pb.saturate_graph(), params_pb.use_contiguous_memory(),
       params_pb.use_id_map(), params_pb.two_pass_build(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
-      params_pb.use_flat_contiguous_memory());
+      params_pb.use_flat_contiguous_memory(),
+      params_pb.reverse_prune_batch_size() == 0
+          ? core_interface::kDefaultVamanaReversePruneBatchSize
+          : params_pb.reverse_prune_batch_size());
 }
 
 proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
@@ -135,6 +138,7 @@ proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
   params_pb.set_use_flat_contiguous_memory(
       params->use_flat_contiguous_memory());
   params_pb.set_two_pass_build(params->two_pass_build());
+  params_pb.set_reverse_prune_batch_size(params->reverse_prune_batch_size());
   return params_pb;
 }
 

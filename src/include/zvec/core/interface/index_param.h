@@ -356,6 +356,7 @@ struct VamanaIndexParam : public BaseIndexParam {
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
   bool two_pass_build = false;
+  int reverse_prune_batch_size = kDefaultVamanaReversePruneBatchSize;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 

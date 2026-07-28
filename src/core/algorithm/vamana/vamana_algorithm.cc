@@ -123,7 +123,7 @@ int VamanaAlgorithm<EntityType>::refine_graph(VamanaContext *ctx, float alpha) {
       return ret;
     }
   }
-  return 0;
+  return flush_reverse_overflow(ctx);
 }
 
 // ============================================================================
@@ -549,9 +549,15 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
     node_id_t neighbor = current_neighbors[i];
     if (neighbor == id) continue;
     if (entity_.get_vector(neighbor) == nullptr) continue;
-    dist_t dist = cached_dists ? cached_dists[i]
-                               : ctx->dist_calculator().dist(query_vec,
-                                                              entity_.get_vector(neighbor));
+    dist_t dist;
+    if (cached_dists && i < entity_.max_degree()) {
+      dist = cached_dists[i];
+    } else if (entity_.get_neighbor_dist(id, i, &dist)) {
+      // Construction-only overflow distance.
+    } else {
+      dist = ctx->dist_calculator().dist(query_vec,
+                                         entity_.get_vector(neighbor));
+    }
     heap_emplace_unique(candidates, neighbor, dist);
   }
 
@@ -726,6 +732,26 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
 // exceeds max_degree, prune it using RobustPrune.
 // ============================================================================
 template <typename EntityType>
+bool VamanaAlgorithm<EntityType>::add_neighbor_candidate(
+    node_id_t center_id, node_id_t neighbor_id, uint32_t idx,
+    const dist_t *stable_dists, TopkHeap *candidates,
+    VamanaContext *ctx) const {
+  dist_t dist = 0.0f;
+  if (stable_dists != nullptr && idx < entity_.max_degree()) {
+    dist = stable_dists[idx];
+  } else if (!entity_.get_neighbor_dist(center_id, idx, &dist)) {
+    const void *center_vec = entity_.get_vector(center_id);
+    const void *neighbor_vec = entity_.get_vector(neighbor_id);
+    if (ailego_unlikely(center_vec == nullptr || neighbor_vec == nullptr)) {
+      return false;
+    }
+    dist = ctx->dist_calculator().dist(center_vec, neighbor_vec);
+  }
+  candidates->emplace(neighbor_id, dist);
+  return true;
+}
+
+template <typename EntityType>
 void VamanaAlgorithm<EntityType>::update_neighbors_and_reverse_links(
     node_id_t id,
     const std::vector<std::pair<node_id_t, dist_t>> &new_neighbors,
@@ -763,44 +789,66 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
     return;
   }
 
-  // Need to prune: collect current neighbors + new node into candidates
-  VamanaDistCalculator &dc = ctx->dist_calculator();
+  const uint32_t reverse_batch = std::max(1U, ctx->reverse_prune_batch_size());
+  const uint32_t prune_trigger = max_deg + reverse_batch;
+
+  // Keep up to batch_size-1 overflow reverse links visible to GreedySearch.
+  // The link that reaches the trigger participates directly in pruning, so
+  // the published degree never reaches max_degree + batch_size.
+  if (reverse_batch > 1 && current_size + 1 < prune_trigger) {
+    entity_.add_neighbor(neighbor_id, current_size, id);
+    entity_.set_neighbor_dist(neighbor_id, current_size, dist);
+    return;
+  }
 
   // Reuse update_heap from context instead of creating a new TopkHeap each time
   TopkHeap &prune_candidates = ctx->update_heap();
   prune_candidates.clear();
-  prune_candidates.limit(max_deg + 1);
+  prune_candidates.limit(current_size + 1);
 
-  // Add existing neighbors — use cached distances when available
   const dist_t *cached_dists = entity_.get_neighbor_dists(neighbor_id);
-  if (cached_dists != nullptr) {
-    // Fast path: read distances from storage, no recomputation needed
-    for (uint32_t i = 0; i < current_size; ++i) {
-      prune_candidates.emplace(current_neighbors[i], cached_dists[i]);
-    }
-  } else {
-    // Fallback: compute distances (first time or dist storage not loaded)
-    const void *neighbor_vec = entity_.get_vector(neighbor_id);
-    if (ailego_unlikely(neighbor_vec == nullptr)) return;
-    for (uint32_t i = 0; i < current_size; ++i) {
-      node_id_t nbr = current_neighbors[i];
-      const void *nbr_vec = entity_.get_vector(nbr);
-      if (ailego_unlikely(nbr_vec == nullptr)) continue;
-      dist_t nbr_dist = dc.dist(neighbor_vec, nbr_vec);
-      prune_candidates.emplace(nbr, nbr_dist);
-    }
+  for (uint32_t i = 0; i < current_size; ++i) {
+    add_neighbor_candidate(neighbor_id, current_neighbors[i], i, cached_dists,
+                           &prune_candidates, ctx);
   }
 
-  // Add the new reverse link
   prune_candidates.emplace(id, dist);
-
-  // RobustPrune from neighbor_id's perspective
   robust_prune(neighbor_id, prune_candidates, entity_.alpha(), max_deg, ctx);
 
-  // Update neighbor_id's neighbor list and distances
   const auto &prune_result = ctx->prune_result();
   entity_.update_neighbors(neighbor_id, prune_result);
   entity_.update_neighbor_dists(neighbor_id, prune_result);
+}
+
+template <typename EntityType>
+int VamanaAlgorithm<EntityType>::flush_reverse_overflow(VamanaContext *ctx) {
+  if (ctx == nullptr || ctx->reverse_prune_batch_size() <= 1) {
+    return 0;
+  }
+
+  const uint32_t max_deg = static_cast<uint32_t>(entity_.max_degree());
+  const uint32_t n = entity_.doc_cnt();
+  for (node_id_t id = 0; id < n; ++id) {
+    std::lock_guard<std::mutex> lock(lock_pool_[id & kLockMask]);
+    const Neighbors current_neighbors = entity_.get_neighbors(id);
+    const uint32_t current_size = current_neighbors.size();
+    if (current_size <= max_deg) continue;
+
+    TopkHeap &prune_candidates = ctx->update_heap();
+    prune_candidates.clear();
+    prune_candidates.limit(current_size);
+    const dist_t *cached_dists = entity_.get_neighbor_dists(id);
+    for (uint32_t i = 0; i < current_size; ++i) {
+      add_neighbor_candidate(id, current_neighbors[i], i, cached_dists,
+                             &prune_candidates, ctx);
+    }
+
+    robust_prune(id, prune_candidates, entity_.alpha(), max_deg, ctx);
+    const auto &prune_result = ctx->prune_result();
+    entity_.update_neighbors(id, prune_result);
+    entity_.update_neighbor_dists(id, prune_result);
+  }
+  return ctx->error() ? IndexError_Runtime : 0;
 }
 
 // Explicit template instantiation for all entity types

@@ -204,6 +204,12 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
   if (!omit_empty_value || two_pass_build) {
     json_obj.set("two_pass_build", ailego::JsonValue(two_pass_build));
   }
+  if (!omit_empty_value ||
+      reverse_prune_batch_size !=
+          static_cast<int>(kDefaultVamanaReversePruneBatchSize)) {
+    json_obj.set("reverse_prune_batch_size",
+                 ailego::JsonValue(reverse_prune_batch_size));
+  }
   return json_obj;
 }
 
@@ -245,6 +251,7 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
   DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
+  DESERIALIZE_VALUE_FIELD(json_obj, reverse_prune_batch_size);
 
   return true;
 }

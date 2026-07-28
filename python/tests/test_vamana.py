@@ -62,6 +62,7 @@ DEFAULT_SEARCH_LIST_SIZE = 100
 DEFAULT_ALPHA = 1.2
 DEFAULT_EF_SEARCH = 200
 DEFAULT_SATURATE_GRAPH = False
+DEFAULT_REVERSE_PRUNE_BATCH_SIZE = 1
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ def _build_schema(
     search_list_size: int = 64,
     alpha: float = 1.2,
     use_contiguous_memory: bool = False,
+    reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -103,6 +105,7 @@ def _build_schema(
                     alpha=alpha,
                     use_contiguous_memory=use_contiguous_memory,
                     quantize_type=quantize_type,
+                    reverse_prune_batch_size=reverse_prune_batch_size,
                 ),
             ),
         ],
@@ -157,6 +160,10 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is DEFAULT_SATURATE_GRAPH
         assert param.use_contiguous_memory is False
         assert param.use_id_map is False
+        assert (
+            param.reverse_prune_batch_size
+            == DEFAULT_REVERSE_PRUNE_BATCH_SIZE
+        )
         assert param.quantize_type == QuantizeType.UNDEFINED
 
     def test_custom_construction(self):
@@ -169,6 +176,7 @@ class TestVamanaIndexParamSurface:
             use_contiguous_memory=True,
             use_id_map=False,
             quantize_type=QuantizeType.INT8,
+            reverse_prune_batch_size=8,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -178,6 +186,7 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is True
         assert param.use_contiguous_memory is True
         assert param.use_id_map is False
+        assert param.reverse_prune_batch_size == 8
         assert param.quantize_type == QuantizeType.INT8
 
     def test_to_dict_includes_all_fields(self):
@@ -190,6 +199,7 @@ class TestVamanaIndexParamSurface:
             use_contiguous_memory=True,
             use_id_map=False,
             quantize_type=QuantizeType.FP16,
+            reverse_prune_batch_size=4,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -200,6 +210,7 @@ class TestVamanaIndexParamSurface:
         assert data["saturate_graph"] is True
         assert data["use_contiguous_memory"] is True
         assert data["use_id_map"] is False
+        assert data["reverse_prune_batch_size"] == 4
         assert data["quantize_type"] == "FP16"
 
     def test_repr_contains_key_fields(self):
@@ -211,6 +222,7 @@ class TestVamanaIndexParamSurface:
                 alpha=1.4,
                 saturate_graph=True,
                 use_contiguous_memory=True,
+                reverse_prune_batch_size=8,
             )
         )
         # Spot-check the most diagnostic fields are rendered.
@@ -221,6 +233,7 @@ class TestVamanaIndexParamSurface:
         assert "alpha" in text
         assert "saturate_graph" in text and "true" in text
         assert "use_contiguous_memory" in text and "true" in text
+        assert "reverse_prune_batch_size" in text and "8" in text
 
     @pytest.mark.parametrize(
         "field, kwargs",
@@ -231,6 +244,7 @@ class TestVamanaIndexParamSurface:
             ("saturate_graph", dict(saturate_graph=True)),
             ("use_contiguous_memory", dict(use_contiguous_memory=True)),
             ("use_id_map", dict(use_id_map=True)),
+            ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
         ],
     )
     def test_readonly_properties(self, field, kwargs):
@@ -252,6 +266,7 @@ class TestVamanaIndexParamSurface:
             use_contiguous_memory=True,
             use_id_map=False,
             quantize_type=QuantizeType.INT8,
+            reverse_prune_batch_size=8,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -262,6 +277,7 @@ class TestVamanaIndexParamSurface:
         assert restored.saturate_graph is True
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
+        assert restored.reverse_prune_batch_size == 8
         assert restored.quantize_type == QuantizeType.INT8
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
@@ -383,6 +399,7 @@ class TestVamanaEndToEnd:
             search_list_size=80,
             alpha=1.3,
             use_contiguous_memory=True,
+            reverse_prune_batch_size=8,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
@@ -397,6 +414,7 @@ class TestVamanaEndToEnd:
             assert ip.search_list_size == 80
             assert ip.alpha == pytest.approx(1.3)
             assert ip.use_contiguous_memory is True
+            assert ip.reverse_prune_batch_size == 8
         finally:
             coll.destroy()
 

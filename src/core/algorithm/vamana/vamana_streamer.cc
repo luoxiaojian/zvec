@@ -41,6 +41,13 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_VAMANA_STREAMER_ALPHA, &alpha_);
   params.get(PARAM_VAMANA_STREAMER_MAX_OCCLUSION_SIZE, &max_occlusion_size_);
   params.get(PARAM_VAMANA_STREAMER_EF, &ef_);
+  params.get(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE,
+             &reverse_prune_batch_size_);
+  if (reverse_prune_batch_size_ == 0 || reverse_prune_batch_size_ > 64) {
+    LOG_ERROR("Vamana reverse prune batch size must be in [1, 64], got %u",
+              reverse_prune_batch_size_);
+    return IndexError_InvalidArgument;
+  }
   params.get(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD,
              &bruteforce_threshold_);
   params.get(PARAM_VAMANA_STREAMER_MAX_SCAN_RATIO, &max_scan_ratio_);
@@ -103,12 +110,13 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "docsSoftLimit=%zu maxDegree=%u searchListSize=%u alpha=%.2f "
       "maxOcclusionSize=%u ef=%u maxScanRatio=%.3f minScanLimit=%zu "
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
-      "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u",
+      "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u "
+      "reversePruneBatchSize=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
       get_vector_enabled_, force_padding_topk_enabled_,
-      two_pass_build_enabled_);
+      two_pass_build_enabled_, reverse_prune_batch_size_);
 
   const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
   bulk_build_active_ = false;
@@ -143,6 +151,7 @@ int VamanaStreamer::cleanup(void) {
   max_occlusion_size_ = VamanaEntity::kDefaultMaxOcclusionSize;
   alpha_ = VamanaEntity::kDefaultAlpha;
   ef_ = VamanaEntity::kDefaultEf;
+  reverse_prune_batch_size_ = 1;
   bruteforce_threshold_ = VamanaEntity::kDefaultBruteForceThreshold;
   max_scan_limit_ = VamanaEntity::kDefaultMaxScanLimit;
   min_scan_limit_ = VamanaEntity::kDefaultMinScanLimit;
@@ -466,6 +475,7 @@ int VamanaStreamer::build_bulk_graph_locked() {
 
   auto &contiguous_entity =
       static_cast<VamanaContiguousStreamerEntity &>(*entity_);
+  contiguous_entity.set_reverse_prune_batch_size(reverse_prune_batch_size_);
   int ret = contiguous_entity.build_contiguous_records_for_build();
   if (ret != 0) {
     LOG_ERROR("Failed to materialize Vamana bulk-build records, ret=%d", ret);
@@ -476,6 +486,7 @@ int VamanaStreamer::build_bulk_graph_locked() {
   auto ctx =
       std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
   ctx->set_ef(ef_);
+  ctx->set_reverse_prune_batch_size(reverse_prune_batch_size_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);
@@ -494,8 +505,10 @@ int VamanaStreamer::build_bulk_graph_locked() {
   ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
 
   const uint32_t total_docs = entity_->doc_cnt();
-  LOG_INFO("Vamana bulk graph pass: docs=%u alpha=%.2f", total_docs,
-           entity_->alpha());
+  LOG_INFO(
+      "Vamana bulk graph pass: docs=%u alpha=%.2f "
+      "reverse_prune_batch_size=%u",
+      total_docs, entity_->alpha(), ctx->reverse_prune_batch_size());
   for (node_id_t id = 0; id < total_docs; ++id) {
     if (entity_->get_key(id) == kInvalidKey) continue;
     ctx->clear();
@@ -510,10 +523,11 @@ int VamanaStreamer::build_bulk_graph_locked() {
       return IndexError_Runtime;
     }
   }
-
-  // The bulk state covers only reducer ingestion and this deferred graph pass.
-  // Subsequent Add/Merge calls must immediately return to normal insertion.
-  bulk_build_active_ = false;
+  ret = alg_->flush_reverse_overflow(ctx.get());
+  if (ret != 0) {
+    LOG_ERROR("Vamana bulk Pass1 overflow flush failed, ret=%d", ret);
+    return ret;
+  }
   return 0;
 }
 
@@ -524,6 +538,18 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   if (!two_pass_build_enabled_ && !bulk_build_active_) {
     return 0;
   }
+
+  // Keep bulk construction state alive through both passes. In particular,
+  // pass 2 must use the same reverse-prune batch policy and temporary
+  // adjacency overflow storage as pass 1. Always leave bulk mode when this
+  // finalization attempt returns, so later Add/Merge calls cannot accidentally
+  // defer ordinary streaming insertion.
+  const bool bulk_build = bulk_build_active_;
+  AILEGO_DEFER([&]() {
+    if (bulk_build) {
+      bulk_build_active_ = false;
+    }
+  });
 
   int ret = build_bulk_graph_locked();
   if (ret != 0) {
@@ -558,6 +584,10 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   auto ctx =
       std::make_unique<VamanaContext>(meta_.dimension(), metric_, entity_ref);
   ctx->set_ef(ef_);
+  // Construction-only overflow storage exists only in bulk contiguous mode.
+  // Keep streaming and mmap construction on the immediate-prune path.
+  ctx->set_reverse_prune_batch_size(
+      bulk_build ? reverse_prune_batch_size_ : 1);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);
@@ -577,7 +607,10 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   // The incremental add path above is the first pass (alpha=1.0). Reuse that
   // graph for exactly one full-graph second pass at the configured target
   // alpha. Keep the entity alpha in sync because reverse-link pruning reads it.
-  LOG_INFO("Vamana two-pass second graph pass: alpha=%.2f", alpha_);
+  LOG_INFO(
+      "Vamana two-pass second graph pass: alpha=%.2f "
+      "reverse_prune_batch_size=%u",
+      alpha_, ctx->reverse_prune_batch_size());
   ret = alg_->refine_graph(ctx.get(), alpha_);
   if (ret != 0) return ret;
   ++pass_count;
