@@ -325,8 +325,8 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
-  uint32_t po_{8};
-  uint32_t pl_{0};
+  uint32_t po_{16};
+  uint32_t pl_{4};
   uint32_t reverse_prune_batch_size_{1};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
