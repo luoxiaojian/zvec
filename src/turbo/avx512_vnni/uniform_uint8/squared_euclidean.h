@@ -16,19 +16,15 @@
 
 #include <cstddef>
 
-#ifndef ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
-#define ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS 1
-#endif
-
 namespace zvec::turbo::avx512_vnni {
 
 // Record layout:
 //   [ original_dim bytes: int8 values, stored as uint8(value) - 128 ]
 //   [ int32 sum_sq_u8 ]
 //
-// The index data type remains DT_INT8. Batch search compares shifted stored
-// vectors against raw uint8 query bytes and returns a ranking-equivalent score:
-//   sum_sq(stored_raw) - 2 * dot(stored_shifted, query_raw)
+// The index data type remains DT_INT8. All distance functions return true
+// squared L2. Batch queries use a raw uint8 body and query-correction tail,
+// produced once by uniform_squared_euclidean_uint8_query_preprocess.
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 
@@ -36,12 +32,9 @@ void uniform_squared_euclidean_uint8_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const *extra_values = nullptr);
 
-#if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
-void uniform_squared_euclidean_uint8_preprocessed_batch_distance(
-    const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances, const void *const *extra_values = nullptr);
-
+// Convert one canonical stored value into the batch-query representation:
+//   body: int8(raw - 128) -> uint8(raw)
+//   tail: sum(raw^2)      -> sum(raw^2) - 256 * sum(raw)
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim);
-#endif
 
 }  // namespace zvec::turbo::avx512_vnni

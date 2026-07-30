@@ -81,8 +81,6 @@ option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_TOOLS "Build tools" ON)
-option(ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
-       "Shift UNIFORM_UINT8 query bytes in the search prepare path" ON)
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
@@ -90,13 +88,6 @@ message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
-message(STATUS "ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS:${ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS}")
-
-if(ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS)
-  add_compile_definitions(ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS=1)
-else()
-  add_compile_definitions(ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS=0)
-endif()
 
 option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
 

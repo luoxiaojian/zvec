@@ -66,23 +66,22 @@ class UniformUint8StreamingReformer : public IndexReformer {
 
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(query, qmeta, 1, out, ometa, /*shift_output=*/false);
+    return do_quantize(query, qmeta, 1, out, ometa);
   }
 
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(query, qmeta, count, out, ometa, /*shift_output=*/false);
+    return do_quantize(query, qmeta, count, out, ometa);
   }
 
   int convert(const void *record, const IndexQueryMeta &rmeta, std::string *out,
               IndexQueryMeta *ometa) const override {
-    return do_quantize(record, rmeta, 1, out, ometa, /*shift_output=*/true);
+    return do_quantize(record, rmeta, 1, out, ometa);
   }
 
   int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
               std::string *out, IndexQueryMeta *ometa) const override {
-    return do_quantize(records, rmeta, count, out, ometa,
-                       /*shift_output=*/true);
+    return do_quantize(records, rmeta, count, out, ometa);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
@@ -125,8 +124,7 @@ class UniformUint8StreamingReformer : public IndexReformer {
   }
 
   int do_quantize(const void *src, const IndexQueryMeta &smeta, uint32_t count,
-                  std::string *out, IndexQueryMeta *ometa,
-                  bool shift_output) const {
+                  std::string *out, IndexQueryMeta *ometa) const {
     if (!initialized_) {
       LOG_ERROR("UniformUint8StreamingReformer: quantize called before init");
       return IndexError_Runtime;
@@ -147,34 +145,31 @@ class UniformUint8StreamingReformer : public IndexReformer {
     const float *vec = reinterpret_cast<const float *>(src);
     int8_t *ovec = reinterpret_cast<int8_t *>(&(*out)[0]);
     for (uint32_t i = 0; i < count; ++i) {
-      encode(vec + i * src_dim, src_dim, ovec + i * out_stride, shift_output);
+      encode(vec + i * src_dim, src_dim, ovec + i * out_stride);
     }
     return 0;
   }
 
-  void encode(const float *in, size_t dim, int8_t *out,
-              bool shift_output) const {
+  void encode(const float *in, size_t dim, int8_t *out) const {
     if (quantize_func_ != nullptr) {
       quantize_func_(in, dim, scale_, bias_, out);
     } else {
-      auto *u8_out = reinterpret_cast<uint8_t *>(out);
       for (size_t i = 0; i < dim; ++i) {
         float v = std::round(in[i] * scale_ + bias_);
         v = std::max(0.0f, std::min(255.0f, v));
-        u8_out[i] = static_cast<uint8_t>(v);
+        out[i] = static_cast<int8_t>(static_cast<int>(v) - 128);
       }
     }
 
-    auto *bytes = reinterpret_cast<uint8_t *>(out);
     int64_t sum_sq = 0;
     for (size_t i = 0; i < dim; ++i) {
-      int v = static_cast<int>(bytes[i]);
-      sum_sq += v * v;
-      if (shift_output) {
-        bytes[i] = static_cast<uint8_t>(v - 128);
-      }
+      const int raw = static_cast<int>(out[i]) + 128;
+      sum_sq += raw * raw;
     }
     auto *tail = reinterpret_cast<int32_t *>(out + dim);
+    // Both records and queries leave the reformer in the canonical stored
+    // representation. The metric's query preprocess converts a copied query
+    // to raw uint8 and replaces this norm with the VNNI correction term.
     tail[0] = static_cast<int32_t>(sum_sq);
   }
 

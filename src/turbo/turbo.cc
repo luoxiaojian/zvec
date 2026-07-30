@@ -78,12 +78,7 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
     if (quantize_type == QuantizeType::kUniformUint8) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
         if (metric_type == MetricType::kSquaredEuclidean) {
-#if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
-          return avx512_vnni::
-              uniform_squared_euclidean_uint8_preprocessed_batch_distance;
-#else
           return avx512_vnni::uniform_squared_euclidean_uint8_batch_distance;
-#endif
         }
       }
     }
@@ -102,6 +97,13 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
         }
         if (metric_type == MetricType::kCosine) {
           return avx512_vnni::cosine_int8_query_preprocess;
+        }
+      }
+    }
+    if (quantize_type == QuantizeType::kUniformUint8) {
+      if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+        if (metric_type == MetricType::kSquaredEuclidean) {
+          return avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess;
         }
       }
     }

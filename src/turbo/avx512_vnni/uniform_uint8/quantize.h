@@ -20,10 +20,10 @@
 namespace zvec::turbo::avx512_vnni {
 
 // Uniform uint8 quantization:
-//   out[i] = clip(round(in[i] * scale + bias), 0, 255)
+//   raw    = clip(round(in[i] * scale + bias), 0, 255)
+//   out[i] = int8(raw - 128)
 //
-// The output pointer is int8_t for compatibility with the core index data type;
-// bytes are interpreted as uint8_t by the UNIFORM_UINT8 metric.
+// The shifted value is the canonical representation stored in the index.
 void uniform_uint8_quantize(const float *in, std::size_t dim, float scale,
                             float bias, std::int8_t *out);
 

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -28,11 +29,6 @@ constexpr size_t kTailBytes = sizeof(int32_t);
 
 size_t original_dim(size_t dim) {
   return dim > kTailBytes ? dim - kTailBytes : 0;
-}
-
-const int32_t *tail(const void *ptr, size_t orig_dim) {
-  return reinterpret_cast<const int32_t *>(
-      reinterpret_cast<const uint8_t *>(ptr) + orig_dim);
 }
 
 void UniformUint8StoredSquaredEuclidean(const void *a, const void *b,
@@ -58,52 +54,57 @@ IndexMetric::MatrixDistance UniformUint8StoredDistance() {
   return distance;
 }
 
-void UniformUint8StoredSquaredEuclideanBatch(const void *const *vectors,
-                                             const void *query, size_t n,
-                                             size_t dim, float *distances,
-                                             const void *const * /*extras*/) {
-  const auto distance = UniformUint8StoredDistance();
-  for (size_t i = 0; i < n; ++i) {
-    distance(vectors[i], query, dim, distances + i);
-  }
-}
-
-void UniformUint8StoredQueryScore(const void *stored, const void *query,
-                                  size_t dim, float *distance) {
+void UniformUint8StoredQuerySquaredEuclidean(const void *stored,
+                                             const void *query, size_t dim,
+                                             float *distance) {
   const size_t orig_dim = original_dim(dim);
   const auto *lhs = reinterpret_cast<const int8_t *>(stored);
   const auto *rhs = reinterpret_cast<const uint8_t *>(query);
-  int64_t dot = 0;
+  int64_t dist = 0;
   for (size_t d = 0; d < orig_dim; ++d) {
-    dot += static_cast<int>(lhs[d]) * static_cast<int>(rhs[d]);
+    const int diff =
+        static_cast<int>(lhs[d]) - (static_cast<int>(rhs[d]) - 128);
+    dist += diff * diff;
   }
-  const int32_t *lhs_tail = tail(stored, orig_dim);
-  *distance = static_cast<float>(static_cast<int64_t>(lhs_tail[0]) - 2 * dot);
+  *distance = static_cast<float>(dist);
 }
 
-void UniformUint8StoredQueryScoreBatch(const void *const *vectors,
-                                       const void *query, size_t n, size_t dim,
-                                       float *distances,
-                                       const void *const *extra_values) {
-  if (!extra_values) {
-    for (size_t i = 0; i < n; ++i) {
-      UniformUint8StoredQueryScore(vectors[i], query, dim, distances + i);
-    }
-    return;
+void UniformUint8StoredQuerySquaredEuclideanBatch(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
+  for (size_t i = 0; i < n; ++i) {
+    UniformUint8StoredQuerySquaredEuclidean(vectors[i], query, dim,
+                                            distances + i);
+  }
+}
+
+void UniformUint8QueryPreprocess(void *query, size_t dim) {
+  const size_t orig_dim = original_dim(dim);
+  auto *stored = reinterpret_cast<int8_t *>(query);
+  auto *raw = reinterpret_cast<uint8_t *>(query);
+  int64_t sum = 0;
+  for (size_t d = 0; d < orig_dim; ++d) {
+    const int value = static_cast<int>(stored[d]) + 128;
+    raw[d] = static_cast<uint8_t>(value);
+    sum += value;
   }
 
-  const size_t orig_dim = original_dim(dim);
-  const auto *rhs = reinterpret_cast<const uint8_t *>(query);
-  for (size_t i = 0; i < n; ++i) {
-    const auto *lhs = reinterpret_cast<const int8_t *>(vectors[i]);
-    int64_t dot = 0;
-    for (size_t d = 0; d < orig_dim; ++d) {
-      dot += static_cast<int>(lhs[d]) * static_cast<int>(rhs[d]);
-    }
-    const int32_t sum_sq =
-        *reinterpret_cast<const int32_t *>(extra_values[i]);
-    distances[i] = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
-  }
+  int32_t sum_sq = 0;
+  std::memcpy(&sum_sq, raw + orig_dim, sizeof(sum_sq));
+  const int32_t correction =
+      static_cast<int32_t>(static_cast<int64_t>(sum_sq) - 256 * sum);
+  std::memcpy(raw + orig_dim, &correction, sizeof(correction));
+}
+
+IndexMetric::DistanceBatchQueryPreprocessFunc
+UniformUint8QueryPreprocessFunc() {
+  static const IndexMetric::DistanceBatchQueryPreprocessFunc preprocess = []() {
+    auto turbo_preprocess = turbo::get_query_preprocess_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kUniformUint8);
+    return turbo_preprocess ? turbo_preprocess : UniformUint8QueryPreprocess;
+  }();
+  return preprocess;
 }
 
 }  // namespace
@@ -155,7 +156,7 @@ class UniformUint8QueryMetric : public IndexMetric {
   }
 
   MatrixDistance distance(void) const override {
-    return UniformUint8StoredQueryScore;
+    return UniformUint8StoredQuerySquaredEuclidean;
   }
 
   MatrixBatchDistance batch_distance(void) const override {
@@ -165,7 +166,11 @@ class UniformUint8QueryMetric : public IndexMetric {
     if (turbo_ret) {
       return turbo_ret;
     }
-    return UniformUint8StoredQueryScoreBatch;
+    return UniformUint8StoredQuerySquaredEuclideanBatch;
+  }
+
+  DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
+    return UniformUint8QueryPreprocessFunc();
   }
 
   size_t extra_values_size_per_vector(void) const override {
@@ -212,12 +217,9 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
     return nullptr;
   }
 
-  MatrixBatchDistance batch_distance(void) const override {
-    return UniformUint8StoredSquaredEuclideanBatch;
-  }
-
-  // Extra values are query-to-record metadata. Graph construction keeps using
-  // the symmetric stored-to-stored distance on the ordinary encoded record.
+  // Extra values are a physical-storage optimization for online search.
+  // The stored record remains self-contained before contiguous-memory
+  // optimization, so the build metric itself does not require a side column.
   size_t extra_values_size_per_vector(void) const override {
     return 0;
   }

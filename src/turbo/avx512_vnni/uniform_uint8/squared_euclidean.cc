@@ -12,36 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// AVX512-VNNI optimized score for UNIFORM_UINT8.
+// AVX512-VNNI optimized squared L2 for UNIFORM_UINT8.
 //
 // Stored inline record layout:
 //   [ dim int8 values = uint8(value) - 128 | int32 sum_sq ]
-// Query layout:
-//   [ dim raw uint8 values | int32 sum_sq ]
-// Storage exposes vector bodies and optional extra values independently.
-// Contiguous 128D search stores them as a dense 128-byte body column and a
-// packed int32 sum_sq column; mmap may point into the original inline record.
+// Preprocessed batch-query layout:
+//   [ dim raw uint8 values | int32 query_distance_correction ]
 //
-// Build-time pairwise distance uses true L2 between two stored shifted vectors.
-// Search-time batch score drops the query-only constant from true uint8 L2:
-//   score = sum_sq(v_raw) - 2 * dot(v_shifted, q_raw)
-//         = ||v_raw - q_raw||^2 - query_constant
-// This preserves ranking exactly while avoiding per-vector sum correction.
-// VNNI uses vpdpbusd's unsigned x signed contract as:
-//   dot(v_shifted, q_raw) = dpbusd(q_raw, v_shifted)
-//
-// Batch kernel design (hot path for graph search):
-//   - 4 vectors per block, two-phase load/compute to maximize MLP
-//   - the inline kernel prefetches future vectors INCLUDING the tail cache
-//     line (the tail lives at bytes 128..131 of a 192B-strided record for
-//     dim=128, i.e. a third cache line)
-//   - the extra-values 128D kernel consumes exactly two body cache lines plus
-//     the pointed-to sum_sq value, and reuses two query loads for the batch
-//   - no per-vector scalar epilogue: the 4 accumulators are reduced with a
-//     single SIMD 4-to-1 horizontal reduction, the 4 tails are gathered with
-//     SIMD, and the final distance formula is evaluated on int32x4 lanes:
-//       score = sum_sq - 2*ip
-//     (exact in int32 for any realistic dim; converted to float at the end)
+// The batch kernel returns true squared L2. Its hot path adds the query-only
+// correction to the unsigned/signed VNNI dot-product identity. Pairwise stored
+// comparisons and unusually large vectors use widened squared differences.
+// Four candidates are evaluated together to share query work and overlap
+// independent memory streams.
 //
 // This file is compiled with per-file -march=avx512vnni (set in
 // CMakeLists.txt).
@@ -50,9 +32,9 @@
 #include "zvec/ailego/internal/platform.h"
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
-#include <array>
 #endif
 #include <cstdint>
+#include <cstring>
 
 namespace zvec::turbo::avx512_vnni {
 
@@ -98,6 +80,23 @@ static ailego_force_inline __m512i squared_diff_masked_32(__m512i acc,
       _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(lhs)));
   const __m512i rhs16 = _mm512_cvtepi8_epi16(
       _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(rhs)));
+  const __m512i diff16 = _mm512_sub_epi16(lhs16, rhs16);
+  return _mm512_dpwssd_epi32(acc, diff16, diff16);
+}
+
+static ailego_force_inline __m512i squared_diff_32_with_rhs16(__m512i acc,
+                                                              const int8_t *lhs,
+                                                              __m512i rhs16) {
+  const __m512i lhs16 = _mm512_cvtepi8_epi16(
+      _mm256_loadu_si256(reinterpret_cast<const __m256i *>(lhs)));
+  const __m512i diff16 = _mm512_sub_epi16(lhs16, rhs16);
+  return _mm512_dpwssd_epi32(acc, diff16, diff16);
+}
+
+static ailego_force_inline __m512i squared_diff_masked_32_with_rhs16(
+    __m512i acc, const int8_t *lhs, __m512i rhs16, __mmask32 mask) {
+  const __m512i lhs16 = _mm512_cvtepi8_epi16(
+      _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(lhs)));
   const __m512i diff16 = _mm512_sub_epi16(lhs16, rhs16);
   return _mm512_dpwssd_epi32(acc, diff16, diff16);
 }
@@ -195,80 +194,152 @@ void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
 
 namespace {
 
-// Reduce 4 zmm int32 accumulators to one xmm holding [s0, s1, s2, s3].
-static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0,
-                                                         __m512i a1,
+static ailego_force_inline __m512i load_query_32(const uint8_t *query) {
+  const __m256i bytes =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i *>(query));
+  return _mm512_sub_epi16(_mm512_cvtepu8_epi16(bytes), _mm512_set1_epi16(128));
+}
+
+static ailego_force_inline __m512i load_query_masked_32(const uint8_t *query,
+                                                        __mmask32 mask) {
+  const __m256i bytes =
+      _mm256_maskz_loadu_epi8(mask, static_cast<const void *>(query));
+  // Mask again after subtracting 128 so inactive lanes remain zero.
+  return _mm512_maskz_mov_epi16(
+      mask,
+      _mm512_sub_epi16(_mm512_cvtepu8_epi16(bytes), _mm512_set1_epi16(128)));
+}
+
+// Compute exact squared L2 for four stored vectors and one preprocessed raw
+// uint8 query. Periodic widening keeps unusually large dimensions exact.
+static ailego_force_inline void uniform_sq_l2_uint8_batch4(
+    const void *const *vectors, const void *query, size_t orig_dim,
+    const void *const *prefetch_ptrs, float *distances) {
+  const auto *v0 = reinterpret_cast<const int8_t *>(vectors[0]);
+  const auto *v1 = reinterpret_cast<const int8_t *>(vectors[1]);
+  const auto *v2 = reinterpret_cast<const int8_t *>(vectors[2]);
+  const auto *v3 = reinterpret_cast<const int8_t *>(vectors[3]);
+  const auto *query_bytes = reinterpret_cast<const uint8_t *>(query);
+
+  __m512i a0 = _mm512_setzero_si512();
+  __m512i a1 = _mm512_setzero_si512();
+  __m512i a2 = _mm512_setzero_si512();
+  __m512i a3 = _mm512_setzero_si512();
+  int64_t totals[4] = {};
+
+  constexpr size_t kBlockBytes = 32;
+  constexpr size_t kFlushIterations = 8192;
+  size_t iterations_since_flush = 0;
+  size_t d = 0;
+  for (; d + kBlockBytes <= orig_dim; d += kBlockBytes) {
+    const __m512i query16 = load_query_32(query_bytes + d);
+    for (size_t j = 0; j < 4; ++j) {
+      if (prefetch_ptrs[j] != nullptr) {
+        _mm_prefetch(reinterpret_cast<const char *>(prefetch_ptrs[j]) + d,
+                     _MM_HINT_T0);
+      }
+    }
+    a0 = squared_diff_32_with_rhs16(a0, v0 + d, query16);
+    a1 = squared_diff_32_with_rhs16(a1, v1 + d, query16);
+    a2 = squared_diff_32_with_rhs16(a2, v2 + d, query16);
+    a3 = squared_diff_32_with_rhs16(a3, v3 + d, query16);
+
+    if (++iterations_since_flush == kFlushIterations) {
+      totals[0] += reduce_add_epi32_to_int64(a0);
+      totals[1] += reduce_add_epi32_to_int64(a1);
+      totals[2] += reduce_add_epi32_to_int64(a2);
+      totals[3] += reduce_add_epi32_to_int64(a3);
+      a0 = _mm512_setzero_si512();
+      a1 = _mm512_setzero_si512();
+      a2 = _mm512_setzero_si512();
+      a3 = _mm512_setzero_si512();
+      iterations_since_flush = 0;
+    }
+  }
+
+  if (d < orig_dim) {
+    const size_t remaining = orig_dim - d;
+    const __mmask32 mask =
+        static_cast<__mmask32>((uint32_t{1} << remaining) - 1);
+    const __m512i query16 = load_query_masked_32(query_bytes + d, mask);
+    a0 = squared_diff_masked_32_with_rhs16(a0, v0 + d, query16, mask);
+    a1 = squared_diff_masked_32_with_rhs16(a1, v1 + d, query16, mask);
+    a2 = squared_diff_masked_32_with_rhs16(a2, v2 + d, query16, mask);
+    a3 = squared_diff_masked_32_with_rhs16(a3, v3 + d, query16, mask);
+  }
+
+  totals[0] += reduce_add_epi32_to_int64(a0);
+  totals[1] += reduce_add_epi32_to_int64(a1);
+  totals[2] += reduce_add_epi32_to_int64(a2);
+  totals[3] += reduce_add_epi32_to_int64(a3);
+  distances[0] = static_cast<float>(totals[0]);
+  distances[1] = static_cast<float>(totals[1]);
+  distances[2] = static_cast<float>(totals[2]);
+  distances[3] = static_cast<float>(totals[3]);
+}
+
+// Reduce four zmm int32 accumulators to one xmm holding [s0, s1, s2, s3].
+static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0, __m512i a1,
                                                          __m512i a2,
                                                          __m512i a3) {
-  __m256i b0 = _mm256_add_epi32(_mm512_castsi512_si256(a0),
-                                _mm512_extracti64x4_epi64(a0, 1));
-  __m256i b1 = _mm256_add_epi32(_mm512_castsi512_si256(a1),
-                                _mm512_extracti64x4_epi64(a1, 1));
-  __m256i b2 = _mm256_add_epi32(_mm512_castsi512_si256(a2),
-                                _mm512_extracti64x4_epi64(a2, 1));
-  __m256i b3 = _mm256_add_epi32(_mm512_castsi512_si256(a3),
-                                _mm512_extracti64x4_epi64(a3, 1));
-  __m256i c01 = _mm256_hadd_epi32(b0, b1);  // [s0 s0 s1 s1 | s0 s0 s1 s1]
-  __m256i c23 = _mm256_hadd_epi32(b2, b3);
-  __m256i d = _mm256_hadd_epi32(c01, c23);  // [s0 s1 s2 s3 | s0 s1 s2 s3]
+  const __m256i b0 = _mm256_add_epi32(_mm512_castsi512_si256(a0),
+                                      _mm512_extracti64x4_epi64(a0, 1));
+  const __m256i b1 = _mm256_add_epi32(_mm512_castsi512_si256(a1),
+                                      _mm512_extracti64x4_epi64(a1, 1));
+  const __m256i b2 = _mm256_add_epi32(_mm512_castsi512_si256(a2),
+                                      _mm512_extracti64x4_epi64(a2, 1));
+  const __m256i b3 = _mm256_add_epi32(_mm512_castsi512_si256(a3),
+                                      _mm512_extracti64x4_epi64(a3, 1));
+  const __m256i c01 = _mm256_hadd_epi32(b0, b1);
+  const __m256i c23 = _mm256_hadd_epi32(b2, b3);
+  const __m256i d = _mm256_hadd_epi32(c01, c23);
   return _mm_add_epi32(_mm256_castsi256_si128(d),
                        _mm256_extracti128_si256(d, 1));
 }
 
-// SIFT hot path. Keep a fixed-size kernel that loads the two query cache lines
-// once per batch call and has no dimension loop or tail branch.
-static ailego_force_inline void uniform_sq_l2_uint8_extra_batch4_128(
+// SIFT contiguous-entity hot path: load the query's two cache lines once per
+// batch call and reuse them for every group of four candidates.
+static ailego_force_inline void uniform_raw_sq_l2_uint8_extra_batch4_128(
     const void *const *vectors, __m512i query0, __m512i query1,
-    const void *const *extra_values, float *distances) {
+    int32_t query_correction, const void *const *extra_values,
+    float *distances) {
   const auto *v0 = reinterpret_cast<const __m512i *>(vectors[0]);
   const auto *v1 = reinterpret_cast<const __m512i *>(vectors[1]);
   const auto *v2 = reinterpret_cast<const __m512i *>(vectors[2]);
   const auto *v3 = reinterpret_cast<const __m512i *>(vectors[3]);
 
-  // Load all four first cache lines before issuing VNNI operations to expose
-  // four independent memory requests to the core.
-  const __m512i v00 = _mm512_loadu_si512(v0);
-  const __m512i v10 = _mm512_loadu_si512(v1);
-  const __m512i v20 = _mm512_loadu_si512(v2);
-  const __m512i v30 = _mm512_loadu_si512(v3);
-
-  __m512i a0 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v00);
-  __m512i a1 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v10);
-  __m512i a2 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v20);
-  __m512i a3 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, v30);
-
-  const __m512i v01 = _mm512_loadu_si512(v0 + 1);
-  const __m512i v11 = _mm512_loadu_si512(v1 + 1);
-  const __m512i v21 = _mm512_loadu_si512(v2 + 1);
-  const __m512i v31 = _mm512_loadu_si512(v3 + 1);
-
-  a0 = _mm512_dpbusd_epi32(a0, query1, v01);
-  a1 = _mm512_dpbusd_epi32(a1, query1, v11);
-  a2 = _mm512_dpbusd_epi32(a2, query1, v21);
-  a3 = _mm512_dpbusd_epi32(a3, query1, v31);
+  __m512i a0 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0,
+                                   _mm512_loadu_si512(v0));
+  __m512i a1 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0,
+                                   _mm512_loadu_si512(v1));
+  __m512i a2 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0,
+                                   _mm512_loadu_si512(v2));
+  __m512i a3 = _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0,
+                                   _mm512_loadu_si512(v3));
+  a0 = _mm512_dpbusd_epi32(a0, query1, _mm512_loadu_si512(v0 + 1));
+  a1 = _mm512_dpbusd_epi32(a1, query1, _mm512_loadu_si512(v1 + 1));
+  a2 = _mm512_dpbusd_epi32(a2, query1, _mm512_loadu_si512(v2 + 1));
+  a3 = _mm512_dpbusd_epi32(a3, query1, _mm512_loadu_si512(v3 + 1));
 
   const __m128i inner_products = reduce_add_4x16_epi32(a0, a1, a2, a3);
   const __m128i norms = _mm_set_epi32(
       load_extra_sum_sq(extra_values[3]), load_extra_sum_sq(extra_values[2]),
       load_extra_sum_sq(extra_values[1]), load_extra_sum_sq(extra_values[0]));
-  const __m128i scores =
-      _mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1));
-  _mm_storeu_ps(distances, _mm_cvtepi32_ps(scores));
+  const __m128i distance =
+      _mm_add_epi32(_mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1)),
+                    _mm_set1_epi32(query_correction));
+  _mm_storeu_ps(distances, _mm_cvtepi32_ps(distance));
 }
 
-// Compute distances for exactly 4 vectors. In the ordinary layout the norm
-// follows each vector body; otherwise it is supplied by the corresponding
-// extra-values pointer. The template keeps that choice out of the hot stream.
 template <bool HasExtraValues>
-static ailego_force_inline void uniform_sq_l2_uint8_batch4(
-    const void *const *vectors, const uint8_t *raw_query, size_t orig_dim,
-    const void *const *prefetch_ptrs, const void *const *extra_values,
-    float *distances) {
+static ailego_force_inline void uniform_raw_sq_l2_uint8_batch4(
+    const void *const *vectors, const uint8_t *query, size_t orig_dim,
+    int32_t query_correction, const void *const *prefetch_ptrs,
+    const void *const *extra_values, float *distances) {
   __m512i a0 = _mm512_setzero_si512();
   __m512i a1 = _mm512_setzero_si512();
   __m512i a2 = _mm512_setzero_si512();
   __m512i a3 = _mm512_setzero_si512();
-
   const auto *v0 = reinterpret_cast<const int8_t *>(vectors[0]);
   const auto *v1 = reinterpret_cast<const int8_t *>(vectors[1]);
   const auto *v2 = reinterpret_cast<const int8_t *>(vectors[2]);
@@ -276,14 +347,18 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
 
   size_t d = 0;
   for (; d + 64 <= orig_dim; d += 64) {
-    __m512i q = _mm512_loadu_si512(
-        reinterpret_cast<const __m512i *>(raw_query + d));
-    __m512i r0 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v0 + d));
-    __m512i r1 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v1 + d));
-    __m512i r2 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v2 + d));
-    __m512i r3 = _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v3 + d));
-    for (int j = 0; j < 4; ++j) {
-      if (prefetch_ptrs[j]) {
+    const __m512i q =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + d));
+    const __m512i r0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v0 + d));
+    const __m512i r1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v1 + d));
+    const __m512i r2 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v2 + d));
+    const __m512i r3 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v3 + d));
+    for (size_t j = 0; j < 4; ++j) {
+      if (prefetch_ptrs[j] != nullptr) {
         _mm_prefetch(reinterpret_cast<const char *>(prefetch_ptrs[j]) + d,
                      _MM_HINT_T0);
       }
@@ -294,173 +369,177 @@ static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     a3 = _mm512_dpbusd_epi32(a3, q, r3);
   }
 
-  for (int j = 0; j < 4; ++j) {
-    if (prefetch_ptrs[j]) {
-      if constexpr (!HasExtraValues) {
-        _mm_prefetch(
-            reinterpret_cast<const char *>(prefetch_ptrs[j]) + orig_dim,
-            _MM_HINT_T0);
-      }
-    }
-  }
-
-  __m128i ip4 = reduce_add_4x16_epi32(a0, a1, a2, a3);
-
-  // Scalar remainder for orig_dim % 64 (dead code for dim=128).
+  __m128i inner_products = reduce_add_4x16_epi32(a0, a1, a2, a3);
   if (d < orig_dim) {
-    alignas(16) int32_t tmp[4];
-    _mm_store_si128(reinterpret_cast<__m128i *>(tmp), ip4);
-    const int8_t *vecs[4] = {v0, v1, v2, v3};
-    for (int j = 0; j < 4; ++j) {
-      int32_t extra = 0;
+    alignas(16) int32_t values[4];
+    _mm_store_si128(reinterpret_cast<__m128i *>(values), inner_products);
+    const int8_t *stored_vectors[4] = {v0, v1, v2, v3};
+    for (size_t i = 0; i < 4; ++i) {
       for (size_t k = d; k < orig_dim; ++k) {
-        extra += static_cast<int>(vecs[j][k]) *
-                 static_cast<int>(raw_query[k]);
+        values[i] +=
+            static_cast<int>(stored_vectors[i][k]) * static_cast<int>(query[k]);
       }
-      tmp[j] += extra;
     }
-    ip4 = _mm_load_si128(reinterpret_cast<const __m128i *>(tmp));
+    inner_products = _mm_load_si128(reinterpret_cast<const __m128i *>(values));
   }
 
-  __m128i sqs;
+  __m128i norms;
   if constexpr (HasExtraValues) {
-    sqs = _mm_set_epi32(
+    norms = _mm_set_epi32(
         load_extra_sum_sq(extra_values[3]), load_extra_sum_sq(extra_values[2]),
         load_extra_sum_sq(extra_values[1]), load_extra_sum_sq(extra_values[0]));
   } else {
-    sqs = _mm_set_epi32(tail(v3, orig_dim)[0], tail(v2, orig_dim)[0],
-                        tail(v1, orig_dim)[0], tail(v0, orig_dim)[0]);
+    norms = _mm_set_epi32(tail(v3, orig_dim)[0], tail(v2, orig_dim)[0],
+                          tail(v1, orig_dim)[0], tail(v0, orig_dim)[0]);
   }
-
-  __m128i dist = _mm_sub_epi32(sqs, _mm_slli_epi32(ip4, 1));
-  _mm_storeu_ps(distances, _mm_cvtepi32_ps(dist));
+  const __m128i distance =
+      _mm_add_epi32(_mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1)),
+                    _mm_set1_epi32(query_correction));
+  _mm_storeu_ps(distances, _mm_cvtepi32_ps(distance));
 }
 
-// Single-vector path used for the n % 4 remainder of a batch.
 template <bool HasExtraValues>
-static ailego_force_inline void uniform_sq_l2_uint8_single(
-    const void *vector, const uint8_t *raw_query, size_t orig_dim,
-    const void *extra_values, float *distance) {
-  const auto *vec = reinterpret_cast<const int8_t *>(vector);
+static ailego_force_inline void uniform_raw_sq_l2_uint8_single(
+    const void *vector, const uint8_t *query, size_t orig_dim,
+    int32_t query_correction, const void *extra_value, float *distance) {
+  const auto *stored = reinterpret_cast<const int8_t *>(vector);
   __m512i acc = _mm512_setzero_si512();
   size_t d = 0;
   for (; d + 64 <= orig_dim; d += 64) {
-    __m512i q = _mm512_loadu_si512(
-        reinterpret_cast<const __m512i *>(raw_query + d));
-    __m512i v =
-        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(vec + d));
+    const __m512i q =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + d));
+    const __m512i v =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(stored + d));
     acc = _mm512_dpbusd_epi32(acc, q, v);
   }
   int64_t dot = _mm512_reduce_add_epi32(acc);
   for (; d < orig_dim; ++d) {
-    dot += static_cast<int>(vec[d]) * static_cast<int>(raw_query[d]);
+    dot += static_cast<int>(stored[d]) * static_cast<int>(query[d]);
   }
-  const int32_t sum_sq = HasExtraValues ? load_extra_sum_sq(extra_values)
-                                        : tail(vector, orig_dim)[0];
-  *distance = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
+  const int32_t norm = HasExtraValues ? load_extra_sum_sq(extra_value)
+                                      : tail(vector, orig_dim)[0];
+  *distance = static_cast<float>(static_cast<int64_t>(norm) - 2 * dot +
+                                 query_correction);
+}
+
+template <bool HasExtraValues>
+static void uniform_raw_sq_l2_uint8_fast_batch(
+    const void *const *vectors, const uint8_t *query, size_t n, size_t orig_dim,
+    int32_t query_correction, float *distances,
+    const void *const *extra_values) {
+  constexpr size_t kBatchSize = 4;
+  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
+  const void *prefetch_ptrs[kBatchSize];
+
+  size_t i = 0;
+  if constexpr (HasExtraValues) {
+    if (orig_dim == 128) {
+      const __m512i query0 =
+          _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query));
+      const __m512i query1 =
+          _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + 64));
+      for (; i + kBatchSize <= n; i += kBatchSize) {
+        uniform_raw_sq_l2_uint8_extra_batch4_128(
+            &vectors[i], query0, query1, query_correction, &extra_values[i],
+            distances + i);
+      }
+      for (; i < n; ++i) {
+        uniform_raw_sq_l2_uint8_single<true>(vectors[i], query, orig_dim,
+                                             query_correction, extra_values[i],
+                                             distances + i);
+      }
+      return;
+    }
+  }
+
+  for (; i + kBatchSize <= n; i += kBatchSize) {
+    for (size_t j = 0; j < kBatchSize; ++j) {
+      const size_t prefetch_index = i + j + kBatchSize * prefetch_step;
+      prefetch_ptrs[j] = prefetch_index < n ? vectors[prefetch_index] : nullptr;
+    }
+    uniform_raw_sq_l2_uint8_batch4<HasExtraValues>(
+        &vectors[i], query, orig_dim, query_correction, prefetch_ptrs,
+        HasExtraValues ? &extra_values[i] : nullptr, distances + i);
+  }
+  for (; i < n; ++i) {
+    uniform_raw_sq_l2_uint8_single<HasExtraValues>(
+        vectors[i], query, orig_dim, query_correction,
+        HasExtraValues ? extra_values[i] : nullptr, distances + i);
+  }
 }
 
 }  // namespace
 
 #endif  // AVX512
 
-static void uniform_squared_euclidean_uint8_extra_batch_distance(
-    const void *const *vectors, const void *const *extra_values,
-    const void *query, size_t n, size_t dim, float *distances);
-
-template <bool QueryPreprocessed>
-void uniform_squared_euclidean_uint8_batch_distance_impl(
-    const void *const *vectors, const void *const *extra_values,
-    const void *query, size_t n, size_t dim, float *distances) {
-  if (extra_values != nullptr) {
-    uniform_squared_euclidean_uint8_extra_batch_distance(
-        vectors, extra_values, query, n, dim, distances);
-    return;
-  }
-#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+static void uniform_squared_euclidean_uint8_batch_distance_impl(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const *extra_values) {
   const size_t orig_dim = original_dim(dim);
   if (orig_dim == 0) {
-    return;
-  }
-
-  (void)QueryPreprocessed;
-  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
-
-  static constexpr size_t batch_size = 4;
-  // Prefetch ~8 vectors ahead for small dims, ~4 ahead for large ones.
-  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
-
-  size_t i = 0;
-  const void *pf[batch_size];
-  for (; i + batch_size <= n; i += batch_size) {
-    for (size_t j = 0; j < batch_size; ++j) {
-      size_t pi = i + j + batch_size * prefetch_step;
-      pf[j] = (pi < n) ? vectors[pi] : nullptr;
+    for (size_t i = 0; i < n; ++i) {
+      distances[i] = 0.0f;
     }
-    uniform_sq_l2_uint8_batch4<false>(&vectors[i], raw_query, orig_dim, pf,
-                                      nullptr, distances + i);
-  }
-  for (; i < n; ++i) {
-    uniform_sq_l2_uint8_single<false>(vectors[i], raw_query, orig_dim, nullptr,
-                                      distances + i);
-  }
-#else
-  (void)vectors;
-  (void)query;
-  (void)n;
-  (void)dim;
-  (void)distances;
-#endif
-}
-
-static void uniform_squared_euclidean_uint8_extra_batch_distance(
-    const void *const *vectors, const void *const *extra_values,
-    const void *query, size_t n, size_t dim, float *distances) {
-  const size_t orig_dim = original_dim(dim);
-  if (orig_dim == 0 || extra_values == nullptr) {
     return;
   }
 
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
-  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
-  static constexpr size_t batch_size = 4;
-
-  size_t i = 0;
-  if (orig_dim == 128) {
-    const __m512i query0 =
-        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(raw_query));
-    const __m512i query1 =
-        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(raw_query + 64));
-    for (; i + batch_size <= n; i += batch_size) {
-      uniform_sq_l2_uint8_extra_batch4_128(&vectors[i], query0, query1,
-                                           &extra_values[i], distances + i);
-    }
-    for (; i < n; ++i) {
-      uniform_sq_l2_uint8_single<true>(vectors[i], raw_query, orig_dim,
-                                       extra_values[i], distances + i);
+  // The int32 dot-product identity is exact in this range. Above it, use the
+  // widened squared-difference path, which does not depend on the int32 norm
+  // stored in the record tail.
+  constexpr size_t kMaxFastIdentityDimension = 8192;
+  if (orig_dim <= kMaxFastIdentityDimension) {
+    const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+    const int32_t query_correction = tail(query, orig_dim)[0];
+    if (extra_values != nullptr) {
+      uniform_raw_sq_l2_uint8_fast_batch<true>(vectors, raw_query, n, orig_dim,
+                                               query_correction, distances,
+                                               extra_values);
+    } else {
+      uniform_raw_sq_l2_uint8_fast_batch<false>(vectors, raw_query, n, orig_dim,
+                                                query_correction, distances,
+                                                nullptr);
     }
     return;
   }
 
-  const void *pf[batch_size] = {nullptr, nullptr, nullptr, nullptr};
-  for (; i + batch_size <= n; i += batch_size) {
-    uniform_sq_l2_uint8_batch4<true>(&vectors[i], raw_query, orig_dim, pf,
-                                     &extra_values[i], distances + i);
+  constexpr size_t kBatchSize = 4;
+  // Prefetch ~8 vectors ahead for small dims, ~4 ahead for large ones.
+  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
+  const void *prefetch_ptrs[kBatchSize];
+
+  size_t i = 0;
+  for (; i + kBatchSize <= n; i += kBatchSize) {
+    for (size_t j = 0; j < kBatchSize; ++j) {
+      const size_t prefetch_index = i + j + kBatchSize * prefetch_step;
+      prefetch_ptrs[j] = prefetch_index < n ? vectors[prefetch_index] : nullptr;
+    }
+    uniform_sq_l2_uint8_batch4(&vectors[i], query, orig_dim, prefetch_ptrs,
+                               distances + i);
   }
   for (; i < n; ++i) {
-    uniform_sq_l2_uint8_single<true>(vectors[i], raw_query, orig_dim,
-                                     extra_values[i], distances + i);
+    const auto *vector = reinterpret_cast<const int8_t *>(vectors[i]);
+    const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+    int64_t dist = 0;
+    for (size_t d = 0; d < orig_dim; ++d) {
+      const int diff =
+          static_cast<int>(vector[d]) - (static_cast<int>(raw_query[d]) - 128);
+      dist += diff * diff;
+    }
+    distances[i] = static_cast<float>(dist);
   }
 #else
-  const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+  (void)extra_values;
   for (size_t i = 0; i < n; ++i) {
     const auto *vector = reinterpret_cast<const int8_t *>(vectors[i]);
-    int64_t dot = 0;
+    const auto *raw_query = reinterpret_cast<const uint8_t *>(query);
+    int64_t dist = 0;
     for (size_t d = 0; d < orig_dim; ++d) {
-      dot += static_cast<int>(vector[d]) * static_cast<int>(raw_query[d]);
+      const int diff =
+          static_cast<int>(vector[d]) - (static_cast<int>(raw_query[d]) - 128);
+      dist += diff * diff;
     }
-    const int32_t sum_sq = load_extra_sum_sq(extra_values[i]);
-    distances[i] = static_cast<float>(static_cast<int64_t>(sum_sq) - 2 * dot);
+    distances[i] = static_cast<float>(dist);
   }
 #endif
 }
@@ -468,22 +547,43 @@ static void uniform_squared_euclidean_uint8_extra_batch_distance(
 void uniform_squared_euclidean_uint8_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const *extra_values) {
-  uniform_squared_euclidean_uint8_batch_distance_impl<false>(
-      vectors, extra_values, query, n, dim, distances);
-}
-
-#if ZVEC_UNIFORM_UINT8_QUERY_PREPROCESS
-void uniform_squared_euclidean_uint8_preprocessed_batch_distance(
-    const void *const *vectors, const void *query, size_t n, size_t dim,
-    float *distances, const void *const *extra_values) {
-  uniform_squared_euclidean_uint8_batch_distance_impl<true>(
-      vectors, extra_values, query, n, dim, distances);
+  uniform_squared_euclidean_uint8_batch_distance_impl(vectors, query, n, dim,
+                                                      distances, extra_values);
 }
 
 void uniform_squared_euclidean_uint8_query_preprocess(void *query, size_t dim) {
-  (void)query;
-  (void)dim;
-}
+  const size_t orig_dim = original_dim(dim);
+  auto *bytes = reinterpret_cast<uint8_t *>(query);
+  uint64_t raw_sum = 0;
+  size_t d = 0;
+
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+  const __m512i sign_bit = _mm512_set1_epi8(static_cast<char>(0x80));
+  const __m512i zero = _mm512_setzero_si512();
+  __m512i sums = _mm512_setzero_si512();
+  for (; d + 64 <= orig_dim; d += 64) {
+    const __m512i stored = _mm512_loadu_si512(bytes + d);
+    const __m512i raw = _mm512_xor_si512(stored, sign_bit);
+    _mm512_storeu_si512(bytes + d, raw);
+    sums = _mm512_add_epi64(sums, _mm512_sad_epu8(raw, zero));
+  }
+  alignas(64) uint64_t lanes[8];
+  _mm512_store_si512(lanes, sums);
+  for (uint64_t lane : lanes) {
+    raw_sum += lane;
+  }
 #endif
+
+  for (; d < orig_dim; ++d) {
+    bytes[d] ^= uint8_t{0x80};
+    raw_sum += bytes[d];
+  }
+
+  int32_t sum_sq = 0;
+  std::memcpy(&sum_sq, bytes + orig_dim, sizeof(sum_sq));
+  const int32_t correction = static_cast<int32_t>(
+      static_cast<int64_t>(sum_sq) - 256 * static_cast<int64_t>(raw_sum));
+  std::memcpy(bytes + orig_dim, &correction, sizeof(correction));
+}
 
 }  // namespace zvec::turbo::avx512_vnni

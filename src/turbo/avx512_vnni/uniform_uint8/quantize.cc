@@ -20,11 +20,10 @@ namespace zvec::turbo::avx512_vnni {
 
 void uniform_uint8_quantize(const float *in, std::size_t dim, float scale,
                             float bias, std::int8_t *out) {
-  auto *u8_out = reinterpret_cast<std::uint8_t *>(out);
   for (std::size_t i = 0; i < dim; ++i) {
     float v = std::round(in[i] * scale + bias);
     v = std::max(0.0f, std::min(255.0f, v));
-    u8_out[i] = static_cast<std::uint8_t>(v);
+    out[i] = static_cast<std::int8_t>(static_cast<int>(v) - 128);
   }
 }
 

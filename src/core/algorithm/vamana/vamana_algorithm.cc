@@ -671,11 +671,13 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
       }
 
       if (batch_count > 0) {
-        // Compute distances from selected candidate to remaining candidates.
-        // distance_ is the symmetric data-to-data kernel (no pairwise split).
-        for (uint32_t k = 0; k < batch_count; ++k) {
-          batch_dists[k] = dc.dist(selected_vec, batch_vecs[k]);
-        }
+        // Compute exact data-to-data distances from the selected candidate to
+        // all remaining candidates. RobustPrune runs after GreedySearch, so
+        // the search query no longer needs to be preserved. Reuse the normal
+        // query setup and batch-distance path, including query preprocessing
+        // required by quantized metrics.
+        ctx->reset_query(selected_vec);
+        dc.batch_dist(batch_vecs.data(), batch_count, batch_dists.data());
 
         // DiskANN (L2/Cosine):
         //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /

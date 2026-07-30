@@ -207,20 +207,17 @@ class UniformUint8StreamingConverter : public IndexConverter {
         if (owner_->quantize_func_ != nullptr) {
           owner_->quantize_func_(vec, dim, owner_->scale_, owner_->bias_, out);
         } else {
-          auto *u8_out = reinterpret_cast<uint8_t *>(out);
           for (size_t i = 0; i < dim; ++i) {
             float v = std::round(vec[i] * owner_->scale_ + owner_->bias_);
             v = std::max(0.0f, std::min(255.0f, v));
-            u8_out[i] = static_cast<uint8_t>(v);
+            out[i] = static_cast<int8_t>(static_cast<int>(v) - 128);
           }
         }
 
-        auto *bytes = reinterpret_cast<uint8_t *>(out);
         int64_t sum_sq = 0;
         for (size_t i = 0; i < dim; ++i) {
-          int v = static_cast<int>(bytes[i]);
-          sum_sq += v * v;
-          bytes[i] = static_cast<uint8_t>(v - 128);
+          const int raw = static_cast<int>(out[i]) + 128;
+          sum_sq += raw * raw;
         }
         auto *tail = reinterpret_cast<int32_t *>(out + dim);
         tail[0] = static_cast<int32_t>(sum_sq);

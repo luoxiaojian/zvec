@@ -181,7 +181,20 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
   ASSERT_TRUE(!!metric);
   ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
   auto compute = metric->distance();
+  auto compute_batch = metric->batch_distance();
   ASSERT_TRUE(compute);
+  ASSERT_TRUE(compute_batch);
+
+  auto selected_iter = holder2->create_iterator();
+  ASSERT_TRUE(selected_iter->is_valid());
+  std::string stored_query(
+      reinterpret_cast<const char *>(selected_iter->data()),
+      holder2->element_size());
+  std::string prepared_query = stored_query;
+  if (auto preprocess = metric->get_query_preprocess_func();
+      preprocess != nullptr) {
+    preprocess(prepared_query.data(), holder2->dimension());
+  }
 
   for (; iter->is_valid(); iter->next(), iter2->next()) {
     const float *mf = (const float *)iter->data();
@@ -193,6 +206,15 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
     ASSERT_NEAR(v1, v2, 0.1 * (DIMENSION + 1));
+
+    float pairwise_distance = 0.0f;
+    float batch_pairwise_distance = 0.0f;
+    compute(stored_query.data(), mi, holder2->dimension(), &pairwise_distance);
+    const void *batch_vector = mi;
+    compute_batch(&batch_vector, prepared_query.data(), 1, holder2->dimension(),
+                  &batch_pairwise_distance, nullptr);
+    EXPECT_NEAR(pairwise_distance, batch_pairwise_distance,
+                1e-4f * std::max(1.0f, std::fabs(pairwise_distance)));
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
