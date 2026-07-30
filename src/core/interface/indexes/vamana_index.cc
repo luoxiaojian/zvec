@@ -29,6 +29,10 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   if (param_.alpha <= 0.0f) param_.alpha = kDefaultVamanaAlpha;
   param_.reverse_prune_batch_size =
       std::max(1, std::min(64, param_.reverse_prune_batch_size));
+  param_.build_prefetch_offset =
+      std::max(0, std::min(256, param_.build_prefetch_offset));
+  param_.build_prefetch_lines =
+      std::max(0, std::min(256, param_.build_prefetch_lines));
 
   proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_MAX_DEGREE,
                             static_cast<uint32_t>(param_.max_degree));
@@ -52,6 +56,11 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
   proxima_index_params_.set(
       core::PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE,
       static_cast<uint32_t>(param_.reverse_prune_batch_size));
+  proxima_index_params_.set(
+      core::PARAM_VAMANA_STREAMER_PO,
+      static_cast<uint32_t>(param_.build_prefetch_offset));
+  proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_PL,
+                            static_cast<uint32_t>(param_.build_prefetch_lines));
 
   streamer_ = core::IndexFactory::CreateStreamer("VamanaStreamer");
 

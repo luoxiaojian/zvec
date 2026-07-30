@@ -258,6 +258,14 @@ class VamanaIndexParamBuilder
     param->reverse_prune_batch_size = reverse_prune_batch_size;
     return *this;
   }
+  VamanaIndexParamBuilder &WithBuildPrefetchOffset(int build_prefetch_offset) {
+    param->build_prefetch_offset = build_prefetch_offset;
+    return *this;
+  }
+  VamanaIndexParamBuilder &WithBuildPrefetchLines(int build_prefetch_lines) {
+    param->build_prefetch_lines = build_prefetch_lines;
+    return *this;
+  }
 
   std::shared_ptr<VamanaIndexParam> Build() override {
     return param;

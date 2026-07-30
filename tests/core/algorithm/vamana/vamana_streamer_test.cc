@@ -468,6 +468,8 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
     extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
     extra.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass_build);
     extra.set(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE, 8U);
+    extra.set(PARAM_VAMANA_STREAMER_PO, 7U);
+    extra.set(PARAM_VAMANA_STREAMER_PL, 2U);
     extra.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 16U);
     extra.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 32U);
     extra.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
@@ -503,6 +505,18 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
     ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_build_used",
                                                 &bulk_build_used));
     EXPECT_EQ(1U, bulk_build_used);
+    uint32_t bulk_fast_search_used = 0;
+    ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_fast_search_used",
+                                                &bulk_fast_search_used));
+    EXPECT_EQ(1U, bulk_fast_search_used);
+    uint32_t build_prefetch_offset = 0;
+    ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_offset",
+                                                &build_prefetch_offset));
+    EXPECT_EQ(7U, build_prefetch_offset);
+    uint32_t build_prefetch_lines = 0;
+    ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_lines",
+                                                &build_prefetch_lines));
+    EXPECT_EQ(2U, build_prefetch_lines);
     uint32_t refine_pass_count = 0;
     ASSERT_TRUE(streamer->stats().get_attribute("vamana_refine_pass_count",
                                                 &refine_pass_count));

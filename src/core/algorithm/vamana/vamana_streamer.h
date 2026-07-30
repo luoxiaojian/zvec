@@ -181,6 +181,8 @@ class VamanaStreamer : public IndexStreamer {
   uint32_t max_occlusion_size_{VamanaEntity::kDefaultMaxOcclusionSize};
   float alpha_{VamanaEntity::kDefaultAlpha};
   uint32_t ef_{VamanaEntity::kDefaultEf};
+  uint32_t build_prefetch_offset_{VamanaEntity::kDefaultBuildPrefetchOffset};
+  uint32_t build_prefetch_lines_{VamanaEntity::kDefaultBuildPrefetchLines};
   uint32_t reverse_prune_batch_size_{1};
   size_t bruteforce_threshold_{VamanaEntity::kDefaultBruteForceThreshold};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};

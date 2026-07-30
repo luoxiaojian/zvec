@@ -634,6 +634,12 @@ Attributes:
         before RobustPrune runs during bulk construction. ``1`` preserves the
         original immediate-prune behavior; values greater than one reduce
         repeated 65-to-64 pruning work. Valid range is 1 to 64. Default is 1.
+    build_prefetch_offset (int): Number of unvisited neighbor vectors to
+        prefetch before each construction-time batch distance calculation.
+        ``0`` disables vector prefetch. Valid range is 0 to 256. Default is 16.
+    build_prefetch_lines (int): Number of cache lines to prefetch per vector
+        during construction. ``0`` means all cache lines occupied by the
+        vector body. Valid range is 0 to 256. Default is 4.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -650,7 +656,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool, int>(),
+                    QuantizeType, bool, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -663,7 +669,11 @@ Examples:
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("reverse_prune_batch_size") =
-               core_interface::kDefaultVamanaReversePruneBatchSize)
+               core_interface::kDefaultVamanaReversePruneBatchSize,
+           py::arg("build_prefetch_offset") =
+               core_interface::kDefaultVamanaBuildPrefetchOffset,
+           py::arg("build_prefetch_lines") =
+               core_interface::kDefaultVamanaBuildPrefetchLines)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -698,6 +708,12 @@ Examples:
           "reverse_prune_batch_size",
           &VamanaIndexParams::reverse_prune_batch_size,
           "int: Number of pending reverse edges per node before RobustPrune.")
+      .def_property_readonly(
+          "build_prefetch_offset", &VamanaIndexParams::build_prefetch_offset,
+          "int: Number of unvisited construction neighbors to prefetch.")
+      .def_property_readonly(
+          "build_prefetch_lines", &VamanaIndexParams::build_prefetch_lines,
+          "int: Number of cache lines prefetched per construction vector.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -714,6 +730,8 @@ Examples:
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
             dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
+            dict["build_prefetch_offset"] = self.build_prefetch_offset();
+            dict["build_prefetch_lines"] = self.build_prefetch_lines();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -744,6 +762,10 @@ Examples:
                                                                   : "false") +
                     ", \"reverse_prune_batch_size\":" +
                     std::to_string(self.reverse_prune_batch_size()) +
+                    ", \"build_prefetch_offset\":" +
+                    std::to_string(self.build_prefetch_offset()) +
+                    ", \"build_prefetch_lines\":" +
+                    std::to_string(self.build_prefetch_lines()) +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
@@ -755,11 +777,12 @@ Examples:
                 self.use_contiguous_memory(), self.use_id_map(),
                 self.two_pass_build(), self.quantize_type(),
                 self.use_flat_contiguous_memory(),
-                self.reverse_prune_batch_size());
+                self.reverse_prune_batch_size(), self.build_prefetch_offset(),
+                self.build_prefetch_lines());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
-                t.size() != 11)
+                t.size() != 11 && t.size() != 12 && t.size() != 13)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -781,11 +804,20 @@ Examples:
                   t[6].cast<bool>(), t[7].cast<bool>(),
                   t[8].cast<QuantizeType>(), t[9].cast<bool>());
             }
+            const int build_prefetch_offset =
+                t.size() >= 12
+                    ? t[11].cast<int>()
+                    : core_interface::kDefaultVamanaBuildPrefetchOffset;
+            const int build_prefetch_lines =
+                t.size() >= 13
+                    ? t[12].cast<int>()
+                    : core_interface::kDefaultVamanaBuildPrefetchLines;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
-                t[9].cast<bool>(), t[10].cast<int>());
+                t[9].cast<bool>(), t[10].cast<int>(), build_prefetch_offset,
+                build_prefetch_lines);
           }));
 
   // FlatIndexParams

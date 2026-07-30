@@ -151,6 +151,10 @@ message VamanaIndexParams {
   // Number of pending reverse edges accumulated before RobustPrune runs.
   // A value of 1 preserves the original immediate-prune behavior.
   int32 reverse_prune_batch_size = 10;
+  // Construction-time GreedySearch vector-prefetch controls. Presence is
+  // tracked because zero explicitly disables the corresponding prefetch.
+  optional int32 build_prefetch_offset = 11;
+  optional int32 build_prefetch_lines = 12;
 }
 
 message FtsIndexParams {

@@ -636,6 +636,10 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
     ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
         "vamana_bulk_build_used", &bulk_build_used));
     EXPECT_EQ(use_contiguous_memory ? 1U : 0U, bulk_build_used);
+    uint32_t bulk_fast_search_used = 0;
+    ASSERT_TRUE(target->index_searcher()->stats().get_attribute(
+        "vamana_bulk_fast_search_used", &bulk_fast_search_used));
+    EXPECT_EQ(use_contiguous_memory ? 1U : 0U, bulk_fast_search_used);
 
     const uint32_t expected_refine_passes = two_pass_build ? 1U : 0U;
     const uint32_t expected_build_passes = two_pass_build ? 2U : 1U;
@@ -816,6 +820,8 @@ TEST(IndexInterface, Serialize) {
                      .WithSearchListSize(100)
                      .WithAlpha(1.2f)
                      .WithReversePruneBatchSize(8)
+                     .WithBuildPrefetchOffset(32)
+                     .WithBuildPrefetchLines(2)
                      .Build();
 
     std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
@@ -838,6 +844,8 @@ TEST(IndexInterface, Serialize) {
         std::dynamic_pointer_cast<VamanaIndexParam>(deserialized_param);
     ASSERT_NE(nullptr, vamana_param.get());
     ASSERT_EQ(8, vamana_param->reverse_prune_batch_size);
+    ASSERT_EQ(32, vamana_param->build_prefetch_offset);
+    ASSERT_EQ(2, vamana_param->build_prefetch_lines);
   }
 
   {

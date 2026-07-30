@@ -579,7 +579,11 @@ class VamanaIndexParams : public VectorIndexParams {
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       bool use_flat_contiguous_memory = false,
       int reverse_prune_batch_size =
-          core_interface::kDefaultVamanaReversePruneBatchSize)
+          core_interface::kDefaultVamanaReversePruneBatchSize,
+      int build_prefetch_offset =
+          core_interface::kDefaultVamanaBuildPrefetchOffset,
+      int build_prefetch_lines =
+          core_interface::kDefaultVamanaBuildPrefetchLines)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
@@ -589,7 +593,9 @@ class VamanaIndexParams : public VectorIndexParams {
         use_id_map_(use_id_map),
         two_pass_build_(two_pass_build),
         use_flat_contiguous_memory_(use_flat_contiguous_memory),
-        reverse_prune_batch_size_(reverse_prune_batch_size) {}
+        reverse_prune_batch_size_(reverse_prune_batch_size),
+        build_prefetch_offset_(build_prefetch_offset),
+        build_prefetch_lines_(build_prefetch_lines) {}
 
   VamanaIndexParams(MetricType metric_type, int max_degree,
                     int search_list_size, float alpha, bool saturate_graph,
@@ -606,7 +612,8 @@ class VamanaIndexParams : public VectorIndexParams {
     return std::make_shared<VamanaIndexParams>(
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
         use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_,
-        use_flat_contiguous_memory_, reverse_prune_batch_size_);
+        use_flat_contiguous_memory_, reverse_prune_batch_size_,
+        build_prefetch_offset_, build_prefetch_lines_);
   }
 
   std::string to_string() const override {
@@ -622,7 +629,9 @@ class VamanaIndexParams : public VectorIndexParams {
         << ",two_pass_build:" << (two_pass_build_ ? "true" : "false")
         << ",use_flat_contiguous_memory:"
         << (use_flat_contiguous_memory_ ? "true" : "false")
-        << ",reverse_prune_batch_size:" << reverse_prune_batch_size_ << "}";
+        << ",reverse_prune_batch_size:" << reverse_prune_batch_size_
+        << ",build_prefetch_offset:" << build_prefetch_offset_
+        << ",build_prefetch_lines:" << build_prefetch_lines_ << "}";
     return oss.str();
   }
 
@@ -640,7 +649,9 @@ class VamanaIndexParams : public VectorIndexParams {
            use_id_map_ == rhs.use_id_map_ &&
            two_pass_build_ == rhs.two_pass_build_ &&
            use_flat_contiguous_memory_ == rhs.use_flat_contiguous_memory_ &&
-           reverse_prune_batch_size_ == rhs.reverse_prune_batch_size_;
+           reverse_prune_batch_size_ == rhs.reverse_prune_batch_size_ &&
+           build_prefetch_offset_ == rhs.build_prefetch_offset_ &&
+           build_prefetch_lines_ == rhs.build_prefetch_lines_;
   }
 
   int max_degree() const {
@@ -700,6 +711,20 @@ class VamanaIndexParams : public VectorIndexParams {
     reverse_prune_batch_size_ = reverse_prune_batch_size;
   }
 
+  int build_prefetch_offset() const {
+    return build_prefetch_offset_;
+  }
+  void set_build_prefetch_offset(int build_prefetch_offset) {
+    build_prefetch_offset_ = build_prefetch_offset;
+  }
+
+  int build_prefetch_lines() const {
+    return build_prefetch_lines_;
+  }
+  void set_build_prefetch_lines(int build_prefetch_lines) {
+    build_prefetch_lines_ = build_prefetch_lines;
+  }
+
   bool use_flat_contiguous_memory() const override {
     return use_flat_contiguous_memory_;
   }
@@ -720,6 +745,8 @@ class VamanaIndexParams : public VectorIndexParams {
   bool two_pass_build_;
   bool use_flat_contiguous_memory_;
   int reverse_prune_batch_size_;
+  int build_prefetch_offset_;
+  int build_prefetch_lines_;
 };
 
 /*

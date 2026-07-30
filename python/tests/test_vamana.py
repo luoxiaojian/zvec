@@ -63,6 +63,8 @@ DEFAULT_ALPHA = 1.2
 DEFAULT_EF_SEARCH = 200
 DEFAULT_SATURATE_GRAPH = False
 DEFAULT_REVERSE_PRUNE_BATCH_SIZE = 1
+DEFAULT_BUILD_PREFETCH_OFFSET = 16
+DEFAULT_BUILD_PREFETCH_LINES = 4
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,8 @@ def _build_schema(
     alpha: float = 1.2,
     use_contiguous_memory: bool = False,
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
+    build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
+    build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -106,6 +110,8 @@ def _build_schema(
                     use_contiguous_memory=use_contiguous_memory,
                     quantize_type=quantize_type,
                     reverse_prune_batch_size=reverse_prune_batch_size,
+                    build_prefetch_offset=build_prefetch_offset,
+                    build_prefetch_lines=build_prefetch_lines,
                 ),
             ),
         ],
@@ -164,6 +170,8 @@ class TestVamanaIndexParamSurface:
             param.reverse_prune_batch_size
             == DEFAULT_REVERSE_PRUNE_BATCH_SIZE
         )
+        assert param.build_prefetch_offset == DEFAULT_BUILD_PREFETCH_OFFSET
+        assert param.build_prefetch_lines == DEFAULT_BUILD_PREFETCH_LINES
         assert param.quantize_type == QuantizeType.UNDEFINED
 
     def test_custom_construction(self):
@@ -177,6 +185,8 @@ class TestVamanaIndexParamSurface:
             use_id_map=False,
             quantize_type=QuantizeType.INT8,
             reverse_prune_batch_size=8,
+            build_prefetch_offset=32,
+            build_prefetch_lines=2,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -187,6 +197,8 @@ class TestVamanaIndexParamSurface:
         assert param.use_contiguous_memory is True
         assert param.use_id_map is False
         assert param.reverse_prune_batch_size == 8
+        assert param.build_prefetch_offset == 32
+        assert param.build_prefetch_lines == 2
         assert param.quantize_type == QuantizeType.INT8
 
     def test_to_dict_includes_all_fields(self):
@@ -200,6 +212,8 @@ class TestVamanaIndexParamSurface:
             use_id_map=False,
             quantize_type=QuantizeType.FP16,
             reverse_prune_batch_size=4,
+            build_prefetch_offset=0,
+            build_prefetch_lines=0,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -211,6 +225,8 @@ class TestVamanaIndexParamSurface:
         assert data["use_contiguous_memory"] is True
         assert data["use_id_map"] is False
         assert data["reverse_prune_batch_size"] == 4
+        assert data["build_prefetch_offset"] == 0
+        assert data["build_prefetch_lines"] == 0
         assert data["quantize_type"] == "FP16"
 
     def test_repr_contains_key_fields(self):
@@ -223,6 +239,8 @@ class TestVamanaIndexParamSurface:
                 saturate_graph=True,
                 use_contiguous_memory=True,
                 reverse_prune_batch_size=8,
+                build_prefetch_offset=64,
+                build_prefetch_lines=1,
             )
         )
         # Spot-check the most diagnostic fields are rendered.
@@ -234,6 +252,8 @@ class TestVamanaIndexParamSurface:
         assert "saturate_graph" in text and "true" in text
         assert "use_contiguous_memory" in text and "true" in text
         assert "reverse_prune_batch_size" in text and "8" in text
+        assert "build_prefetch_offset" in text and "64" in text
+        assert "build_prefetch_lines" in text and "1" in text
 
     @pytest.mark.parametrize(
         "field, kwargs",
@@ -245,6 +265,8 @@ class TestVamanaIndexParamSurface:
             ("use_contiguous_memory", dict(use_contiguous_memory=True)),
             ("use_id_map", dict(use_id_map=True)),
             ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
+            ("build_prefetch_offset", dict(build_prefetch_offset=24)),
+            ("build_prefetch_lines", dict(build_prefetch_lines=3)),
         ],
     )
     def test_readonly_properties(self, field, kwargs):
@@ -267,6 +289,8 @@ class TestVamanaIndexParamSurface:
             use_id_map=False,
             quantize_type=QuantizeType.INT8,
             reverse_prune_batch_size=8,
+            build_prefetch_offset=48,
+            build_prefetch_lines=3,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -278,6 +302,8 @@ class TestVamanaIndexParamSurface:
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
         assert restored.reverse_prune_batch_size == 8
+        assert restored.build_prefetch_offset == 48
+        assert restored.build_prefetch_lines == 3
         assert restored.quantize_type == QuantizeType.INT8
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
@@ -400,6 +426,8 @@ class TestVamanaEndToEnd:
             alpha=1.3,
             use_contiguous_memory=True,
             reverse_prune_batch_size=8,
+            build_prefetch_offset=0,
+            build_prefetch_lines=0,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
@@ -415,6 +443,8 @@ class TestVamanaEndToEnd:
             assert ip.alpha == pytest.approx(1.3)
             assert ip.use_contiguous_memory is True
             assert ip.reverse_prune_batch_size == 8
+            assert ip.build_prefetch_offset == 0
+            assert ip.build_prefetch_lines == 0
         finally:
             coll.destroy()
 

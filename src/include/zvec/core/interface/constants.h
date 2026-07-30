@@ -32,6 +32,8 @@ constexpr static uint32_t kDefaultVamanaEfSearch = 200;
 constexpr static uint32_t kDefaultVamanaMaxOcclusionSize = 750;
 constexpr static bool kDefaultVamanaSaturateGraph = false;
 constexpr static uint32_t kDefaultVamanaReversePruneBatchSize = 1;
+constexpr static uint32_t kDefaultVamanaBuildPrefetchOffset = 16;
+constexpr static uint32_t kDefaultVamanaBuildPrefetchLines = 4;
 
 constexpr const uint32_t kDefaultRabitqTotalBits = 7;
 constexpr const uint32_t kDefaultRabitqNumClusters = 16;

@@ -357,6 +357,8 @@ struct VamanaIndexParam : public BaseIndexParam {
   bool use_contiguous_memory = false;
   bool two_pass_build = false;
   int reverse_prune_batch_size = kDefaultVamanaReversePruneBatchSize;
+  int build_prefetch_offset = kDefaultVamanaBuildPrefetchOffset;
+  int build_prefetch_lines = kDefaultVamanaBuildPrefetchLines;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 
