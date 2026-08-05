@@ -218,8 +218,28 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       }
     }
 
+    const uint32_t po =
+        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+    uint32_t i = 0;
+    for (; i < po; ++i) {
+      node_id_t node = neighbors[i];
+      if (VisitImpl::visited(visit_ctx, node)) continue;
+      VisitImpl::set_visited(visit_ctx, node);
+      const void *vec_ptr = entity.get_vector_ptr(node);
+      const char *p = reinterpret_cast<const char *>(vec_ptr);
+      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
+        ailego_prefetch(p + cl * 64);
+      }
+      neighbor_ids[unvisited_count] = node;
+      neighbor_vecs[unvisited_count] = vec_ptr;
+      if constexpr (HasExtraValues) {
+        extra_values[unvisited_count] =
+            entity.get_extra_values_ptr(node, vec_ptr);
+      }
+      unvisited_count++;
+    }
+    for (; i < neighbors.size(); ++i) {
       node_id_t node = neighbors[i];
       if (VisitImpl::visited(visit_ctx, node)) continue;
       VisitImpl::set_visited(visit_ctx, node);
@@ -234,13 +254,6 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
     }
 
     if (unvisited_count == 0) continue;
-    const uint32_t prefetch_count = std::min(prefetch_offset, unvisited_count);
-    for (uint32_t i = 0; i < prefetch_count; ++i) {
-      const char *p = reinterpret_cast<const char *>(neighbor_vecs[i]);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(p + cl * 64);
-      }
-    }
     if constexpr (HasExtraValues) {
       dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
                     extra_values.data());
