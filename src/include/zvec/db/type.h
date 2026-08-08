@@ -84,8 +84,6 @@ enum class QuantizeType : uint32_t {
   UNIFORM_INT8 = 5,
   UNIFORM_UINT8 = 6,
   UNIFORM_UINT4 = 7,
-  // Internal, non-trained FP32 -> raw UINT8 storage conversion used by Flat.
-  RAW_UINT8 = 8,
 };
 
 enum class MetricType : uint32_t {

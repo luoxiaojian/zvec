@@ -431,21 +431,15 @@ class FlatIndexParams : public VectorIndexParams {
 // define default index params
 const FlatIndexParams DefaultVectorIndexParams(MetricType::IP);
 
+inline DataType ResolveFlatDataType(DataType source_data_type,
+                                    DataType flat_data_type) {
+  return flat_data_type == DataType::UNDEFINED ? source_data_type
+                                               : flat_data_type;
+}
+
 inline FlatIndexParams MakeDefaultVectorIndexParams(
-    MetricType metric_type, bool use_contiguous_memory = false,
-    DataType source_data_type = DataType::VECTOR_FP32,
-    DataType flat_data_type = DataType::UNDEFINED) {
-  const auto resolved_flat_data_type =
-      flat_data_type == DataType::UNDEFINED ? source_data_type : flat_data_type;
-  const auto internal_quantize_type =
-      source_data_type == DataType::VECTOR_FP32 &&
-              resolved_flat_data_type == DataType::VECTOR_FP16
-          ? QuantizeType::FP16
-          : source_data_type == DataType::VECTOR_FP32 &&
-                    resolved_flat_data_type == DataType::VECTOR_UINT8
-                ? QuantizeType::RAW_UINT8
-                : QuantizeType::UNDEFINED;
-  return FlatIndexParams(metric_type, internal_quantize_type,
+    MetricType metric_type, bool use_contiguous_memory = false) {
+  return FlatIndexParams(metric_type, QuantizeType::UNDEFINED,
                          use_contiguous_memory);
 }
 

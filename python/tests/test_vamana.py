@@ -568,8 +568,8 @@ class TestVamanaEndToEnd:
     ):
         """The refine Flat may persist FP16 independently of graph U4.
 
-        Two optimize rounds cover the important merge boundary where an FP16
-        Flat source must be reverted before the U4 converter is trained again.
+        Two optimize rounds cover the merge boundary where the U4 builder
+        consumes the native FP16 Flat source directly.
         """
         schema = _build_schema(
             "vamana_u4_fp16_flat_refine",

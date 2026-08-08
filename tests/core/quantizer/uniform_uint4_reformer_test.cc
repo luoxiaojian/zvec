@@ -100,5 +100,107 @@ TEST(UniformUint4Reformer, ExactClippedCalibrationPackingAndPersistence) {
             transformed);
 }
 
+TEST(UniformUint4Reformer, BuildsDirectlyFromNativeFp16Holder) {
+  constexpr size_t dimension = 3;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, dimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto converter =
+      IndexFactory::CreateConverter("UniformUint4StreamingConverter");
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(meta, ailego::Params()));
+
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(
+          dimension);
+  for (size_t i = 0; i < 2; ++i) {
+    ailego::NumericalVector<ailego::Float16> vector(dimension);
+    for (size_t d = 0; d < dimension; ++d) {
+      vector[d] = static_cast<float>(i * dimension + d);
+    }
+    ASSERT_TRUE(holder->emplace(i, vector));
+  }
+  ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, holder));
+
+  float minimum = 0.0f;
+  float range = 0.0f;
+  ASSERT_TRUE(converter->meta().reformer_params().get(
+      UNIFORM_UINT4_REFORMER_MINIMUM, &minimum));
+  ASSERT_TRUE(converter->meta().reformer_params().get(
+      UNIFORM_UINT4_REFORMER_RANGE, &range));
+  EXPECT_FLOAT_EQ(0.0f, minimum);
+  EXPECT_FLOAT_EQ(5.0f, range);
+
+  auto encoded_iter = converter->result()->create_iterator();
+  ASSERT_TRUE(encoded_iter->is_valid());
+  const std::vector<float> first{0.0f, 1.0f, 2.0f};
+  const auto expected =
+      ScalarEncode(first.data(), dimension, minimum, range);
+  EXPECT_EQ(0,
+            std::memcmp(expected.data(), encoded_iter->data(), expected.size()));
+
+  auto reformer =
+      IndexFactory::CreateReformer("UniformUint4StreamingReformer");
+  ASSERT_NE(nullptr, reformer);
+  ASSERT_EQ(0, reformer->init(converter->meta().reformer_params()));
+  auto native_iter = holder->create_iterator();
+  std::string converted;
+  IndexQueryMeta converted_meta;
+  ASSERT_EQ(0, reformer->convert(
+                   native_iter->data(),
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP16, dimension),
+                   &converted, &converted_meta));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(expected.data()),
+                        expected.size()),
+            converted);
+}
+
+TEST(UniformUint4Reformer, BuildsDirectlyFromNativeUint8Holder) {
+  constexpr size_t dimension = 3;
+
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, dimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto converter =
+      IndexFactory::CreateConverter("UniformUint4StreamingConverter");
+  ASSERT_NE(nullptr, converter);
+  ASSERT_EQ(0, converter->init(meta, ailego::Params()));
+
+  auto holder =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_UINT8>>(
+          dimension);
+  for (size_t i = 0; i < 2; ++i) {
+    ailego::NumericalVector<uint8_t> vector(dimension);
+    for (size_t d = 0; d < dimension; ++d) {
+      vector[d] = static_cast<uint8_t>(i * dimension + d);
+    }
+    ASSERT_TRUE(holder->emplace(i, vector));
+  }
+  ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, holder));
+
+  auto encoded_iter = converter->result()->create_iterator();
+  ASSERT_TRUE(encoded_iter->is_valid());
+  const std::vector<float> first{0.0f, 1.0f, 2.0f};
+  const auto expected = ScalarEncode(first.data(), dimension, 0.0f, 5.0f);
+  EXPECT_EQ(0,
+            std::memcmp(expected.data(), encoded_iter->data(), expected.size()));
+
+  auto reformer =
+      IndexFactory::CreateReformer("UniformUint4StreamingReformer");
+  ASSERT_NE(nullptr, reformer);
+  ASSERT_EQ(0, reformer->init(converter->meta().reformer_params()));
+  auto native_iter = holder->create_iterator();
+  std::string converted;
+  IndexQueryMeta converted_meta;
+  ASSERT_EQ(0, reformer->convert(
+                   native_iter->data(),
+                   IndexQueryMeta(IndexMeta::DataType::DT_UINT8, dimension),
+                   &converted, &converted_meta));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(expected.data()),
+                        expected.size()),
+            converted);
+}
+
 }  // namespace
 }  // namespace zvec::core

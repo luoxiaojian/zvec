@@ -464,8 +464,6 @@ struct QuantizeTypeCodeBook {
         return QuantizeType::UNIFORM_UINT8;
       case proto::QuantizeType::QT_UNIFORM_UINT4:
         return QuantizeType::UNIFORM_UINT4;
-      case proto::QuantizeType::QT_RAW_UINT8:
-        return QuantizeType::RAW_UINT8;
       default:
         return QuantizeType::UNDEFINED;
     }
@@ -487,8 +485,6 @@ struct QuantizeTypeCodeBook {
         return proto::QuantizeType::QT_UNIFORM_UINT8;
       case QuantizeType::UNIFORM_UINT4:
         return proto::QuantizeType::QT_UNIFORM_UINT4;
-      case QuantizeType::RAW_UINT8:
-        return proto::QuantizeType::QT_RAW_UINT8;
       default:
         return proto::QuantizeType::QT_UNDEFINED;
     }
@@ -510,8 +506,6 @@ struct QuantizeTypeCodeBook {
         return "UNIFORM_UINT8";
       case QuantizeType::UNIFORM_UINT4:
         return "UNIFORM_UINT4";
-      case QuantizeType::RAW_UINT8:
-        return "RAW_UINT8";
       default:
         return "UNDEFINED";
     }

@@ -251,8 +251,6 @@ TEST(QuantizeTypeCodeBookTest, ProtoToCppConversion) {
   EXPECT_EQ(QuantizeTypeCodeBook::Get(proto::QT_FP16), QuantizeType::FP16);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(proto::QT_INT4), QuantizeType::INT4);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(proto::QT_INT8), QuantizeType::INT8);
-  EXPECT_EQ(QuantizeTypeCodeBook::Get(proto::QT_RAW_UINT8),
-            QuantizeType::RAW_UINT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(proto::QT_UNDEFINED),
             QuantizeType::UNDEFINED);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(static_cast<proto::QuantizeType>(999)),
@@ -264,8 +262,6 @@ TEST(QuantizeTypeCodeBookTest, CppToProtoConversion) {
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::FP16), proto::QT_FP16);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::INT4), proto::QT_INT4);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::INT8), proto::QT_INT8);
-  EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::RAW_UINT8),
-            proto::QT_RAW_UINT8);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(QuantizeType::UNDEFINED),
             proto::QT_UNDEFINED);
   EXPECT_EQ(QuantizeTypeCodeBook::Get(static_cast<QuantizeType>(999)),

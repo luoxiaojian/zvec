@@ -70,6 +70,7 @@ enum IndexType {
 };
 
 enum QuantizeType {
+  reserved 8;
   QT_UNDEFINED = 0;
   QT_FP16 = 1;
   QT_INT8 = 2;
@@ -78,7 +79,6 @@ enum QuantizeType {
   QT_UNIFORM_INT8 = 5;
   QT_UNIFORM_UINT8 = 6;
   QT_UNIFORM_UINT4 = 7;
-  QT_RAW_UINT8 = 8;
 };
 
 enum MetricType {

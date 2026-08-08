@@ -89,8 +89,6 @@ enum class QuantizerType {
   kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
   kUniformUint8, // Global uniform uint8 quantization (shared scale/bias).
   kUniformUint4, // Global packed uint4 quantization (shared clipped range).
-  // Direct FP32 -> uint8_t physical conversion. No training or scale/bias.
-  kRawUint8,
 };
 
 struct SerializableBase {

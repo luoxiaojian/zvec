@@ -1347,6 +1347,19 @@ struct MultiPassIndexHolder<IndexMeta::DataType::DT_INT8>
   }
 };
 
+/*! Multi-Pass Index Holder (UINT8) */
+template <>
+struct MultiPassIndexHolder<IndexMeta::DataType::DT_UINT8>
+    : public MultiPassNumericalIndexHolder<uint8_t> {
+  //! Constructor
+  using MultiPassNumericalIndexHolder::MultiPassNumericalIndexHolder;
+
+  //! Retrieve type information
+  IndexMeta::DataType data_type(void) const override {
+    return IndexMeta::DataType::DT_UINT8;
+  }
+};
+
 /*! Multi-Pass Index Holder (INT16)
  */
 template <>

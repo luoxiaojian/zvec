@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -89,19 +90,19 @@ class UniformUint4StreamingReformer : public IndexReformer {
 
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(query, qmeta, 1, out, ometa);
+    return Quantize(query, qmeta, 1, false, out, ometa);
   }
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(query, qmeta, count, out, ometa);
+    return Quantize(query, qmeta, count, false, out, ometa);
   }
   int convert(const void *record, const IndexQueryMeta &rmeta, std::string *out,
               IndexQueryMeta *ometa) const override {
-    return Quantize(record, rmeta, 1, out, ometa);
+    return Quantize(record, rmeta, 1, true, out, ometa);
   }
   int convert(const void *records, const IndexQueryMeta &rmeta, uint32_t count,
               std::string *out, IndexQueryMeta *ometa) const override {
-    return Quantize(records, rmeta, count, out, ometa);
+    return Quantize(records, rmeta, count, true, out, ometa);
   }
 
   int normalize(const void * /*query*/, const IndexQueryMeta & /*qmeta*/,
@@ -139,24 +140,18 @@ class UniformUint4StreamingReformer : public IndexReformer {
 
  private:
   int Quantize(const void *source, const IndexQueryMeta &source_meta,
-               uint32_t count, std::string *out,
+               uint32_t count, bool accept_native_flat, std::string *out,
                IndexQueryMeta *output_meta) const {
     if (!initialized_) return IndexError_Runtime;
-    if (!source || !out || !output_meta ||
-        source_meta.data_type() != IndexMeta::DataType::DT_FP32 ||
-        source_meta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32) ||
+    const auto source_type = source_meta.data_type();
+    const bool is_fp32 = source_type == IndexMeta::DataType::DT_FP32;
+    const bool is_native_flat =
+        accept_native_flat &&
+        (source_type == IndexMeta::DataType::DT_FP16 ||
+         source_type == IndexMeta::DataType::DT_UINT8);
+    if (!source || !out || !output_meta || (!is_fp32 && !is_native_flat) ||
         source_meta.dimension() != original_dimension_) {
       return IndexError_Mismatch;
-    }
-
-    const auto *input = static_cast<const float *>(source);
-    const size_t value_count = static_cast<size_t>(count) * original_dimension_;
-    for (size_t i = 0; i < value_count; ++i) {
-      if (!std::isfinite(input[i])) {
-        LOG_ERROR("UniformUint4StreamingReformer: non-finite query value");
-        return IndexError_InvalidArgument;
-      }
     }
 
     *output_meta = source_meta;
@@ -164,8 +159,34 @@ class UniformUint4StreamingReformer : public IndexReformer {
     const size_t output_stride = output_meta->element_size();
     out->resize(static_cast<size_t>(count) * output_stride);
     auto *output = reinterpret_cast<uint8_t *>(out->data());
+    const auto *source_bytes = static_cast<const uint8_t *>(source);
+    static thread_local std::vector<float> decoded;
+    if (!is_fp32) decoded.resize(original_dimension_);
     for (uint32_t i = 0; i < count; ++i) {
-      const float *row = input + static_cast<size_t>(i) * original_dimension_;
+      const void *source_row =
+          source_bytes + static_cast<size_t>(i) * source_meta.element_size();
+      const float *row = nullptr;
+      if (is_fp32) {
+        row = static_cast<const float *>(source_row);
+      } else if (source_type == IndexMeta::DataType::DT_FP16) {
+        const auto *input = static_cast<const ailego::Float16 *>(source_row);
+        for (size_t d = 0; d < original_dimension_; ++d) {
+          decoded[d] = static_cast<float>(input[d]);
+        }
+        row = decoded.data();
+      } else {
+        const auto *input = static_cast<const uint8_t *>(source_row);
+        for (size_t d = 0; d < original_dimension_; ++d) {
+          decoded[d] = static_cast<float>(input[d]);
+        }
+        row = decoded.data();
+      }
+      for (size_t d = 0; d < original_dimension_; ++d) {
+        if (!std::isfinite(row[d])) {
+          LOG_ERROR("UniformUint4StreamingReformer: non-finite input value");
+          return IndexError_InvalidArgument;
+        }
+      }
       uint8_t *encoded = output + static_cast<size_t>(i) * output_stride;
       if (quantize_func_) {
         quantize_func_(row, original_dimension_, minimum_, range_, encoded);

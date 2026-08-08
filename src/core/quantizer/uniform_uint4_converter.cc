@@ -85,6 +85,35 @@ void QuantizeScalar(const float *input, size_t dimension, float minimum,
   }
 }
 
+bool IsSupportedSourceType(IndexMeta::DataType data_type) {
+  return data_type == IndexMeta::DataType::DT_FP32 ||
+         data_type == IndexMeta::DataType::DT_FP16 ||
+         data_type == IndexMeta::DataType::DT_UINT8;
+}
+
+float SourceValue(const void *record, IndexMeta::DataType data_type,
+                  size_t index) {
+  switch (data_type) {
+    case IndexMeta::DataType::DT_FP32:
+      return static_cast<const float *>(record)[index];
+    case IndexMeta::DataType::DT_FP16:
+      return static_cast<float>(
+          static_cast<const ailego::Float16 *>(record)[index]);
+    case IndexMeta::DataType::DT_UINT8:
+      return static_cast<float>(static_cast<const uint8_t *>(record)[index]);
+    default:
+      return std::numeric_limits<float>::quiet_NaN();
+  }
+}
+
+void DecodeSource(const void *record, IndexMeta::DataType data_type,
+                  size_t dimension, std::vector<float> *output) {
+  output->resize(dimension);
+  for (size_t i = 0; i < dimension; ++i) {
+    (*output)[i] = SourceValue(record, data_type, i);
+  }
+}
+
 }  // namespace
 
 class UniformUint4StreamingConverter : public IndexConverter {
@@ -129,10 +158,11 @@ class UniformUint4StreamingConverter : public IndexConverter {
   }
 
   int train(IndexHolder::Pointer holder) override {
-    if (!holder || holder->data_type() != IndexMeta::DataType::DT_FP32 ||
+    if (!holder || !IsSupportedSourceType(holder->data_type()) ||
         holder->dimension() != original_dimension_) {
       return IndexError_Mismatch;
     }
+    const auto source_type = holder->data_type();
 
     ailego::ElapsedTime timer;
     AILEGO_DEFER([&]() { stats_.set_trained_costtime(timer.milli_seconds()); });
@@ -172,16 +202,16 @@ class UniformUint4StreamingConverter : public IndexConverter {
         }
         size_t actual_records = 0;
         for (; iter->is_valid(); iter->next(), ++actual_records) {
-          const auto *vector = static_cast<const float *>(iter->data());
           for (size_t d = 0; d < original_dimension_; ++d) {
-            if (!std::isfinite(vector[d])) {
+            const float value = SourceValue(iter->data(), source_type, d);
+            if (!std::isfinite(value)) {
               LOG_ERROR(
                   "UniformUint4StreamingConverter: non-finite training "
                   "value (record_idx=%zu, dim_idx=%zu)",
                   actual_records, d);
               return IndexError_InvalidArgument;
             }
-            const uint32_t key = FloatOrderKey(vector[d]);
+            const uint32_t key = FloatOrderKey(value);
             const size_t bucket = (key >> shift) & 0xffU;
             if ((key & prefix_mask) == lower.prefix) ++lower_hist[bucket];
             if ((key & prefix_mask) == upper.prefix) ++upper_hist[bucket];
@@ -210,11 +240,11 @@ class UniformUint4StreamingConverter : public IndexConverter {
       if (!iter) return IndexError_Runtime;
       record_count = 0;
       for (; iter->is_valid(); iter->next(), ++record_count) {
-        const auto *vector = static_cast<const float *>(iter->data());
         for (size_t d = 0; d < original_dimension_; ++d) {
-          if (!std::isfinite(vector[d])) return IndexError_InvalidArgument;
-          minimum_ = std::min(minimum_, vector[d]);
-          maximum = std::max(maximum, vector[d]);
+          const float value = SourceValue(iter->data(), source_type, d);
+          if (!std::isfinite(value)) return IndexError_InvalidArgument;
+          minimum_ = std::min(minimum_, value);
+          maximum = std::max(maximum, value);
         }
       }
       range_ = maximum - minimum_;
@@ -239,7 +269,7 @@ class UniformUint4StreamingConverter : public IndexConverter {
   }
 
   int transform(IndexHolder::Pointer holder) override {
-    if (!holder || holder->data_type() != IndexMeta::DataType::DT_FP32 ||
+    if (!holder || !IsSupportedSourceType(holder->data_type()) ||
         holder->dimension() != original_dimension_ || !(range_ > 0.0f)) {
       return IndexError_Mismatch;
     }
@@ -303,7 +333,14 @@ class UniformUint4StreamingConverter : public IndexConverter {
      private:
       void Encode() {
         if (!front_->is_valid()) return;
-        const auto *input = static_cast<const float *>(front_->data());
+        const float *input = nullptr;
+        if (owner_->source_type_ == IndexMeta::DataType::DT_FP32) {
+          input = static_cast<const float *>(front_->data());
+        } else {
+          DecodeSource(front_->data(), owner_->source_type_,
+                       owner_->original_dimension_, &decoded_);
+          input = decoded_.data();
+        }
         if (owner_->quantize_func_) {
           owner_->quantize_func_(input, owner_->original_dimension_,
                                  owner_->minimum_, owner_->range_,
@@ -317,12 +354,14 @@ class UniformUint4StreamingConverter : public IndexConverter {
 
       const UniformUint4Holder *owner_{nullptr};
       std::vector<uint8_t> buffer_{};
+      std::vector<float> decoded_{};
       IndexHolder::Iterator::Pointer front_{};
     };
 
     UniformUint4Holder(IndexHolder::Pointer front, size_t original_dimension,
                        size_t encoded_dimension, float minimum, float range)
-        : front_(std::move(front)), original_dimension_(original_dimension),
+        : front_(std::move(front)), source_type_(front_->data_type()),
+          original_dimension_(original_dimension),
           encoded_dimension_(encoded_dimension), minimum_(minimum),
           range_(range),
           quantize_func_(turbo::get_uniform_uint4_quantize_func(
@@ -352,6 +391,7 @@ class UniformUint4StreamingConverter : public IndexConverter {
 
    private:
     IndexHolder::Pointer front_{};
+    IndexMeta::DataType source_type_{IndexMeta::DataType::DT_UNDEFINED};
     size_t original_dimension_{0};
     size_t encoded_dimension_{0};
     float minimum_{0.0f};

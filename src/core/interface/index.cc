@@ -19,6 +19,8 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include <zvec/ailego/utility/float_helper.h>
+#include <zvec/turbo/turbo.h>
 #include "algorithm/flat/flat_streamer.h"
 #include "mixed_reducer/mixed_reducer_params.h"
 
@@ -26,115 +28,91 @@ namespace zvec::core_interface {
 
 namespace {
 
-// A multipass view that exposes one streamer's vectors in its public input
-// representation. This is important when a merge source stores FP16 (or any
-// other transformed representation): downstream converter training must see
-// reverted vectors rather than interpreting the stored bytes as FP32.
-class ReformingIndexHolder final : public core::IndexHolder {
- public:
-  class Iterator final : public core::IndexHolder::Iterator {
-   public:
-    Iterator(core::IndexHolder::Iterator::Pointer source_iter,
-             core::IndexReformer::Pointer reformer,
-             core::IndexQueryMeta stored_meta)
-        : source_iter_(std::move(source_iter)),
-          reformer_(std::move(reformer)),
-          stored_meta_(std::move(stored_meta)) {
-      refresh();
-    }
+int PrepareNativeFlatQuery(const VectorData &source,
+                           const core::IndexQueryMeta &source_meta,
+                           const core::IndexQueryMeta &flat_meta,
+                           std::string *storage, VectorData *prepared) {
+  if (!storage || !prepared ||
+      !std::holds_alternative<DenseVector>(source.vector)) {
+    return core::IndexError_InvalidArgument;
+  }
+  const auto &dense = std::get<DenseVector>(source.vector);
+  if (source_meta.data_type() == flat_meta.data_type() &&
+      source_meta.dimension() == flat_meta.dimension()) {
+    *prepared = source;
+    return core::IndexError_Success;
+  }
+  if (source_meta.data_type() != core::IndexMeta::DataType::DT_FP32 ||
+      source_meta.dimension() != flat_meta.dimension()) {
+    return core::IndexError_Unsupported;
+  }
 
-    const void *data() const override {
-      if (!is_valid()) {
-        return nullptr;
-      }
-      return reformer_ ? reverted_.data() : source_iter_->data();
-    }
-
-    bool is_valid() const override {
-      return !revert_failed_ && source_iter_ != nullptr &&
-             source_iter_->is_valid();
-    }
-
-    uint64_t key() const override {
-      return source_iter_->key();
-    }
-
-    void next() override {
-      if (source_iter_ != nullptr) {
-        source_iter_->next();
-      }
-      refresh();
-    }
-
-   private:
-    void refresh() {
-      revert_failed_ = false;
-      reverted_.clear();
-      if (source_iter_ == nullptr || !source_iter_->is_valid() ||
-          reformer_ == nullptr) {
-        return;
-      }
-      if (reformer_->revert(source_iter_->data(), stored_meta_, &reverted_) !=
-          core::IndexError_Success) {
-        LOG_ERROR("Failed to revert a merge-source vector");
-        revert_failed_ = true;
+  const auto *input = static_cast<const float *>(dense.data);
+  if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP16) {
+    storage->resize(flat_meta.dimension() * sizeof(ailego::Float16));
+    ailego::FloatHelper::ToFP16(
+        input, flat_meta.dimension(),
+        reinterpret_cast<uint16_t *>(storage->data()));
+  } else if (flat_meta.data_type() == core::IndexMeta::DataType::DT_UINT8) {
+    storage->resize(flat_meta.dimension());
+    auto *output = reinterpret_cast<uint8_t *>(storage->data());
+    const auto convert = turbo::get_raw_uint8_convert_func();
+    if (convert) {
+      convert(input, flat_meta.dimension(), output);
+    } else {
+      for (size_t i = 0; i < flat_meta.dimension(); ++i) {
+        output[i] = static_cast<uint8_t>(input[i]);
       }
     }
+  } else {
+    return core::IndexError_Unsupported;
+  }
+  prepared->vector = DenseVector{storage->data()};
+  return core::IndexError_Success;
+}
 
-    core::IndexHolder::Iterator::Pointer source_iter_{};
-    core::IndexReformer::Pointer reformer_{};
-    core::IndexQueryMeta stored_meta_{};
-    std::string reverted_{};
-    bool revert_failed_{false};
-  };
-
-  ReformingIndexHolder(core::IndexProvider::Pointer provider,
-                       core::IndexReformer::Pointer reformer,
-                       core::IndexQueryMeta stored_meta,
-                       core::IndexQueryMeta original_meta)
-      : provider_(std::move(provider)),
-        reformer_(std::move(reformer)),
-        stored_meta_(std::move(stored_meta)),
-        original_meta_(std::move(original_meta)) {}
-
-  size_t count() const override {
-    return provider_ ? provider_->count() : 0;
+int RestoreNativeFlatVectors(const core::IndexQueryMeta &public_meta,
+                             const core::IndexQueryMeta &flat_meta,
+                             SearchResult *result) {
+  if (!result || public_meta.dimension() != flat_meta.dimension()) {
+    return core::IndexError_InvalidArgument;
+  }
+  if (public_meta.data_type() == flat_meta.data_type()) {
+    return core::IndexError_Success;
+  }
+  if (public_meta.data_type() != core::IndexMeta::DataType::DT_FP32) {
+    return core::IndexError_Unsupported;
   }
 
-  size_t dimension() const override {
-    return original_meta_.dimension();
-  }
-
-  core::IndexMeta::DataType data_type() const override {
-    return original_meta_.data_type();
-  }
-
-  size_t element_size() const override {
-    return original_meta_.element_size();
-  }
-
-  bool multipass() const override {
-    return true;
-  }
-
-  core::IndexHolder::Iterator::Pointer create_iterator() override {
-    if (!provider_) {
-      return nullptr;
+  result->reverted_vector_list_.resize(result->doc_list_.size());
+  for (size_t i = 0; i < result->doc_list_.size(); ++i) {
+    const void *source = result->doc_list_[i].vector();
+    if (!source) {
+      return core::IndexError_Runtime;
     }
-    return std::make_unique<Iterator>(provider_->create_iterator(), reformer_,
-                                      stored_meta_);
+    auto &restored = result->reverted_vector_list_[i];
+    restored.resize(public_meta.dimension() * sizeof(float));
+    auto *output = reinterpret_cast<float *>(restored.data());
+    if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP16) {
+      ailego::FloatHelper::ToFP32(static_cast<const uint16_t *>(source),
+                                 public_meta.dimension(), output);
+    } else if (flat_meta.data_type() ==
+               core::IndexMeta::DataType::DT_UINT8) {
+      const auto *input = static_cast<const uint8_t *>(source);
+      for (size_t d = 0; d < public_meta.dimension(); ++d) {
+        output[d] = static_cast<float>(input[d]);
+      }
+    } else {
+      result->reverted_vector_list_.clear();
+      return core::IndexError_Unsupported;
+    }
   }
-
- private:
-  core::IndexProvider::Pointer provider_{};
-  core::IndexReformer::Pointer reformer_{};
-  core::IndexQueryMeta stored_meta_{};
-  core::IndexQueryMeta original_meta_{};
-};
+  return core::IndexError_Success;
+}
 
 // A multipass view over merge-source providers. Unlike
 // MultiPassIndexHolder this holder does not materialize a second in-memory
-// copy of every FP32 vector; each converter pass creates fresh provider
+// copy of every source vector; each converter pass creates fresh provider
 // iterators and walks sources in their original order.
 class MergeSourceIndexHolder final : public core::IndexHolder {
  public:
@@ -181,9 +159,9 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
   };
 
   MergeSourceIndexHolder(std::vector<core::IndexHolder::Pointer> sources,
-                         core::IndexQueryMeta input_meta)
+                         core::IndexQueryMeta source_meta)
       : sources_(std::move(sources)),
-        input_meta_(std::move(input_meta)) {
+        source_meta_(std::move(source_meta)) {
     for (const auto &source : sources_) {
       count_ += source->count();
     }
@@ -194,15 +172,15 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
   }
 
   size_t dimension() const override {
-    return input_meta_.dimension();
+    return source_meta_.dimension();
   }
 
   core::IndexMeta::DataType data_type() const override {
-    return input_meta_.data_type();
+    return source_meta_.data_type();
   }
 
   size_t element_size() const override {
-    return input_meta_.element_size();
+    return source_meta_.element_size();
   }
 
   bool multipass() const override {
@@ -216,28 +194,38 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
  private:
   std::vector<core::IndexHolder::Pointer> sources_{};
   size_t count_{0};
-  core::IndexQueryMeta input_meta_{};
+  core::IndexQueryMeta source_meta_{};
 };
 
 int TrainConverterFromMergeSources(
     const core::IndexConverter::Pointer &converter,
-    const std::vector<Index::Pointer> &indexes,
-    const core::IndexQueryMeta &input_meta) {
+    const std::vector<Index::Pointer> &indexes) {
   if (!converter || indexes.empty()) {
     return core::IndexError_InvalidArgument;
   }
 
   std::vector<core::IndexHolder::Pointer> sources;
   sources.reserve(indexes.size());
+  core::IndexQueryMeta source_meta;
+  bool has_source_meta = false;
   for (const auto &index : indexes) {
-    auto holder = index->create_original_index_holder();
-    if (!holder) {
+    auto provider = index->create_index_provider();
+    if (!provider) {
       continue;
     }
-    sources.emplace_back(std::move(holder));
+    if (!has_source_meta) {
+      source_meta.set_meta(provider->data_type(), provider->dimension());
+      has_source_meta = true;
+    } else if (provider->data_type() != source_meta.data_type() ||
+               provider->dimension() != source_meta.dimension() ||
+               provider->element_size() != source_meta.element_size()) {
+      LOG_ERROR("Merge-source vector type mismatch");
+      return core::IndexError_Mismatch;
+    }
+    sources.emplace_back(std::move(provider));
   }
   auto holder = std::make_shared<MergeSourceIndexHolder>(
-      std::move(sources), input_meta);
+      std::move(sources), source_meta);
   if (holder->count() == 0) {
     LOG_ERROR("No vectors available to train converter");
     return core::IndexError_InvalidArgument;
@@ -284,19 +272,6 @@ void PersistTrainedMetaToStreamer(const core::IndexMeta &meta,
 }
 
 }  // namespace
-
-core::IndexHolder::Pointer Index::create_original_index_holder() const {
-  if (is_sparse_ || streamer_ == nullptr) {
-    return nullptr;
-  }
-  auto provider = streamer_->create_provider();
-  if (!provider) {
-    return nullptr;
-  }
-  return std::make_shared<ReformingIndexHolder>(
-      std::move(provider), reformer_, streamer_vector_meta_,
-      input_vector_meta_);
-}
 
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
@@ -457,9 +432,6 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
           break;
         case QuantizerType::kUniformUint4:
           converter_name = "UniformUint4StreamingConverter";
-          break;
-        case QuantizerType::kRawUint8:
-          converter_name = "RawUint8Converter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -804,7 +776,19 @@ int Index::Search(const VectorData &vector_data,
     // TODO: should copy other params?
     flat_search_param->bf_pks = std::make_shared<std::vector<uint64_t>>(keys);
 
-    ret = reference_index->Search(vector_data, flat_search_param, result);
+    std::string flat_query_storage;
+    VectorData flat_query;
+    ret = PrepareNativeFlatQuery(
+        vector_data, input_vector_meta_, reference_index->input_vector_meta_,
+        &flat_query_storage, &flat_query);
+    if (ret == 0) {
+      ret = reference_index->Search(flat_query, flat_search_param, result);
+    }
+    if (ret == 0 && flat_search_param->fetch_vector) {
+      ret = RestoreNativeFlatVectors(input_vector_meta_,
+                                     reference_index->input_vector_meta_,
+                                     result);
+    }
   }
   context->reset();
   return ret;
@@ -941,8 +925,7 @@ int Index::SearchDocIds(const VectorData &vector_data,
   // Unsupported Flat configurations fall through to the generic SearchDocIds
   // path below.
   if (std::holds_alternative<DenseVector>(vector_data.vector) &&
-      reference_index->input_vector_meta_.data_type() ==
-          IndexMeta::DataType::DT_FP32) {
+      input_vector_meta_.data_type() == IndexMeta::DataType::DT_FP32) {
     auto &reference_context = reference_index->acquire_context();
     if (reference_context) {
       const auto &dense = std::get<DenseVector>(vector_data.vector);
@@ -986,8 +969,15 @@ int Index::SearchDocIds(const VectorData &vector_data,
   flat_search_param->filter = search_param->filter;
   flat_search_param->bf_pks = std::move(keys);
 
-  ret = reference_index->SearchDocIds(vector_data, flat_search_param, output_ids,
-                                      topk);
+  std::string flat_query_storage;
+  VectorData flat_query;
+  ret = PrepareNativeFlatQuery(
+      vector_data, input_vector_meta_, reference_index->input_vector_meta_,
+      &flat_query_storage, &flat_query);
+  if (ret == 0) {
+    ret = reference_index->SearchDocIds(flat_query, flat_search_param,
+                                        output_ids, topk);
+  }
   context->reset();
   return ret;
 }
@@ -1343,8 +1333,7 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
   }
 
   if (converter_ != nullptr && reformer_ == nullptr) {
-    if (int ret = TrainConverterFromMergeSources(converter_, indexes,
-                                                 input_vector_meta_);
+    if (int ret = TrainConverterFromMergeSources(converter_, indexes);
         ret != 0) {
       LOG_ERROR("Failed to train converter from merge sources");
       return ret;
@@ -1358,9 +1347,42 @@ int Index::Merge(const std::vector<Index::Pointer> &indexes,
     PersistTrainedMetaToStreamer(proxima_index_meta_, streamer_);
   }
 
-  if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
-                                             reformer_,
-                                             input_vector_meta_) != 0) {
+  // The reducer's holder describes the bytes emitted by the source indexes.
+  // Native Flat sources emit their physical FP16/UINT8 bytes directly;
+  // quantized sources emit public input bytes only when the reducer reverts
+  // them first.
+  core::IndexQueryMeta reducer_input_meta = input_vector_meta_;
+  if (!is_sparse_) {
+    bool found_source = false;
+    for (const auto &index : indexes) {
+      auto provider = index->create_index_provider();
+      if (!provider) continue;
+      const bool need_revert =
+          index->reformer_ != nullptr &&
+          ((streamer_->meta().reformer_name() !=
+            index->streamer_->meta().reformer_name()) ||
+           builder_ != nullptr);
+      core::IndexQueryMeta candidate;
+      if (need_revert) {
+        candidate = index->input_vector_meta_;
+      } else {
+        candidate.set_meta(provider->data_type(), provider->dimension());
+      }
+      if (!found_source) {
+        reducer_input_meta = candidate;
+        found_source = true;
+      } else if (candidate.data_type() != reducer_input_meta.data_type() ||
+                 candidate.dimension() != reducer_input_meta.dimension() ||
+                 candidate.element_size() !=
+                     reducer_input_meta.element_size()) {
+        LOG_ERROR("Merge sources expose different logical vector types");
+        return core::IndexError_Mismatch;
+      }
+    }
+  }
+
+  if (reducer->set_target_streamer_wiht_info(
+          builder_, streamer_, converter_, reformer_, reducer_input_meta) != 0) {
     LOG_ERROR("Failed to set target streamer");
     return core::IndexError_Runtime;
   }
