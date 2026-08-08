@@ -209,11 +209,12 @@ Status FieldSchema::validate() const {
               "dense vector fields");
         }
         if (flat_data_type != DataType::VECTOR_FP32 &&
-            flat_data_type != DataType::VECTOR_FP16) {
+            flat_data_type != DataType::VECTOR_FP16 &&
+            flat_data_type != DataType::VECTOR_UINT8) {
           return Status::InvalidArgument(
               "schema validate failed: field[", name_,
-              "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, or "
-              "UNDEFINED, but got ",
+              "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, "
+              "VECTOR_UINT8, or UNDEFINED, but got ",
               DataTypeCodeBook::AsString(flat_data_type));
         }
         if (data_type_ != DataType::VECTOR_FP32 &&
@@ -229,6 +230,20 @@ Status FieldSchema::validate() const {
               "schema validate failed: field[", name_,
               "] cannot expand a VECTOR_FP16 source into a VECTOR_FP32 Flat "
               "reference index");
+        }
+        if (flat_data_type == DataType::VECTOR_UINT8 &&
+            data_type_ != DataType::VECTOR_FP32) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "] can only use VECTOR_UINT8 Flat reference storage with a "
+              "VECTOR_FP32 source");
+        }
+        if (flat_data_type == DataType::VECTOR_UINT8 &&
+            vector_index_params->metric_type() != MetricType::L2) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "] can only use VECTOR_UINT8 Flat reference storage with L2 "
+              "metric");
         }
       }
 

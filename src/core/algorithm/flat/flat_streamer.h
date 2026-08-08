@@ -96,6 +96,10 @@ class FlatStreamer : public IndexStreamer {
                                size_t count, int64_t *output_ids, size_t topk,
                                Context::UPointer &context) const;
 
+  int refine_doc_ids_fp32_uint8(const float *query, const uint64_t *keys,
+                                size_t count, int64_t *output_ids, size_t topk,
+                                Context::UPointer &context) const;
+
   int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::UPointer &context) const;
 
@@ -166,6 +170,10 @@ class FlatStreamer : public IndexStreamer {
   }
 
  private:
+  int refine_doc_ids_prepared(const void *query, const uint64_t *keys,
+                              size_t count, int64_t *output_ids, size_t topk,
+                              Context::UPointer &context) const;
+
   //! Constants
   static constexpr uint32_t kDefaultBlockVecCount = 32u;
   static constexpr uint32_t kDefaultSegmentSize = 4 * 1024 * 1024u;

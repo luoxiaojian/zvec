@@ -76,6 +76,8 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "UNIFORM_UINT8";
     case QuantizeType::UNIFORM_UINT4:
       return "UNIFORM_UINT4";
+    case QuantizeType::RAW_UINT8:
+      return "RAW_UINT8";
     default:
       return "UNDEFINED";
   }
@@ -87,6 +89,8 @@ static std::string data_type_to_string(const DataType type) {
       return "VECTOR_FP16";
     case DataType::VECTOR_FP32:
       return "VECTOR_FP32";
+    case DataType::VECTOR_UINT8:
+      return "VECTOR_UINT8";
     case DataType::UNDEFINED:
       return "UNDEFINED";
     default:
@@ -428,7 +432,9 @@ Attributes:
         disable quantization.
     flat_data_type (DataType): Physical data type stored by the Flat reference
         index used for refine. ``DataType.UNDEFINED`` inherits the vector
-        field data type.
+        field data type. ``DataType.VECTOR_UINT8`` directly stores each
+        original component as one unsigned byte (no scale/bias or record
+        tail) and is currently supported for FP32 vectors with L2 metric.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -673,7 +679,9 @@ Attributes:
         to disable quantization.
     flat_data_type (DataType): Physical data type stored by the Flat reference
         index used for refine. ``DataType.UNDEFINED`` inherits the vector
-        field data type.
+        field data type. ``DataType.VECTOR_UINT8`` directly stores each
+        original component as one unsigned byte (no scale/bias or record
+        tail) and is currently supported for FP32 vectors with L2 metric.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType

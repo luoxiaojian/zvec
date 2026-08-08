@@ -38,6 +38,7 @@ class IndexMeta {
     DT_INT4 = 6,
     DT_BINARY32 = 7,
     DT_BINARY64 = 8,
+    DT_UINT8 = 9,
   };
 
   /*! Major Orders
@@ -532,7 +533,8 @@ class IndexMeta {
         sizeof(int16_t),   // DT_INT16
         sizeof(uint8_t),   // DT_INT4
         sizeof(uint32_t),  // DT_BINARY32
-        sizeof(uint64_t)   // DT_BINARY64
+        sizeof(uint64_t),  // DT_BINARY64
+        sizeof(uint8_t)    // DT_UINT8
     };
     return unit_size_table[data_type];
   }
@@ -548,7 +550,8 @@ class IndexMeta {
         sizeof(int16_t),      // DT_INT16
         sizeof(uint8_t) * 4,  // DT_INT4
         sizeof(uint32_t),     // DT_BINARY32
-        sizeof(uint64_t)      // DT_BINARY64
+        sizeof(uint64_t),     // DT_BINARY64
+        sizeof(uint8_t) * 4   // DT_UINT8
     };
     return align_size_table[ft];
   }
@@ -564,6 +567,7 @@ class IndexMeta {
       case DataType::DT_FP64:
       case DataType::DT_INT8:
       case DataType::DT_INT16:
+      case DataType::DT_UINT8:
         return (dim * unit);
       case DataType::DT_INT4:
         return (dim + unit * 2 - 1) / (unit * 2) * unit;

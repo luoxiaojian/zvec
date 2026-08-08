@@ -31,6 +31,7 @@ from zvec import (
     "member, name",
     [
         (DataType.FLOAT, "FLOAT"),
+        (DataType.VECTOR_UINT8, "VECTOR_UINT8"),
         (IndexType.HNSW, "HNSW"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
@@ -48,6 +49,7 @@ def test_enum_names(member, name):
     "member, value",
     [
         (DataType.FLOAT, 8),
+        (DataType.VECTOR_UINT8, 28),
         (IndexType.HNSW, 1),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
@@ -81,6 +83,7 @@ def test_metric_type_has_member(member):
         "VECTOR_FP32",
         "VECTOR_FP64",
         "VECTOR_INT8",
+        "VECTOR_UINT8",
         "SPARSE_VECTOR_FP32",
         "SPARSE_VECTOR_FP16",
         "ARRAY_STRING",

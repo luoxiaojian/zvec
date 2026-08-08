@@ -31,6 +31,7 @@ enum DataType {
   DT_VECTOR_INT4 = 25;
   DT_VECTOR_INT8 = 26;
   DT_VECTOR_INT16 = 27;
+  DT_VECTOR_UINT8 = 28;
 
   DT_SPARSE_VECTOR_FP16 = 30;
   DT_SPARSE_VECTOR_FP32 = 31;
@@ -77,6 +78,7 @@ enum QuantizeType {
   QT_UNIFORM_INT8 = 5;
   QT_UNIFORM_UINT8 = 6;
   QT_UNIFORM_UINT4 = 7;
+  QT_RAW_UINT8 = 8;
 };
 
 enum MetricType {

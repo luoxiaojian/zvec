@@ -458,6 +458,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
         case QuantizerType::kUniformUint4:
           converter_name = "UniformUint4StreamingConverter";
           break;
+        case QuantizerType::kRawUint8:
+          converter_name = "RawUint8Converter";
+          break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
           return core::IndexError_Unsupported;
@@ -932,10 +935,11 @@ int Index::SearchDocIds(const VectorData &vector_data,
     }
   }
 
-  // Fast FP16 refine: convert the FP32 query to FP16 once, pin Flat's
-  // contiguous hugepage once, run the homogeneous turbo 4-way distance
-  // kernel, and write doc ids directly. Unsupported Flat configurations fall
-  // through to the generic SearchDocIds path below.
+  // Fast contiguous refine: encode the FP32 query once, pin Flat's hugepage
+  // once, run the homogeneous Turbo batch kernel, and write doc ids directly.
+  // FP16 and raw UINT8 each convert the query once into the Flat row type.
+  // Unsupported Flat configurations fall through to the generic SearchDocIds
+  // path below.
   if (std::holds_alternative<DenseVector>(vector_data.vector) &&
       reference_index->input_vector_meta_.data_type() ==
           IndexMeta::DataType::DT_FP32) {
@@ -945,20 +949,28 @@ int Index::SearchDocIds(const VectorData &vector_data,
       const auto *flat_streamer =
           dynamic_cast<const core::FlatStreamer<32> *>(
               reference_index->streamer_.get());
-      const int direct_ret =
+      int direct_ret =
           flat_streamer
               ? flat_streamer->refine_doc_ids_fp32_fp16(
                     static_cast<const float *>(dense.data),
                     direct_search_keys.data(), direct_search_keys.size(),
                     output_ids, static_cast<size_t>(topk), reference_context)
               : core::IndexError_NotImplemented;
+      if (direct_ret == core::IndexError_NotImplemented && flat_streamer &&
+          flat_streamer->meta().data_type() ==
+              IndexMeta::DataType::DT_UINT8) {
+        direct_ret = flat_streamer->refine_doc_ids_fp32_uint8(
+            static_cast<const float *>(dense.data), direct_search_keys.data(),
+            direct_search_keys.size(), output_ids, static_cast<size_t>(topk),
+            reference_context);
+      }
       reference_context->reset();
       if (direct_ret == 0) {
         context->reset();
         return 0;
       }
       if (direct_ret != core::IndexError_NotImplemented) {
-        LOG_ERROR("Failed direct FP32/FP16 refine, error=%d", direct_ret);
+        LOG_ERROR("Failed direct contiguous refine, error=%d", direct_ret);
         context->reset();
         return direct_ret;
       }

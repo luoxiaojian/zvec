@@ -803,6 +803,7 @@ typedef uint32_t zvec_data_type_t;
 #define ZVEC_DATA_TYPE_VECTOR_INT4 25
 #define ZVEC_DATA_TYPE_VECTOR_INT8 26
 #define ZVEC_DATA_TYPE_VECTOR_INT16 27
+#define ZVEC_DATA_TYPE_VECTOR_UINT8 28
 #define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16 30
 #define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 31
 #define ZVEC_DATA_TYPE_ARRAY_BINARY 40
@@ -860,6 +861,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_UNIFORM_INT8 5
 #define ZVEC_QUANTIZE_TYPE_UNIFORM_UINT8 6
 #define ZVEC_QUANTIZE_TYPE_UNIFORM_UINT4 7
+#define ZVEC_QUANTIZE_TYPE_RAW_UINT8 8 /* internal Flat storage conversion */
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)

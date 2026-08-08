@@ -441,7 +441,10 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(
       source_data_type == DataType::VECTOR_FP32 &&
               resolved_flat_data_type == DataType::VECTOR_FP16
           ? QuantizeType::FP16
-          : QuantizeType::UNDEFINED;
+          : source_data_type == DataType::VECTOR_FP32 &&
+                    resolved_flat_data_type == DataType::VECTOR_UINT8
+                ? QuantizeType::RAW_UINT8
+                : QuantizeType::UNDEFINED;
   return FlatIndexParams(metric_type, internal_quantize_type,
                          use_contiguous_memory);
 }

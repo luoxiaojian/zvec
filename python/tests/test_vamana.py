@@ -643,6 +643,93 @@ class TestVamanaEndToEnd:
         finally:
             reopened.destroy()
 
+    def test_uniform_uint4_uint8_flat_refine_exact_and_reopen(
+        self, tmp_path_factory, collection_option
+    ):
+        """SIFT-like integer vectors use an exact raw UINT8 Flat refiner.
+
+        Exercise both the regular query path and the ann-bench doc-id bypass;
+        the latter is the performance-critical contiguous/Turbo route.
+        """
+        count = 96
+        schema = _build_schema(
+            "vamana_u4_uint8_flat_refine",
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT4,
+            max_degree=16,
+            search_list_size=64,
+            use_contiguous_memory=True,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_UINT8,
+        )
+        path = tmp_path_factory.mktemp("zvec") / "vamana_u4_uint8_flat_refine"
+        path_str = str(path)
+        rng = np.random.default_rng(20260808)
+        vectors = rng.integers(0, 256, size=(count, DIMENSION)).astype(np.float32)
+        vectors[0, 0] = 0.0
+        vectors[0, 1] = 255.0
+        docs = [
+            Doc(
+                id=str(i),
+                fields={"id": i},
+                vectors={"dense": vectors[i].tolist()},
+            )
+            for i in range(count)
+        ]
+        query = rng.integers(0, 256, size=DIMENSION).astype(np.float32)
+        exact = np.argsort(
+            np.sum((vectors.astype(np.int32) - query.astype(np.int32)) ** 2,
+                   axis=1),
+            kind="stable",
+        )[:TOPK]
+        refine_param = VamanaQueryParam(
+            ef_search=count, is_using_refiner=True
+        )
+
+        coll = zvec.create_and_open(
+            path=path_str, schema=schema, option=collection_option
+        )
+        try:
+            for batch in (docs[: count // 2], docs[count // 2 :]):
+                for result in coll.insert(docs=batch):
+                    assert result.ok()
+                coll.optimize()
+
+            hits = coll.query(
+                Query(
+                    field_name="dense",
+                    vector=query.tolist(),
+                    param=refine_param,
+                ),
+                topk=TOPK,
+            )
+            assert [int(hit.id) for hit in hits] == exact.tolist()
+
+            coll.ann_bench_prepare("dense")
+            coll.ann_bench_set_query_params(refine_param)
+            ids = coll.ann_bench_search_doc_ids_only(query, TOPK)
+            assert ids.tolist() == exact.tolist()
+            assert (
+                coll.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_UINT8
+            )
+            coll.flush()
+        finally:
+            del coll
+
+        reopened = zvec.open(path=path_str, option=collection_option)
+        try:
+            assert (
+                reopened.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_UINT8
+            )
+            reopened.ann_bench_prepare("dense")
+            reopened.ann_bench_set_query_params(refine_param)
+            ids = reopened.ann_bench_search_doc_ids_only(query, TOPK)
+            assert ids.tolist() == exact.tolist()
+        finally:
+            reopened.destroy()
+
     @pytest.mark.parametrize(
         "use_contiguous_memory", [False, True], ids=["inline", "columns"]
     )

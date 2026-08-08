@@ -89,6 +89,20 @@ TEST(ConverterTest, VamanaFlatDataTypeConversion) {
   EXPECT_EQ(round_trip.flat_data_type(), proto::DT_VECTOR_FP16);
 }
 
+TEST(ConverterTest, VamanaUint8FlatDataTypeConversion) {
+  proto::VamanaIndexParams vamana_pb;
+  vamana_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  vamana_pb.mutable_base()->set_quantize_type(proto::QT_UNIFORM_UINT4);
+  vamana_pb.set_flat_data_type(proto::DT_VECTOR_UINT8);
+
+  auto params = ProtoConverter::FromPb(vamana_pb);
+  ASSERT_NE(params, nullptr);
+  EXPECT_EQ(params->flat_data_type(), DataType::VECTOR_UINT8);
+
+  auto round_trip = ProtoConverter::ToPb(params.get());
+  EXPECT_EQ(round_trip.flat_data_type(), proto::DT_VECTOR_UINT8);
+}
+
 TEST(ConverterTest, FlatIndexParamsConversion) {
   // Test conversion from protobuf to C++ FlatIndexParams
   proto::FlatIndexParams flat_pb;

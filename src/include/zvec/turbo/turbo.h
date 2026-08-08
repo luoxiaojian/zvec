@@ -41,6 +41,11 @@ using UniformUint4QuantizeFunc = void (*)(const float *in, size_t dim,
                                           float minimum, float range,
                                           uint8_t *out);
 
+// Direct physical FP32 -> uint8_t conversion for values already represented
+// in the unsigned-byte domain. This is not an affine quantizer.
+using RawUint8ConvertFunc = void (*)(const float *in, size_t dim,
+                                     uint8_t *out);
+
 enum class MetricType {
   kSquaredEuclidean,
   kCosine,
@@ -52,6 +57,7 @@ enum class DataType {
   kInt8,
   kInt4,
   kFp16,
+  kUint8,
   kUnknown,
 };
 
@@ -86,5 +92,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type);
 
 UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type);
+
+RawUint8ConvertFunc get_raw_uint8_convert_func();
 
 }  // namespace zvec::turbo

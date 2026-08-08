@@ -79,6 +79,10 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return refine_query_fp16_;
   }
 
+  std::vector<uint8_t> &refine_query_uint8(void) {
+    return refine_query_uint8_;
+  }
+
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result(void) const override {
     return group_results_[0];
@@ -258,13 +262,14 @@ class FlatStreamerContext : public IndexStreamer::Context {
   uint32_t actual_read_size_{0};
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};
-  // Reused by the direct FP32-query/FP16-row refine path. Capacities survive
-  // reset(), eliminating per-query allocations, including the homogeneous
-  // FP16 query buffer.
+  // Reused by the direct contiguous refine paths. Capacities survive reset(),
+  // eliminating per-query allocations, including homogeneous FP16/UINT8
+  // query buffers.
   std::vector<const void *> refine_ptrs_{};
   std::vector<float> refine_distances_{};
   std::vector<RefineCandidate> refine_candidates_{};
   std::vector<ailego::Float16> refine_query_fp16_{};
+  std::vector<uint8_t> refine_query_uint8_{};
   std::string batch_queries_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};

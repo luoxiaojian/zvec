@@ -64,6 +64,13 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
                                               : IndexMeta::MO_ROW);
   }
   // Verify column major order
+  if (meta_.data_type() == IndexMeta::DataType::DT_UINT8) {
+    if (meta_.major_order() == IndexMeta::MO_COLUMN) {
+      LOG_ERROR("Raw UINT8 Flat only supports row-major storage.");
+      return IndexError_Unsupported;
+    }
+    meta_.set_major_order(IndexMeta::MO_ROW);
+  }
   if (meta_.major_order() != IndexMeta::MO_ROW) {
     IndexMeta::DataType ft = meta_.data_type();
 
@@ -194,15 +201,9 @@ int FlatStreamer<BATCH_SIZE>::close(void) {
 }
 
 template <size_t BATCH_SIZE>
-int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
-    const float *query, const uint64_t *keys, size_t count,
+int FlatStreamer<BATCH_SIZE>::refine_doc_ids_prepared(
+    const void *query, const uint64_t *keys, size_t count,
     int64_t *output_ids, size_t topk, Context::UPointer &context) const {
-  if (!query || !keys || !output_ids || topk == 0 || topk > count ||
-      meta_.data_type() != IndexMeta::DataType::DT_FP16 ||
-      meta_.metric_name() != "SquaredEuclidean") {
-    return IndexError_NotImplemented;
-  }
-
   auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
   if (!ctx) return IndexError_Runtime;
 
@@ -215,21 +216,14 @@ int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
   auto &ptrs = ctx->refine_ptrs();
   auto &distances = ctx->refine_distances();
   auto &candidates = ctx->refine_candidates();
-  auto &query_fp16 = ctx->refine_query_fp16();
   ptrs.resize(count);
   distances.resize(count);
   candidates.resize(count);
-  query_fp16.resize(meta_.dimension());
-  // Query conversion is O(dimension) once per refine call. Distance work is
-  // O(count * dimension), and all batches below reuse this FP16 buffer.
-  ailego::FloatHelper::ToFP16(
-      query, meta_.dimension(),
-      reinterpret_cast<uint16_t *>(query_fp16.data()));
   for (size_t i = 0; i < count; ++i) {
     ptrs[i] = read_pin->locate(keys[i]);
     if (!ptrs[i]) return IndexError_ReadData;
   }
-  entity_->row_major_batch_distance(query_fp16.data(), ptrs.data(), count,
+  entity_->row_major_batch_distance(query, ptrs.data(), count,
                                     distances.data());
   for (size_t i = 0; i < count; ++i) {
     candidates[i] = {keys[i], distances[i]};
@@ -244,6 +238,57 @@ int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
     output_ids[i] = static_cast<int64_t>(candidates[i].key);
   }
   return 0;
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
+    const float *query, const uint64_t *keys, size_t count,
+    int64_t *output_ids, size_t topk, Context::UPointer &context) const {
+  if (!query || !keys || !output_ids || topk == 0 || topk > count ||
+      meta_.data_type() != IndexMeta::DataType::DT_FP16 ||
+      meta_.metric_name() != "SquaredEuclidean") {
+    return IndexError_NotImplemented;
+  }
+
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx) return IndexError_Runtime;
+  auto &query_fp16 = ctx->refine_query_fp16();
+  query_fp16.resize(meta_.dimension());
+  // Query conversion is O(dimension) once per refine call. Distance work is
+  // O(count * dimension), and all batches below reuse this FP16 buffer.
+  ailego::FloatHelper::ToFP16(
+      query, meta_.dimension(),
+      reinterpret_cast<uint16_t *>(query_fp16.data()));
+  return refine_doc_ids_prepared(query_fp16.data(), keys, count, output_ids,
+                                 topk, context);
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_uint8(
+    const float *query, const uint64_t *keys, size_t count,
+    int64_t *output_ids, size_t topk,
+    Context::UPointer &context) const {
+  if (!query || !keys || !output_ids || topk == 0 || topk > count ||
+      meta_.data_type() != IndexMeta::DataType::DT_UINT8 ||
+      meta_.metric_name() != "SquaredEuclidean") {
+    return IndexError_NotImplemented;
+  }
+
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx) return IndexError_Runtime;
+  auto &query_uint8 = ctx->refine_query_uint8();
+  query_uint8.resize(meta_.dimension());
+  const auto convert = turbo::get_raw_uint8_convert_func();
+  if (convert) {
+    convert(query, meta_.dimension(), query_uint8.data());
+  } else {
+    for (size_t i = 0; i < meta_.dimension(); ++i) {
+      query_uint8[i] = static_cast<uint8_t>(query[i]);
+    }
+  }
+  return refine_doc_ids_prepared(query_uint8.data(), keys, count, output_ids,
+                                 topk,
+                                 context);
 }
 
 template <size_t BATCH_SIZE>
@@ -626,6 +671,12 @@ template int FlatStreamer<16>::refine_doc_ids_fp32_fp16(
     const float *, const uint64_t *, size_t, int64_t *, size_t,
     Context::UPointer &) const;
 template int FlatStreamer<32>::refine_doc_ids_fp32_fp16(
+    const float *, const uint64_t *, size_t, int64_t *, size_t,
+    Context::UPointer &) const;
+template int FlatStreamer<16>::refine_doc_ids_fp32_uint8(
+    const float *, const uint64_t *, size_t, int64_t *, size_t,
+    Context::UPointer &) const;
+template int FlatStreamer<32>::refine_doc_ids_fp32_uint8(
     const float *, const uint64_t *, size_t, int64_t *, size_t,
     Context::UPointer &) const;
 

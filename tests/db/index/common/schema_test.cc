@@ -1018,3 +1018,31 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
         << status.message();
   }
 }
+
+TEST(FieldSchemaTest, VamanaUint8FlatReferenceValidation) {
+  auto make_params = [](MetricType metric, QuantizeType quantize) {
+    return std::make_shared<VamanaIndexParams>(
+        metric, 32, 64, 1.2F, false, true, false, false, quantize, true, 1,
+        16, 4, DataType::VECTOR_UINT8);
+  };
+
+  FieldSchema valid("vector_field", DataType::VECTOR_FP32, 128, false,
+                    make_params(MetricType::L2,
+                                QuantizeType::UNIFORM_UINT4));
+  EXPECT_TRUE(valid.validate().ok());
+
+  FieldSchema wrong_metric("vector_field", DataType::VECTOR_FP32, 128, false,
+                           make_params(MetricType::COSINE,
+                                       QuantizeType::UNIFORM_UINT4));
+  EXPECT_FALSE(wrong_metric.validate().ok());
+
+  FieldSchema wrong_source("vector_field", DataType::VECTOR_FP16, 128, false,
+                           make_params(MetricType::L2,
+                                       QuantizeType::UNIFORM_UINT4));
+  EXPECT_FALSE(wrong_source.validate().ok());
+
+  FieldSchema no_refiner("vector_field", DataType::VECTOR_FP32, 128, false,
+                         make_params(MetricType::L2,
+                                     QuantizeType::UNDEFINED));
+  EXPECT_TRUE(no_refiner.validate().ok());
+}

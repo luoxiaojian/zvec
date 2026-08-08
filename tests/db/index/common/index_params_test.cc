@@ -150,6 +150,11 @@ TEST(IndexParamsTest, FlatReferenceDataType) {
       MetricType::L2, true, DataType::VECTOR_FP32, DataType::VECTOR_FP16);
   EXPECT_EQ(fp16.quantize_type(), QuantizeType::FP16);
   EXPECT_TRUE(fp16.use_contiguous_memory());
+
+  auto uint8 = MakeDefaultVectorIndexParams(
+      MetricType::L2, true, DataType::VECTOR_FP32, DataType::VECTOR_UINT8);
+  EXPECT_EQ(uint8.quantize_type(), QuantizeType::RAW_UINT8);
+  EXPECT_TRUE(uint8.use_contiguous_memory());
 }
 
 TEST(IndexParamsTest, IVFIndexParams) {

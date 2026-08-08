@@ -2602,6 +2602,8 @@ const char *zvec_data_type_to_string(zvec_data_type_t data_type) {
       return "VECTOR_INT8";
     case ZVEC_DATA_TYPE_VECTOR_INT16:
       return "VECTOR_INT16";
+    case ZVEC_DATA_TYPE_VECTOR_UINT8:
+      return "VECTOR_UINT8";
     case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16:
       return "SPARSE_VECTOR_FP16";
     case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32:
