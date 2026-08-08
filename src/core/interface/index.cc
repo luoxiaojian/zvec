@@ -19,11 +19,118 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/flat/flat_streamer.h"
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec::core_interface {
 
 namespace {
+
+// A multipass view that exposes one streamer's vectors in its public input
+// representation. This is important when a merge source stores FP16 (or any
+// other transformed representation): downstream converter training must see
+// reverted vectors rather than interpreting the stored bytes as FP32.
+class ReformingIndexHolder final : public core::IndexHolder {
+ public:
+  class Iterator final : public core::IndexHolder::Iterator {
+   public:
+    Iterator(core::IndexHolder::Iterator::Pointer source_iter,
+             core::IndexReformer::Pointer reformer,
+             core::IndexQueryMeta stored_meta)
+        : source_iter_(std::move(source_iter)),
+          reformer_(std::move(reformer)),
+          stored_meta_(std::move(stored_meta)) {
+      refresh();
+    }
+
+    const void *data() const override {
+      if (!is_valid()) {
+        return nullptr;
+      }
+      return reformer_ ? reverted_.data() : source_iter_->data();
+    }
+
+    bool is_valid() const override {
+      return !revert_failed_ && source_iter_ != nullptr &&
+             source_iter_->is_valid();
+    }
+
+    uint64_t key() const override {
+      return source_iter_->key();
+    }
+
+    void next() override {
+      if (source_iter_ != nullptr) {
+        source_iter_->next();
+      }
+      refresh();
+    }
+
+   private:
+    void refresh() {
+      revert_failed_ = false;
+      reverted_.clear();
+      if (source_iter_ == nullptr || !source_iter_->is_valid() ||
+          reformer_ == nullptr) {
+        return;
+      }
+      if (reformer_->revert(source_iter_->data(), stored_meta_, &reverted_) !=
+          core::IndexError_Success) {
+        LOG_ERROR("Failed to revert a merge-source vector");
+        revert_failed_ = true;
+      }
+    }
+
+    core::IndexHolder::Iterator::Pointer source_iter_{};
+    core::IndexReformer::Pointer reformer_{};
+    core::IndexQueryMeta stored_meta_{};
+    std::string reverted_{};
+    bool revert_failed_{false};
+  };
+
+  ReformingIndexHolder(core::IndexProvider::Pointer provider,
+                       core::IndexReformer::Pointer reformer,
+                       core::IndexQueryMeta stored_meta,
+                       core::IndexQueryMeta original_meta)
+      : provider_(std::move(provider)),
+        reformer_(std::move(reformer)),
+        stored_meta_(std::move(stored_meta)),
+        original_meta_(std::move(original_meta)) {}
+
+  size_t count() const override {
+    return provider_ ? provider_->count() : 0;
+  }
+
+  size_t dimension() const override {
+    return original_meta_.dimension();
+  }
+
+  core::IndexMeta::DataType data_type() const override {
+    return original_meta_.data_type();
+  }
+
+  size_t element_size() const override {
+    return original_meta_.element_size();
+  }
+
+  bool multipass() const override {
+    return true;
+  }
+
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    if (!provider_) {
+      return nullptr;
+    }
+    return std::make_unique<Iterator>(provider_->create_iterator(), reformer_,
+                                      stored_meta_);
+  }
+
+ private:
+  core::IndexProvider::Pointer provider_{};
+  core::IndexReformer::Pointer reformer_{};
+  core::IndexQueryMeta stored_meta_{};
+  core::IndexQueryMeta original_meta_{};
+};
 
 // A multipass view over merge-source providers. Unlike
 // MultiPassIndexHolder this holder does not materialize a second in-memory
@@ -33,7 +140,7 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
  public:
   class Iterator final : public core::IndexHolder::Iterator {
    public:
-    explicit Iterator(const std::vector<core::IndexProvider::Pointer> &sources)
+    explicit Iterator(const std::vector<core::IndexHolder::Pointer> &sources)
         : sources_(sources) {
       advance_to_valid_source();
     }
@@ -68,16 +175,15 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       }
     }
 
-    const std::vector<core::IndexProvider::Pointer> &sources_;
+    const std::vector<core::IndexHolder::Pointer> &sources_;
     size_t source_index_{0};
     core::IndexHolder::Iterator::Pointer source_iter_{};
   };
 
-  MergeSourceIndexHolder(std::vector<core::IndexProvider::Pointer> sources,
-                         size_t dimension, size_t element_size)
+  MergeSourceIndexHolder(std::vector<core::IndexHolder::Pointer> sources,
+                         core::IndexQueryMeta input_meta)
       : sources_(std::move(sources)),
-        dimension_(dimension),
-        element_size_(element_size) {
+        input_meta_(std::move(input_meta)) {
     for (const auto &source : sources_) {
       count_ += source->count();
     }
@@ -88,15 +194,15 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
   }
 
   size_t dimension() const override {
-    return dimension_;
+    return input_meta_.dimension();
   }
 
   core::IndexMeta::DataType data_type() const override {
-    return core::IndexMeta::DataType::DT_FP32;
+    return input_meta_.data_type();
   }
 
   size_t element_size() const override {
-    return element_size_;
+    return input_meta_.element_size();
   }
 
   bool multipass() const override {
@@ -108,10 +214,9 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
   }
 
  private:
-  std::vector<core::IndexProvider::Pointer> sources_{};
+  std::vector<core::IndexHolder::Pointer> sources_{};
   size_t count_{0};
-  size_t dimension_{0};
-  size_t element_size_{0};
+  core::IndexQueryMeta input_meta_{};
 };
 
 int TrainConverterFromMergeSources(
@@ -122,18 +227,17 @@ int TrainConverterFromMergeSources(
     return core::IndexError_InvalidArgument;
   }
 
-  std::vector<core::IndexProvider::Pointer> sources;
+  std::vector<core::IndexHolder::Pointer> sources;
   sources.reserve(indexes.size());
   for (const auto &index : indexes) {
-    auto provider = index->create_index_provider();
-    if (!provider) {
+    auto holder = index->create_original_index_holder();
+    if (!holder) {
       continue;
     }
-    sources.emplace_back(std::move(provider));
+    sources.emplace_back(std::move(holder));
   }
   auto holder = std::make_shared<MergeSourceIndexHolder>(
-      std::move(sources), input_meta.dimension(),
-      input_meta.dimension() * input_meta.unit_size());
+      std::move(sources), input_meta);
   if (holder->count() == 0) {
     LOG_ERROR("No vectors available to train converter");
     return core::IndexError_InvalidArgument;
@@ -180,6 +284,19 @@ void PersistTrainedMetaToStreamer(const core::IndexMeta &meta,
 }
 
 }  // namespace
+
+core::IndexHolder::Pointer Index::create_original_index_holder() const {
+  if (is_sparse_ || streamer_ == nullptr) {
+    return nullptr;
+  }
+  auto provider = streamer_->create_provider();
+  if (!provider) {
+    return nullptr;
+  }
+  return std::make_shared<ReformingIndexHolder>(
+      std::move(provider), reformer_, streamer_vector_meta_,
+      input_vector_meta_);
+}
 
 // eliminate the pre-alloc of the context pool
 thread_local static std::array<core::IndexContext::Pointer,
@@ -337,6 +454,9 @@ int Index::CreateAndInitConverterReformer(const QuantizerParam &param,
           break;
         case QuantizerType::kUniformUint8:
           converter_name = "UniformUint8StreamingConverter";
+          break;
+        case QuantizerType::kUniformUint4:
+          converter_name = "UniformUint4StreamingConverter";
           break;
         default:
           LOG_ERROR("Unsupported quantizer type: ");
@@ -717,13 +837,50 @@ int Index::SearchDocIds(const VectorData &vector_data,
     context->reset();
     return core::IndexError_Runtime;
   }
-
   int ret = 0;
+  // Vamana's contiguous fast path already owns a distance-sorted BlockHeap.
+  // Reuse it for both coarse-only and refine searches so SearchDocIds does not
+  // rebuild a TopkHeap and materialize IndexDocuments merely to recover keys.
+  thread_local std::vector<uint64_t> direct_search_keys;
+  auto search_direct_keys = [&]() -> int {
+    if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
+      return core::IndexError_NotImplemented;
+    }
+    const DenseVector &dense = std::get<DenseVector>(vector_data.vector);
+    const void *coarse_query = dense.data;
+    std::string transformed_query;
+    core::IndexQueryMeta transformed_meta = input_vector_meta_;
+    if (reformer_ != nullptr) {
+      if (reformer_->transform(dense.data, input_vector_meta_,
+                               &transformed_query,
+                               &transformed_meta) != 0) {
+        LOG_ERROR("Failed to transform direct Vamana query");
+        return core::IndexError_Runtime;
+      }
+      coarse_query = transformed_query.data();
+    }
+    return streamer_->search_keys_direct(coarse_query, transformed_meta,
+                                         &direct_search_keys, context);
+  };
+
   if (search_param->refiner_param == nullptr) {
-    // Keep the non-refine hot path unchanged: write graph-search doc ids
-    // directly into the caller-owned output buffer.
-    ret =
-        _dense_search_doc_ids(vector_data, search_param, output_ids, topk, context);
+    const int direct_ret = search_direct_keys();
+    if (direct_ret == 0) {
+      const int count = std::min(
+          topk, static_cast<int>(direct_search_keys.size()));
+      for (int i = 0; i < count; ++i) {
+        output_ids[i] = static_cast<int64_t>(direct_search_keys[i]);
+      }
+      context->reset();
+      return 0;
+    }
+    if (direct_ret != core::IndexError_NotImplemented) {
+      LOG_ERROR("Failed direct Vamana doc-id search, error=%d", direct_ret);
+      context->reset();
+      return direct_ret;
+    }
+    ret = _dense_search_doc_ids(vector_data, search_param, output_ids, topk,
+                                context);
     context->reset();
     return ret;
   }
@@ -745,18 +902,72 @@ int Index::SearchDocIds(const VectorData &vector_data,
 
   context->set_topk(_get_coarse_search_topk(search_param));
   context->set_fetch_vector(false);
-  if (_execute_dense_search(vector_data, search_param, context) != 0) {
-    LOG_ERROR("Failed to search");
+  // Reuse candidate storage on the query thread. The ann-bench path is
+  // single-query/single-thread per Index instance, and retaining capacity
+  // avoids one allocation at every refine call.
+  bool used_direct_coarse = false;
+
+  // Vamana's fast graph search already leaves a distance-sorted BlockHeap.
+  // Feed those ids straight into Flat refine instead of rebuilding a
+  // TopkHeap, sorting it, materializing IndexDocuments, then copying keys.
+  const int coarse_ret = search_direct_keys();
+  if (coarse_ret == 0) {
+    used_direct_coarse = true;
+  } else if (coarse_ret != core::IndexError_NotImplemented) {
+    LOG_ERROR("Failed direct Vamana candidate search, error=%d", coarse_ret);
     context->reset();
-    return core::IndexError_Runtime;
+    return coarse_ret;
   }
 
-  const auto &base_result = context->result();
-  auto keys = std::make_shared<std::vector<uint64_t>>(base_result.size());
-  for (size_t i = 0; i < base_result.size(); ++i) {
-    (*keys)[i] = base_result[i].key();
+  if (!used_direct_coarse) {
+    if (_execute_dense_search(vector_data, search_param, context) != 0) {
+      LOG_ERROR("Failed to search");
+      context->reset();
+      return core::IndexError_Runtime;
+    }
+    const auto &base_result = context->result();
+    direct_search_keys.resize(base_result.size());
+    for (size_t i = 0; i < base_result.size(); ++i) {
+      direct_search_keys[i] = base_result[i].key();
+    }
   }
 
+  // Fast FP16 refine: preserve the original FP32 query, pin Flat's
+  // contiguous hugepage once, run the turbo 4-way distance kernel, and write
+  // doc ids directly. Unsupported Flat configurations fall through to the
+  // generic SearchDocIds path below.
+  if (std::holds_alternative<DenseVector>(vector_data.vector) &&
+      reference_index->input_vector_meta_.data_type() ==
+          IndexMeta::DataType::DT_FP32) {
+    auto &reference_context = reference_index->acquire_context();
+    if (reference_context) {
+      const auto &dense = std::get<DenseVector>(vector_data.vector);
+      const auto *flat_streamer =
+          dynamic_cast<const core::FlatStreamer<32> *>(
+              reference_index->streamer_.get());
+      const int direct_ret =
+          flat_streamer
+              ? flat_streamer->refine_doc_ids_fp32_fp16(
+                    static_cast<const float *>(dense.data),
+                    direct_search_keys.data(), direct_search_keys.size(),
+                    output_ids, static_cast<size_t>(topk), reference_context)
+              : core::IndexError_NotImplemented;
+      reference_context->reset();
+      if (direct_ret == 0) {
+        context->reset();
+        return 0;
+      }
+      if (direct_ret != core::IndexError_NotImplemented) {
+        LOG_ERROR("Failed direct FP32/FP16 refine, error=%d", direct_ret);
+        context->reset();
+        return direct_ret;
+      }
+    }
+  }
+
+  auto keys =
+      std::make_shared<std::vector<uint64_t>>(direct_search_keys.begin(),
+                                              direct_search_keys.end());
   auto flat_search_param = std::make_shared<FlatQueryParam>();
   flat_search_param->topk = static_cast<uint32_t>(topk);
   flat_search_param->fetch_vector = false;

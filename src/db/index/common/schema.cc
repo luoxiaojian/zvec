@@ -39,7 +39,7 @@ std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
       QuantizeType::RABITQ, QuantizeType::UNIFORM_INT8,
-      QuantizeType::UNIFORM_UINT8}},
+      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -201,6 +201,37 @@ Status FieldSchema::validate() const {
         }
       }
 
+      const auto flat_data_type = vector_index_params->flat_data_type();
+      if (flat_data_type != DataType::UNDEFINED) {
+        if (is_sparse) {
+          return Status::InvalidArgument(
+              "schema validate failed: flat_data_type is only supported for "
+              "dense vector fields");
+        }
+        if (flat_data_type != DataType::VECTOR_FP32 &&
+            flat_data_type != DataType::VECTOR_FP16) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, or "
+              "UNDEFINED, but got ",
+              DataTypeCodeBook::AsString(flat_data_type));
+        }
+        if (data_type_ != DataType::VECTOR_FP32 &&
+            data_type_ != DataType::VECTOR_FP16) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "] cannot use flat_data_type with source data type ",
+              DataTypeCodeBook::AsString(data_type_));
+        }
+        if (data_type_ == DataType::VECTOR_FP16 &&
+            flat_data_type == DataType::VECTOR_FP32) {
+          return Status::InvalidArgument(
+              "schema validate failed: field[", name_,
+              "] cannot expand a VECTOR_FP16 source into a VECTOR_FP32 Flat "
+              "reference index");
+        }
+      }
+
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         auto iter = quantize_type_map.find(data_type_);
@@ -233,7 +264,9 @@ Status FieldSchema::validate() const {
         if ((vector_index_params->quantize_type() ==
                  QuantizeType::UNIFORM_INT8 ||
              vector_index_params->quantize_type() ==
-                 QuantizeType::UNIFORM_UINT8) &&
+                 QuantizeType::UNIFORM_UINT8 ||
+             vector_index_params->quantize_type() ==
+                 QuantizeType::UNIFORM_UINT4) &&
             vector_index_params->metric_type() != MetricType::L2) {
           return Status::InvalidArgument(
               "schema validate failed: ",

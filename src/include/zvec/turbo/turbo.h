@@ -26,6 +26,14 @@ using BatchDistanceFunc =
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
+// Refine kernel for an FP32 query against FP16 reference rows.  This is kept
+// separate from BatchDistanceFunc because the regular metric contract uses
+// one data type for both operands, whereas refine deliberately preserves the
+// caller's FP32 query to avoid a lossy per-query conversion.
+using Fp32Fp16BatchDistanceFunc = void (*)(
+    const void **vectors, const float *query, size_t count, size_t dimension,
+    float *distances);
+
 // Uniform quantize kernel: fp32 -> byte with a global affine transform:
 //   out[i] = clip(round(in[i] * scale + bias), 0, 127)
 // for UNIFORM_INT8. UNIFORM_UINT8 quantizes through [0, 255], then stores
@@ -34,6 +42,12 @@ using QueryPreprocessFunc =
 // Raw function pointer avoids indirect-call overhead on the hot path.
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
+
+// Packed global uint4 quantization. Two codes are stored per byte (low nibble
+// first), and the logical dimension is padded to a multiple of 128.
+using UniformUint4QuantizeFunc = void (*)(const float *in, size_t dim,
+                                          float minimum, float range,
+                                          uint8_t *out);
 
 enum class MetricType {
   kSquaredEuclidean,
@@ -44,6 +58,7 @@ enum class MetricType {
 
 enum class DataType {
   kInt8,
+  kInt4,
   kUnknown,
 };
 
@@ -51,6 +66,7 @@ enum class QuantizeType {
   kDefault,
   kUniform,
   kUniformUint8,
+  kUniformUint4,
 };
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
@@ -75,5 +91,11 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 // Same dispatch shape as get_uniform_quantize_func, but quantizes through
 // [0, 255] and emits the canonical shifted int8(value - 128) representation.
 UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type);
+
+UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type);
+
+// Returns the CPU-dispatched squared-L2 FP32-query/FP16-row refine kernel, or
+// nullptr when the host cannot execute it.
+Fp32Fp16BatchDistanceFunc get_fp32_fp16_squared_l2_batch_distance_func();
 
 }  // namespace zvec::turbo

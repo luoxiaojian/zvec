@@ -47,6 +47,12 @@ VALID_VECTOR_DATA_TYPE_INDEX_PARAM_MAP = {
             ef_construction=200,
             quantize_type=QuantizeType.UNIFORM_UINT8,
         ),
+        HnswIndexParam(
+            metric_type=MetricType.L2,
+            m=48,
+            ef_construction=200,
+            quantize_type=QuantizeType.UNIFORM_UINT4,
+        ),
         FlatIndexParam(),
         FlatIndexParam(metric_type=MetricType.IP, quantize_type=QuantizeType.INT4),
         FlatIndexParam(metric_type=MetricType.L2, quantize_type=QuantizeType.INT8),
@@ -55,6 +61,9 @@ VALID_VECTOR_DATA_TYPE_INDEX_PARAM_MAP = {
         ),
         FlatIndexParam(
             metric_type=MetricType.L2, quantize_type=QuantizeType.UNIFORM_UINT8
+        ),
+        FlatIndexParam(
+            metric_type=MetricType.L2, quantize_type=QuantizeType.UNIFORM_UINT4
         ),
         FlatIndexParam(metric_type=MetricType.COSINE, quantize_type=QuantizeType.FP16),
         IVFIndexParam(),

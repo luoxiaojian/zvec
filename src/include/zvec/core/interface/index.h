@@ -167,6 +167,11 @@ class Index {
     return streamer_->create_provider();
   }
 
+  // Creates a multipass holder that exposes vectors in the index's input
+  // data type, reverting any internal representation (for example FP16 or
+  // uniform quantization). Used when another index is trained from this one.
+  core::IndexHolder::Pointer create_original_index_holder() const;
+
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
 
  protected:

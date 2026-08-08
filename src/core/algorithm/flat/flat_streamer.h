@@ -92,6 +92,10 @@ class FlatStreamer : public IndexStreamer {
                                const IndexQueryMeta &qmeta, uint32_t count,
                                Context::UPointer &context) const override;
 
+  int refine_doc_ids_fp32_fp16(const float *query, const uint64_t *keys,
+                               size_t count, int64_t *output_ids, size_t topk,
+                               Context::UPointer &context) const;
+
   int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::UPointer &context) const;
 

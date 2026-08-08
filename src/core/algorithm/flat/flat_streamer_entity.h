@@ -21,6 +21,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include <zvec/turbo/turbo.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -187,6 +188,17 @@ class FlatStreamerEntity {
     }
   }
 
+  inline bool has_fp32_fp16_refine_distance(void) const {
+    return fp32_fp16_refine_distance_ != nullptr;
+  }
+
+  inline void fp32_fp16_refine_distance(const float *query,
+                                        const void **features, size_t fnum,
+                                        float *out) const {
+    fp32_fp16_refine_distance_(features, query, fnum, index_meta_.dimension(),
+                               out);
+  }
+
   virtual int add_vector_with_id(const uint32_t id, const void *query,
                                  const uint32_t element_size);
 
@@ -209,10 +221,11 @@ class FlatStreamerEntity {
   };
 
   //! Acquire a read pin. Base entities have no snapshot and return nullptr,
-  //! so callers transparently fall back to get_vector_by_key().
-  virtual std::shared_ptr<const ReadPin> acquire_read_pin(void) const {
-    return nullptr;
-  }
+  //! so callers transparently fall back to get_vector_by_key().  Mmap-backed
+  //! row-major entities lazily build a compact dense-key pointer table: this
+  //! preserves fcm=0 storage while removing a shared-lock, hash lookup and
+  //! MemoryBlock construction for every refine candidate.
+  virtual std::shared_ptr<const ReadPin> acquire_read_pin(void) const;
 
  protected:
   //! Copy the common entity state into a clone.
@@ -238,6 +251,24 @@ class FlatStreamerEntity {
   }
 
  private:
+  class MmapReadPin final : public ReadPin {
+   public:
+    explicit MmapReadPin(size_t count) : pointers_(count, nullptr) {}
+
+    const void *locate(uint64_t key) const override {
+      return key < pointers_.size() ? pointers_[key] : nullptr;
+    }
+
+    std::vector<const void *> &pointers(void) {
+      return pointers_;
+    }
+
+   private:
+    std::vector<const void *> pointers_;
+  };
+
+  void invalidate_mmap_read_pin(void) const;
+
   //! Disable them
   FlatStreamerEntity(const FlatStreamerEntity &) = delete;
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
@@ -462,6 +493,7 @@ class FlatStreamerEntity {
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
+  turbo::Fp32Fp16BatchDistanceFunc fp32_fp16_refine_distance_{nullptr};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
@@ -475,6 +507,8 @@ class FlatStreamerEntity {
   uint32_t vec_cols_{0};
   mutable std::string vec_buf_{};
   StreamerLinearMeta meta_{};
+  mutable std::mutex mmap_read_pin_mutex_{};
+  mutable std::shared_ptr<const ReadPin> mmap_read_pin_{};
 };
 
 /*! Flat contiguous streamer entity.
@@ -546,6 +580,7 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
       }
       return base + position * stride;
     }
+
   };
 
   void degrade_to_storage(void);

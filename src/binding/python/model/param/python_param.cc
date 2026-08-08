@@ -74,8 +74,23 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "UNIFORM_INT8";
     case QuantizeType::UNIFORM_UINT8:
       return "UNIFORM_UINT8";
+    case QuantizeType::UNIFORM_UINT4:
+      return "UNIFORM_UINT4";
     default:
       return "UNDEFINED";
+  }
+}
+
+static std::string data_type_to_string(const DataType type) {
+  switch (type) {
+    case DataType::VECTOR_FP16:
+      return "VECTOR_FP16";
+    case DataType::VECTOR_FP32:
+      return "VECTOR_FP32";
+    case DataType::UNDEFINED:
+      return "UNDEFINED";
+    default:
+      return "UNSUPPORTED";
   }
 }
 
@@ -411,6 +426,9 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index used for refine. ``DataType.UNDEFINED`` inherits the vector
+        field data type.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -425,14 +443,15 @@ Examples:
     {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8', 'use_contiguous_memory': True}
 )pbdoc");
   hnsw_params
-      .def(py::init<MetricType, int, int, QuantizeType, bool, bool>(),
+      .def(py::init<MetricType, int, int, QuantizeType, bool, bool, DataType>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_contiguous_memory") = false,
-           py::arg("use_flat_contiguous_memory") = false)
+           py::arg("use_flat_contiguous_memory") = false,
+           py::arg("flat_data_type") = DataType::UNDEFINED)
       .def_property_readonly(
           "m", &HnswIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -447,8 +466,12 @@ Examples:
       .def_property_readonly(
           "use_flat_contiguous_memory",
           &HnswIndexParams::use_flat_contiguous_memory,
-          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "bool: Whether the Flat reference index uses contiguous "
           "memory for refine. Defaults to False.")
+      .def_property_readonly(
+          "flat_data_type", &HnswIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index. "
+          "UNDEFINED inherits the vector field data type.")
       .def(
           "to_dict",
           [](const HnswIndexParams &self) -> py::dict {
@@ -462,6 +485,7 @@ Examples:
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -479,6 +503,8 @@ Examples:
                     (self.use_contiguous_memory() ? "true" : "false") +
                     ", \"use_flat_contiguous_memory\":" +
                     (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
                     "}";
            })
       .def(py::pickle(
@@ -486,15 +512,17 @@ Examples:
             return py::make_tuple(self.metric_type(), self.m(),
                                   self.ef_construction(), self.quantize_type(),
                                   self.use_contiguous_memory(),
-                                  self.use_flat_contiguous_memory());
+                                  self.use_flat_contiguous_memory(),
+                                  self.flat_data_type());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 7)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<bool>(),
-                t.size() == 6 ? t[5].cast<bool>() : false);
+                t.size() >= 6 ? t[5].cast<bool>() : false,
+                t.size() == 7 ? t[6].cast<DataType>() : DataType::UNDEFINED);
           }));
 
   // binding hnsw rabitq index params
@@ -643,6 +671,9 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index used for refine. ``DataType.UNDEFINED`` inherits the vector
+        field data type.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -656,7 +687,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool, int, int, int>(),
+                    QuantizeType, bool, int, int, int, DataType>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -673,7 +704,8 @@ Examples:
            py::arg("build_prefetch_offset") =
                core_interface::kDefaultVamanaBuildPrefetchOffset,
            py::arg("build_prefetch_lines") =
-               core_interface::kDefaultVamanaBuildPrefetchLines)
+               core_interface::kDefaultVamanaBuildPrefetchLines,
+           py::arg("flat_data_type") = DataType::UNDEFINED)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -702,8 +734,12 @@ Examples:
       .def_property_readonly(
           "use_flat_contiguous_memory",
           &VamanaIndexParams::use_flat_contiguous_memory,
-          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "bool: Whether the Flat reference index uses contiguous "
           "memory for refine.")
+      .def_property_readonly(
+          "flat_data_type", &VamanaIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index. "
+          "UNDEFINED inherits the vector field data type.")
       .def_property_readonly(
           "reverse_prune_batch_size",
           &VamanaIndexParams::reverse_prune_batch_size,
@@ -729,6 +765,7 @@ Examples:
             dict["two_pass_build"] = self.two_pass_build();
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
             dict["build_prefetch_offset"] = self.build_prefetch_offset();
             dict["build_prefetch_lines"] = self.build_prefetch_lines();
@@ -766,6 +803,8 @@ Examples:
                     std::to_string(self.build_prefetch_offset()) +
                     ", \"build_prefetch_lines\":" +
                     std::to_string(self.build_prefetch_lines()) +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
@@ -778,11 +817,12 @@ Examples:
                 self.two_pass_build(), self.quantize_type(),
                 self.use_flat_contiguous_memory(),
                 self.reverse_prune_batch_size(), self.build_prefetch_offset(),
-                self.build_prefetch_lines());
+                self.build_prefetch_lines(), self.flat_data_type());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
-                t.size() != 11 && t.size() != 12 && t.size() != 13)
+                t.size() != 11 && t.size() != 12 && t.size() != 13 &&
+                t.size() != 14)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -812,12 +852,14 @@ Examples:
                 t.size() >= 13
                     ? t[12].cast<int>()
                     : core_interface::kDefaultVamanaBuildPrefetchLines;
+            const auto flat_data_type =
+                t.size() >= 14 ? t[13].cast<DataType>() : DataType::UNDEFINED;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
                 t[9].cast<bool>(), t[10].cast<int>(), build_prefetch_offset,
-                build_prefetch_lines);
+                build_prefetch_lines, flat_data_type);
           }));
 
   // FlatIndexParams

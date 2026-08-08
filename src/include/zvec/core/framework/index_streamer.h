@@ -64,6 +64,16 @@ class IndexStreamer : public IndexRunner {
   //! rely on flush to persist trained meta override this.
   virtual void merge_trained_meta(const IndexMeta & /*trained_meta*/) {}
 
+  //! Optional direct export of sorted search candidate keys.  Graph
+  //! streamers can override this to connect to a refiner without first
+  //! materializing the generic IndexDocument result representation.
+  virtual int search_keys_direct(const void * /*query*/,
+                                 const IndexQueryMeta & /*qmeta*/,
+                                 std::vector<uint64_t> * /*keys*/,
+                                 IndexContext::Pointer & /*context*/) const {
+    return IndexError_NotImplemented;
+  }
+
   //! Enter an optional reducer-driven bulk-build lifecycle. Index::Merge calls
   //! this after converter/reformer training and before transformed records are
   //! written. Streamers decide eligibility internally; the default preserves

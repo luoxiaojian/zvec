@@ -81,12 +81,14 @@ TEST(IndexParamsTest, VectorIndexParamsBase) {
 
 TEST(IndexParamsTest, HnswIndexParams) {
   // Test constructor
-  HnswIndexParams params(MetricType::COSINE, 20, 150, QuantizeType::INT4);
+  HnswIndexParams params(MetricType::COSINE, 20, 150, QuantizeType::INT4,
+                         true, true, DataType::VECTOR_FP16);
   EXPECT_EQ(params.type(), IndexType::HNSW);
   EXPECT_EQ(params.metric_type(), MetricType::COSINE);
   EXPECT_EQ(params.m(), 20);
   EXPECT_EQ(params.ef_construction(), 150);
   EXPECT_EQ(params.quantize_type(), QuantizeType::INT4);
+  EXPECT_EQ(params.flat_data_type(), DataType::VECTOR_FP16);
 
   // Test clone
   auto cloned = params.clone();
@@ -94,15 +96,19 @@ TEST(IndexParamsTest, HnswIndexParams) {
   EXPECT_EQ(cloned->type(), IndexType::HNSW);
 
   // Test comparison
-  HnswIndexParams params2(MetricType::COSINE, 20, 150, QuantizeType::INT4);
+  HnswIndexParams params2(MetricType::COSINE, 20, 150, QuantizeType::INT4,
+                          true, true, DataType::VECTOR_FP16);
   HnswIndexParams params3(MetricType::L2, 20, 150, QuantizeType::INT4);
   HnswIndexParams params4(MetricType::COSINE, 16, 150, QuantizeType::INT4);
   HnswIndexParams params5(MetricType::COSINE, 20, 200, QuantizeType::INT4);
+  HnswIndexParams params6(MetricType::COSINE, 20, 150, QuantizeType::INT4,
+                          true, true, DataType::VECTOR_FP32);
 
   EXPECT_TRUE(params == params2);
   EXPECT_FALSE(params == params3);
   EXPECT_FALSE(params == params4);
   EXPECT_FALSE(params == params5);
+  EXPECT_FALSE(params == params6);
 
   // Test setters
   params.set_m(10);
@@ -132,6 +138,18 @@ TEST(IndexParamsTest, FlatIndexParams) {
   EXPECT_TRUE(params == params2);
   EXPECT_FALSE(params == params3);
   EXPECT_FALSE(params == params4);
+}
+
+TEST(IndexParamsTest, FlatReferenceDataType) {
+  auto fp32 = MakeDefaultVectorIndexParams(
+      MetricType::L2, true, DataType::VECTOR_FP32, DataType::VECTOR_FP32);
+  EXPECT_EQ(fp32.quantize_type(), QuantizeType::UNDEFINED);
+  EXPECT_TRUE(fp32.use_contiguous_memory());
+
+  auto fp16 = MakeDefaultVectorIndexParams(
+      MetricType::L2, true, DataType::VECTOR_FP32, DataType::VECTOR_FP16);
+  EXPECT_EQ(fp16.quantize_type(), QuantizeType::FP16);
+  EXPECT_TRUE(fp16.use_contiguous_memory());
 }
 
 TEST(IndexParamsTest, IVFIndexParams) {

@@ -24,6 +24,10 @@ namespace core {
 template <size_t BATCH_SIZE>
 class FlatStreamerContext : public IndexStreamer::Context {
  public:
+  struct RefineCandidate {
+    uint64_t key;
+    float distance;
+  };
   //! Constructor
   FlatStreamerContext(const FlatStreamer<BATCH_SIZE> *owner) {
     this->reset(owner);
@@ -56,6 +60,18 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
   inline IndexDocumentHeap *result_heap() {
     return &result_heap_;
+  }
+
+  std::vector<const void *> &refine_ptrs(void) {
+    return refine_ptrs_;
+  }
+
+  std::vector<float> &refine_distances(void) {
+    return refine_distances_;
+  }
+
+  std::vector<RefineCandidate> &refine_candidates(void) {
+    return refine_candidates_;
   }
 
   //! Retrieve search group result with index
@@ -237,6 +253,11 @@ class FlatStreamerContext : public IndexStreamer::Context {
   uint32_t actual_read_size_{0};
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};
+  // Reused by the direct FP32-query/FP16-row refine path. Capacities survive
+  // reset(), eliminating three allocations from every query.
+  std::vector<const void *> refine_ptrs_{};
+  std::vector<float> refine_distances_{};
+  std::vector<RefineCandidate> refine_candidates_{};
   std::string batch_queries_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};

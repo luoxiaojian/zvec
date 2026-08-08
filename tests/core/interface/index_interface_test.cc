@@ -693,6 +693,7 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
   run_merge(false, false, QuantizerType::kNone);
   run_merge(false, true, QuantizerType::kUniformUint8);
   run_merge(true, true, QuantizerType::kUniformUint8);
+  run_merge(true, true, QuantizerType::kUniformUint4);
   run_merge(true, true, QuantizerType::kInt8);
 
   ASSERT_EQ(0, source->Close());

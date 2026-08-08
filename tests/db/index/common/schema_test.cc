@@ -378,6 +378,24 @@ TEST(FieldSchemaTest, Validate) {
   }
 
   {
+    auto hnsw_params = std::make_shared<HnswIndexParams>(
+        MetricType::L2, 16, 100, QuantizeType::UNIFORM_UINT4, true, true,
+        DataType::VECTOR_FP16);
+    FieldSchema field("fp16_flat_reference", DataType::VECTOR_FP32, 128,
+                      false, hnsw_params);
+    EXPECT_TRUE(field.validate().ok());
+  }
+
+  {
+    auto hnsw_params = std::make_shared<HnswIndexParams>(
+        MetricType::L2, 16, 100, QuantizeType::UNDEFINED, false, false,
+        DataType::VECTOR_FP32);
+    FieldSchema field("invalid_flat_expansion", DataType::VECTOR_FP16, 128,
+                      false, hnsw_params);
+    EXPECT_FALSE(field.validate().ok());
+  }
+
+  {
     // Test that SPARSE_VECTOR_FP32 with FP16 quantize type should fail
     auto hnsw_params = std::make_shared<HnswIndexParams>(
         MetricType::IP, 16, 100, QuantizeType::FP16);

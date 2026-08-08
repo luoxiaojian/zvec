@@ -43,6 +43,14 @@ class VamanaStreamer : public IndexStreamer {
   //! Called by Index::Merge before the final flush.
   int finalize_build(void) override;
 
+  //! Search one query and export the sorted graph candidate keys directly
+  //! from the AVX2 BlockHeap.  This is a concrete, non-virtual fast path used
+  //! by Index's Flat-refine pipeline; unsupported storage/filter/CPU modes
+  //! return IndexError_NotImplemented so callers can use the generic path.
+  int search_keys_direct(const void *query, const IndexQueryMeta &qmeta,
+                         std::vector<uint64_t> *keys,
+                         Context::Pointer &context) const override;
+
  protected:
   int init(const IndexMeta &imeta, const ailego::Params &params) override;
 

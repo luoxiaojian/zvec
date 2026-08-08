@@ -151,7 +151,8 @@ class CollectionImpl : public Collection {
                                                      int topk) const override;
 
   void AnnBenchSearchFast(const void *query_vector, int topk,
-                          int64_t *output_ids) const override;
+                          int64_t *output_ids,
+                          int candidate_topk = 0) const override;
 
   Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const override;
@@ -2284,13 +2285,21 @@ Result<RawSearchResultDocIds> CollectionImpl::AnnBenchSearchDocIds(
 }
 
 void CollectionImpl::AnnBenchSearchFast(const void *query_vector, int topk,
-                                        int64_t *output_ids) const {
+                                        int64_t *output_ids,
+                                        int candidate_topk) const {
   // Minimal hot path for ann-benchmarks: no locks, no validation.
   // Assumes: AnnBenchPrepare called (single segment), serial access.
 
   if (ann_bench_.use_direct_index && ann_bench_.raw_index &&
       ann_bench_.engine_query_param) {
     ann_bench_.engine_query_param->topk = static_cast<uint32_t>(topk);
+    if (ann_bench_.engine_query_param->refiner_param) {
+      ann_bench_.engine_query_param->refiner_param->scale_factor_ =
+          candidate_topk > 0
+              ? static_cast<float>(candidate_topk) /
+                    static_cast<float>(topk)
+              : 0.0f;
+    }
 
     core_interface::DenseVector dense_query{query_vector};
     core_interface::VectorData query_data{dense_query};

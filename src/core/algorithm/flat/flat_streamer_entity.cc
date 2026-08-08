@@ -38,6 +38,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   id_key_vector_.clear();
   withid_key_info_map_.clear();
   withid_key_map_.clear();
+  invalidate_mmap_read_pin();
 
   vec_unit_size_ = IndexMeta::AlignSizeof(index_meta_.data_type());
   vec_cols_ = index_meta_.element_size() / vec_unit_size_;
@@ -83,6 +84,15 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   // May be null for metrics without a batch kernel; callers fall back to the
   // scalar per-vector distance in that case.
   batch_distance_ = metric->batch_distance();
+  // Refine keeps the caller's FP32 query while reference rows are FP16.  The
+  // ordinary metric API requires equal operand types, so use the dedicated
+  // turbo kernel only for the exact supported combination.
+  fp32_fp16_refine_distance_ = nullptr;
+  if (index_meta_.data_type() == IndexMeta::DataType::DT_FP16 &&
+      index_meta_.metric_name() == "SquaredEuclidean") {
+    fp32_fp16_refine_distance_ =
+        turbo::get_fp32_fp16_squared_l2_batch_distance_func();
+  }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
             index_meta_.metric_name().c_str());
@@ -91,6 +101,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
 }
 
 int FlatStreamerEntity::close(void) {
+  invalidate_mmap_read_pin();
   segments_.clear();
   storage_.reset();
   key_info_map_lock_.reset();
@@ -152,6 +163,7 @@ int FlatStreamerEntity::flush(uint64_t checkpoint) {
 }
 
 int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
+  invalidate_mmap_read_pin();
   std::lock_guard<std::mutex> lock(mutex_);
   if (filter_same_key_) {
     key_info_map_lock_->lock_shared();
@@ -584,6 +596,79 @@ int FlatStreamerEntity::get_vector_by_key(
     return -1;
   }
   return 0;
+}
+
+void FlatStreamerEntity::invalidate_mmap_read_pin(void) const {
+  std::lock_guard<std::mutex> lock(mmap_read_pin_mutex_);
+  mmap_read_pin_.reset();
+}
+
+std::shared_ptr<const FlatStreamerEntity::ReadPin>
+FlatStreamerEntity::acquire_read_pin(void) const {
+  if (!storage_ || storage_->memory_block_type() !=
+                       IndexStorage::MemoryBlock::MBT_MMAP) {
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> pin_lock(mmap_read_pin_mutex_);
+  if (mmap_read_pin_) return mmap_read_pin_;
+
+  // The optimized refine contract uses dense internal document IDs. Avoid an
+  // unbounded allocation for arbitrary user keys; those continue through the
+  // existing generic lookup path.
+  const size_t count = vector_count();
+  if (count == 0) return nullptr;
+
+  auto pin = std::make_shared<MmapReadPin>(count);
+  auto &pointers = pin->pointers();
+  key_info_map_lock_->lock_shared();
+  if (use_key_info_map_) {
+    if (key_info_map_.size() != count) {
+      key_info_map_lock_->unlock_shared();
+      return nullptr;
+    }
+    for (const auto &[key, loc] : key_info_map_) {
+      if (key >= count || loc.column_major) {
+        key_info_map_lock_->unlock_shared();
+        return nullptr;
+      }
+      auto segment = get_segment(loc.segment_id);
+      const void *data = nullptr;
+      if (!segment || segment->read(loc.offset, &data,
+                                    index_meta_.element_size()) !=
+                          index_meta_.element_size() ||
+          data == nullptr) {
+        key_info_map_lock_->unlock_shared();
+        return nullptr;
+      }
+      pointers[key] = data;
+    }
+  } else {
+    if (withid_key_info_map_.size() != count) {
+      key_info_map_lock_->unlock_shared();
+      return nullptr;
+    }
+    for (size_t id = 0; id < count; ++id) {
+      const auto &loc = withid_key_info_map_[id];
+      if (loc.column_major) {
+        key_info_map_lock_->unlock_shared();
+        return nullptr;
+      }
+      auto segment = get_segment(loc.segment_id);
+      const void *data = nullptr;
+      if (!segment || segment->read(loc.offset, &data,
+                                    index_meta_.element_size()) !=
+                          index_meta_.element_size() ||
+          data == nullptr) {
+        key_info_map_lock_->unlock_shared();
+        return nullptr;
+      }
+      pointers[id] = data;
+    }
+  }
+  key_info_map_lock_->unlock_shared();
+  mmap_read_pin_ = pin;
+  return mmap_read_pin_;
 }
 
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
@@ -1072,6 +1157,7 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
 int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
                                            const uint32_t size) {
+  invalidate_mmap_read_pin();
   std::lock_guard<std::mutex> lock(mutex_);
   // if (filter_same_key_) {
   //   key_info_map_lock_->lock_shared();

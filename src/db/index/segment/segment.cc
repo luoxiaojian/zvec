@@ -782,7 +782,9 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
       } else if (vector_index_params->quantize_type() !=
                      QuantizeType::UNIFORM_INT8 &&
                  vector_index_params->quantize_type() !=
-                     QuantizeType::UNIFORM_UINT8) {
+                     QuantizeType::UNIFORM_UINT8 &&
+                 vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT4) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
@@ -1751,7 +1753,8 @@ Status SegmentImpl::create_vector_index(
       auto field_with_flat = std::make_shared<FieldSchema>(*field);
       field_with_flat->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
-          vector_index_params->use_flat_contiguous_memory()));
+          vector_index_params->use_flat_contiguous_memory(), field->data_type(),
+          vector_index_params->flat_data_type()));
 
       std::string index_file_path = FileHelper::MakeVectorIndexPath(
           path_, column, segment_meta_->id(), block_id);
@@ -4033,7 +4036,9 @@ Status SegmentImpl::load_vector_index_blocks() {
             !segment_meta_->vector_indexed(column)) {
           new_field_params.set_index_params(MakeDefaultVectorIndexParams(
               vector_index_params->metric_type(),
-              vector_index_params->use_flat_contiguous_memory()));
+              vector_index_params->use_flat_contiguous_memory(),
+              new_field_params.data_type(),
+              vector_index_params->flat_data_type()));
         }
       } else {
         if (!segment_meta_->vector_indexed(column)) {
@@ -4148,7 +4153,8 @@ Status SegmentImpl::init_memory_components() {
       FieldSchema normal_field(*field);
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
-          index_params->use_flat_contiguous_memory()));
+          index_params->use_flat_contiguous_memory(), field->data_type(),
+          index_params->flat_data_type()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);
@@ -4162,7 +4168,8 @@ Status SegmentImpl::init_memory_components() {
       FieldSchema normal_field(*field);
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
-          index_params->use_flat_contiguous_memory()));
+          index_params->use_flat_contiguous_memory(), field->data_type(),
+          index_params->flat_data_type()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);
@@ -4176,7 +4183,8 @@ Status SegmentImpl::init_memory_components() {
       // quant index can be built. The quant index is created at optimize();
       // until then searches use the raw in-memory FLAT indexer above.
       if (index_params->quantize_type() == QuantizeType::UNIFORM_INT8 ||
-          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8) {
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4) {
         continue;
       }
 

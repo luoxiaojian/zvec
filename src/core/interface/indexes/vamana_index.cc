@@ -119,6 +119,13 @@ int VamanaIndex::_prepare_for_search(
 
 int VamanaIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
+  // ef_search controls graph traversal width.  When a refiner is configured,
+  // the independently configured refine scale controls how many sorted graph
+  // candidates are passed to Flat; forcing this back up to ef_search makes
+  // candidate_topk ineffective and performs unnecessary exact distances.
+  if (search_param->refiner_param != nullptr) {
+    return Index::_get_coarse_search_topk(search_param);
+  }
   const auto &vamana_search_param =
       std::dynamic_pointer_cast<VamanaQueryParam>(search_param);
   return std::max(search_param->topk, vamana_search_param->ef_search);

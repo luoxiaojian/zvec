@@ -41,6 +41,7 @@ Examples:
     DataType.VECTOR_FP32
 )pbdoc")
       // field type
+      .value("UNDEFINED", DataType::UNDEFINED)
       .value("STRING", DataType::STRING)
       .value("BOOL", DataType::BOOL)
       .value("INT32", DataType::INT32)
@@ -81,7 +82,6 @@ Examples:
       // .value("VECTOR_INT16",   DataType::VECTOR_INT16)
       // .value("VECTOR_BINARY32", DataType::VECTOR_BINARY32)
       // .value("VECTOR_BINARY64", DataType::VECTOR_BINARY64)
-      // .value("UNDEFINED", DataType::UNDEFINED)
       ;
 }
 
@@ -136,7 +136,8 @@ Examples:
       .value("INT4", QuantizeType::INT4)
       .value("RABITQ", QuantizeType::RABITQ)
       .value("UNIFORM_INT8", QuantizeType::UNIFORM_INT8)
-      .value("UNIFORM_UINT8", QuantizeType::UNIFORM_UINT8);
+      .value("UNIFORM_UINT8", QuantizeType::UNIFORM_UINT8)
+      .value("UNIFORM_UINT4", QuantizeType::UNIFORM_UINT4);
 }
 
 void ZVecPyTyping::bind_status(py::module_ &m) {

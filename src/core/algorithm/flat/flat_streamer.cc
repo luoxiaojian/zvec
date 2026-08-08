@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
+#include <algorithm>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -188,6 +189,53 @@ int FlatStreamer<BATCH_SIZE>::close(void) {
   // null dereferences from accessors such as entity() between close/open.
 
   state_ = STATE_INITED;
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
+    const float *query, const uint64_t *keys, size_t count,
+    int64_t *output_ids, size_t topk, Context::UPointer &context) const {
+  if (!query || !keys || !output_ids || topk == 0 || topk > count ||
+      meta_.data_type() != IndexMeta::DataType::DT_FP16 ||
+      meta_.metric_name() != "SquaredEuclidean" ||
+      !entity_->has_fp32_fp16_refine_distance()) {
+    return IndexError_NotImplemented;
+  }
+
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx) return IndexError_Runtime;
+
+  // A single pin protects the hugepage snapshot throughout pointer gathering
+  // and SIMD computation. fcm=1 resolves dense ann-bench doc ids by one bounds
+  // check and one multiply; no hash lookup or storage MemoryBlock is involved.
+  auto read_pin = entity_->acquire_read_pin();
+  if (!read_pin) return IndexError_NotImplemented;
+
+  auto &ptrs = ctx->refine_ptrs();
+  auto &distances = ctx->refine_distances();
+  auto &candidates = ctx->refine_candidates();
+  ptrs.resize(count);
+  distances.resize(count);
+  candidates.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    ptrs[i] = read_pin->locate(keys[i]);
+    if (!ptrs[i]) return IndexError_ReadData;
+  }
+  entity_->fp32_fp16_refine_distance(query, ptrs.data(), count,
+                                      distances.data());
+  for (size_t i = 0; i < count; ++i) {
+    candidates[i] = {keys[i], distances[i]};
+  }
+  std::partial_sort(
+      candidates.begin(), candidates.begin() + topk, candidates.end(),
+      [](const auto &lhs, const auto &rhs) {
+        return lhs.distance < rhs.distance ||
+               (lhs.distance == rhs.distance && lhs.key < rhs.key);
+      });
+  for (size_t i = 0; i < topk; ++i) {
+    output_ids[i] = static_cast<int64_t>(candidates[i].key);
+  }
   return 0;
 }
 
@@ -563,6 +611,16 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
   }
   return 0;
 }
+
+// Factory registration only instantiates methods reachable through virtual
+// dispatch. The direct refine entry point is deliberately non-virtual to keep
+// IndexRunner's plugin ABI stable, so instantiate it explicitly.
+template int FlatStreamer<16>::refine_doc_ids_fp32_fp16(
+    const float *, const uint64_t *, size_t, int64_t *, size_t,
+    Context::UPointer &) const;
+template int FlatStreamer<32>::refine_doc_ids_fp32_fp16(
+    const float *, const uint64_t *, size_t, int64_t *, size_t,
+    Context::UPointer &) const;
 
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);
