@@ -28,7 +28,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        batch_distance_handle_(ExtractBatchDistance(batch_distance_)),
         query_(nullptr),
         dim_(dim),
         compare_cnt_(0) {}
@@ -39,7 +38,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        batch_distance_handle_(ExtractBatchDistance(batch_distance_)),
         query_(query),
         dim_(dim),
         compare_cnt_(0) {}
@@ -49,7 +47,6 @@ class VamanaDistCalculator {
       : entity_(entity),
         distance_(metric->distance()),
         batch_distance_(metric->batch_distance()),
-        batch_distance_handle_(ExtractBatchDistance(batch_distance_)),
         query_(nullptr),
         dim_(0),
         compare_cnt_(0) {}
@@ -58,7 +55,6 @@ class VamanaDistCalculator {
     entity_ = entity;
     distance_ = metric->distance();
     batch_distance_ = metric->batch_distance();
-    batch_distance_handle_ = ExtractBatchDistance(batch_distance_);
   }
 
   void update(const VamanaEntity *entity, const IndexMetric::Pointer &metric,
@@ -66,7 +62,6 @@ class VamanaDistCalculator {
     entity_ = entity;
     distance_ = metric->distance();
     batch_distance_ = metric->batch_distance();
-    batch_distance_handle_ = ExtractBatchDistance(batch_distance_);
     dim_ = dim;
   }
 
@@ -75,7 +70,6 @@ class VamanaDistCalculator {
       const IndexMetric::MatrixBatchDistance &batch_distance) {
     distance_ = distance;
     batch_distance_ = batch_distance;
-    batch_distance_handle_ = ExtractBatchDistance(batch_distance_);
   }
 
   inline void reset_query(const void *query) {
@@ -125,11 +119,7 @@ class VamanaDistCalculator {
   inline void batch_dist(const void **vecs, uint32_t count, float *dists,
                          const void **extra_values = nullptr) {
     compare_cnt_ += count;
-    if (ailego_likely(batch_distance_handle_ != nullptr)) {
-      batch_distance_handle_(vecs, query_, count, dim_, dists, extra_values);
-    } else {
-      batch_distance_(vecs, query_, count, dim_, dists, extra_values);
-    }
+    batch_distance_(vecs, query_, count, dim_, dists, extra_values);
   }
 
   // Single-node batch distance for non-specialized call sites.
@@ -142,18 +132,11 @@ class VamanaDistCalculator {
       return 0.0f;
     }
     dist_t score = 0;
-    const auto call_batch = [&](const void **extra_values) {
-      if (ailego_likely(batch_distance_handle_ != nullptr)) {
-        batch_distance_handle_(&feat, query_, 1, dim_, &score, extra_values);
-      } else {
-        batch_distance_(&feat, query_, 1, dim_, &score, extra_values);
-      }
-    };
     if (entity_->extra_values_size() != 0) {
       const void *extra_values = entity_->get_extra_values(id);
-      call_batch(&extra_values);
+      batch_distance_(&feat, query_, 1, dim_, &score, &extra_values);
     } else {
-      call_batch(nullptr);
+      batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
     }
     return score;
   }
@@ -187,20 +170,12 @@ class VamanaDistCalculator {
   }
 
  private:
-  static IndexMetric::MatrixBatchDistanceHandle ExtractBatchDistance(
-      const IndexMetric::MatrixBatchDistance &distance) {
-    const auto *handle =
-        distance.target<IndexMetric::MatrixBatchDistanceHandle>();
-    return handle != nullptr ? *handle : nullptr;
-  }
-
   VamanaDistCalculator(const VamanaDistCalculator &) = delete;
   VamanaDistCalculator &operator=(const VamanaDistCalculator &) = delete;
 
   const VamanaEntity *entity_;
   IndexMetric::MatrixDistance distance_;
   IndexMetric::MatrixBatchDistance batch_distance_;
-  IndexMetric::MatrixBatchDistanceHandle batch_distance_handle_{nullptr};
   const void *query_;
   uint32_t dim_;
   uint32_t compare_cnt_;
