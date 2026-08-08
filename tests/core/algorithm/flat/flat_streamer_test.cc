@@ -165,6 +165,63 @@ TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
   EXPECT_FLOAT_EQ(64.0f, static_cast<const float *>(block.data())[0]);
 }
 
+TEST_F(FlatStreamerTest, TestContiguousFp16DirectRefine) {
+  constexpr size_t kDimension = 17;
+  const std::string path = dir_ + "Test/ContiguousFp16Refine";
+  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, kDimension);
+  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
+
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP16, kDimension);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(fp16_meta, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < 8; ++id) {
+      NumericalVector<Float16> vec(kDimension);
+      for (size_t d = 0; d < kDimension; ++d) {
+        vec[d] = static_cast<float>(id);
+      }
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(fp16_meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  ASSERT_TRUE(flat->entity().is_contiguous());
+
+  std::vector<float> query(kDimension, 2.1f);
+  std::vector<uint64_t> keys{5, 1, 3, 2};
+  std::vector<int64_t> output(2, -1);
+  auto context = streamer->create_context();
+  ASSERT_EQ(0, flat->refine_doc_ids_fp32_fp16(
+                   query.data(), keys.data(), keys.size(), output.data(),
+                   output.size(), context));
+  EXPECT_EQ(2, output[0]);
+  EXPECT_EQ(3, output[1]);
+}
+
 // Concurrent readers over the contiguous snapshot while a writer inserts and
 // triggers a degrade-to-storage. Exercises the atomic snapshot swap +
 // MemoryBlock keep-alive: readers must never crash or read freed memory, and

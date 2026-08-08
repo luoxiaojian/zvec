@@ -98,30 +98,38 @@ TEST(UniformUint4Metric, QuantizeMatchesReimplPackingAndPadding) {
   EXPECT_EQ(expected, actual);
 }
 
-TEST(Fp16RefineTurbo, Fp32QueryBatchMatchesScalarReference) {
-  auto batch = turbo::get_fp32_fp16_squared_l2_batch_distance_func();
+TEST(Fp16RefineTurbo, HomogeneousBatchMatchesScalarReference) {
+  auto batch = turbo::get_batch_distance_func(
+      turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+      turbo::QuantizeType::kDefault);
   if (!batch) GTEST_SKIP() << "AVX-512F/F16C is unavailable";
 
   std::mt19937 generator(20260807);
   std::uniform_real_distribution<float> values(-20.0f, 20.0f);
   for (const size_t dimension : {1UL, 17UL, 128UL, 131UL}) {
     constexpr size_t count = 7;
-    std::vector<float> query(dimension);
+    std::vector<float> query_fp32(dimension);
+    std::vector<ailego::Float16> query(dimension);
     std::vector<std::vector<ailego::Float16>> rows(
         count, std::vector<ailego::Float16>(dimension));
     std::vector<const void *> pointers(count);
     std::vector<float> expected(count, 0.0f);
     std::vector<float> actual(count, 0.0f);
-    for (float &value : query) value = values(generator);
+    for (float &value : query_fp32) value = values(generator);
+    ailego::FloatHelper::ToFP16(
+        query_fp32.data(), dimension,
+        reinterpret_cast<uint16_t *>(query.data()));
     for (size_t i = 0; i < count; ++i) {
       pointers[i] = rows[i].data();
       for (size_t d = 0; d < dimension; ++d) {
         rows[i][d] = values(generator);
-        const float delta = query[d] - static_cast<float>(rows[i][d]);
+        const float delta =
+            static_cast<float>(query[d]) - static_cast<float>(rows[i][d]);
         expected[i] += delta * delta;
       }
     }
-    batch(pointers.data(), query.data(), count, dimension, actual.data());
+    batch(pointers.data(), query.data(), count, dimension, actual.data(),
+          nullptr);
     for (size_t i = 0; i < count; ++i) {
       EXPECT_NEAR(expected[i], actual[i],
                   std::max(1e-3f, expected[i] * 2e-6f))

@@ -932,10 +932,10 @@ int Index::SearchDocIds(const VectorData &vector_data,
     }
   }
 
-  // Fast FP16 refine: preserve the original FP32 query, pin Flat's
-  // contiguous hugepage once, run the turbo 4-way distance kernel, and write
-  // doc ids directly. Unsupported Flat configurations fall through to the
-  // generic SearchDocIds path below.
+  // Fast FP16 refine: convert the FP32 query to FP16 once, pin Flat's
+  // contiguous hugepage once, run the homogeneous turbo 4-way distance
+  // kernel, and write doc ids directly. Unsupported Flat configurations fall
+  // through to the generic SearchDocIds path below.
   if (std::holds_alternative<DenseVector>(vector_data.vector) &&
       reference_index->input_vector_meta_.data_type() ==
           IndexMeta::DataType::DT_FP32) {

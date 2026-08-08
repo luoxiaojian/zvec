@@ -66,6 +66,14 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
 BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
                                           DataType data_type,
                                           QuantizeType quantize_type) {
+  if (data_type == DataType::kFp16 &&
+      quantize_type == QuantizeType::kDefault &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.F16C) {
+    return avx512_vnni::squared_euclidean_fp16_batch_distance;
+  }
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
@@ -151,15 +159,6 @@ UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type) {
   if (data_type == DataType::kInt4 &&
       zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
     return avx512_vnni::uniform_uint4_quantize;
-  }
-  return nullptr;
-}
-
-Fp32Fp16BatchDistanceFunc get_fp32_fp16_squared_l2_batch_distance_func() {
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
-      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
-      zvec::ailego::internal::CpuFeatures::static_flags_.F16C) {
-    return avx512_vnni::fp32_fp16_squared_euclidean_batch_distance;
   }
   return nullptr;
 }

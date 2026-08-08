@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <zvec/ailego/utility/float_helper.h>
 #include "flat_streamer.h"
 
 namespace zvec {
@@ -72,6 +73,10 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
   std::vector<RefineCandidate> &refine_candidates(void) {
     return refine_candidates_;
+  }
+
+  std::vector<ailego::Float16> &refine_query_fp16(void) {
+    return refine_query_fp16_;
   }
 
   //! Retrieve search group result with index
@@ -254,10 +259,12 @@ class FlatStreamerContext : public IndexStreamer::Context {
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};
   // Reused by the direct FP32-query/FP16-row refine path. Capacities survive
-  // reset(), eliminating three allocations from every query.
+  // reset(), eliminating per-query allocations, including the homogeneous
+  // FP16 query buffer.
   std::vector<const void *> refine_ptrs_{};
   std::vector<float> refine_distances_{};
   std::vector<RefineCandidate> refine_candidates_{};
+  std::vector<ailego::Float16> refine_query_fp16_{};
   std::string batch_queries_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};

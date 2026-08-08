@@ -26,14 +26,6 @@ using BatchDistanceFunc =
 using QueryPreprocessFunc =
     zvec::ailego::DistanceBatch::DistanceBatchQueryPreprocessFunc;
 
-// Refine kernel for an FP32 query against FP16 reference rows.  This is kept
-// separate from BatchDistanceFunc because the regular metric contract uses
-// one data type for both operands, whereas refine deliberately preserves the
-// caller's FP32 query to avoid a lossy per-query conversion.
-using Fp32Fp16BatchDistanceFunc = void (*)(
-    const void **vectors, const float *query, size_t count, size_t dimension,
-    float *distances);
-
 // Uniform quantize kernel: fp32 -> byte with a global affine transform:
 //   out[i] = clip(round(in[i] * scale + bias), 0, 127)
 // for UNIFORM_INT8. UNIFORM_UINT8 quantizes through [0, 255], then stores
@@ -59,6 +51,7 @@ enum class MetricType {
 enum class DataType {
   kInt8,
   kInt4,
+  kFp16,
   kUnknown,
 };
 
@@ -85,7 +78,7 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
 // available (callers must keep a scalar fallback). This is a
 // uniform-specific accessor intentionally kept outside of the generic
 // (metric/data/quantize) dispatch above; data_type is retained so the
-// interface can grow to cover other output types (e.g. fp16) in the future.
+// interface can grow to cover additional quantized output types.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
 // Same dispatch shape as get_uniform_quantize_func, but quantizes through
@@ -93,9 +86,5 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type);
 
 UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type);
-
-// Returns the CPU-dispatched squared-L2 FP32-query/FP16-row refine kernel, or
-// nullptr when the host cannot execute it.
-Fp32Fp16BatchDistanceFunc get_fp32_fp16_squared_l2_batch_distance_func();
 
 }  // namespace zvec::turbo

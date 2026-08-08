@@ -188,17 +188,6 @@ class FlatStreamerEntity {
     }
   }
 
-  inline bool has_fp32_fp16_refine_distance(void) const {
-    return fp32_fp16_refine_distance_ != nullptr;
-  }
-
-  inline void fp32_fp16_refine_distance(const float *query,
-                                        const void **features, size_t fnum,
-                                        float *out) const {
-    fp32_fp16_refine_distance_(features, query, fnum, index_meta_.dimension(),
-                               out);
-  }
-
   virtual int add_vector_with_id(const uint32_t id, const void *query,
                                  const uint32_t element_size);
 
@@ -493,7 +482,6 @@ class FlatStreamerEntity {
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
-  turbo::Fp32Fp16BatchDistanceFunc fp32_fp16_refine_distance_{nullptr};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};

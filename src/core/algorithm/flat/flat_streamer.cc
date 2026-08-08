@@ -15,6 +15,7 @@
 #include "flat_streamer.h"
 #include <algorithm>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
 #include "flat_streamer_provider.h"
@@ -198,8 +199,7 @@ int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
     int64_t *output_ids, size_t topk, Context::UPointer &context) const {
   if (!query || !keys || !output_ids || topk == 0 || topk > count ||
       meta_.data_type() != IndexMeta::DataType::DT_FP16 ||
-      meta_.metric_name() != "SquaredEuclidean" ||
-      !entity_->has_fp32_fp16_refine_distance()) {
+      meta_.metric_name() != "SquaredEuclidean") {
     return IndexError_NotImplemented;
   }
 
@@ -215,15 +215,22 @@ int FlatStreamer<BATCH_SIZE>::refine_doc_ids_fp32_fp16(
   auto &ptrs = ctx->refine_ptrs();
   auto &distances = ctx->refine_distances();
   auto &candidates = ctx->refine_candidates();
+  auto &query_fp16 = ctx->refine_query_fp16();
   ptrs.resize(count);
   distances.resize(count);
   candidates.resize(count);
+  query_fp16.resize(meta_.dimension());
+  // Query conversion is O(dimension) once per refine call. Distance work is
+  // O(count * dimension), and all batches below reuse this FP16 buffer.
+  ailego::FloatHelper::ToFP16(
+      query, meta_.dimension(),
+      reinterpret_cast<uint16_t *>(query_fp16.data()));
   for (size_t i = 0; i < count; ++i) {
     ptrs[i] = read_pin->locate(keys[i]);
     if (!ptrs[i]) return IndexError_ReadData;
   }
-  entity_->fp32_fp16_refine_distance(query, ptrs.data(), count,
-                                      distances.data());
+  entity_->row_major_batch_distance(query_fp16.data(), ptrs.data(), count,
+                                    distances.data());
   for (size_t i = 0; i < count; ++i) {
     candidates[i] = {keys[i], distances[i]};
   }

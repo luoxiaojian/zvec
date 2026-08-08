@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <zvec/core/framework/index_error.h>
 #include "flat_utility.h"
 
@@ -84,14 +85,16 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   // May be null for metrics without a batch kernel; callers fall back to the
   // scalar per-vector distance in that case.
   batch_distance_ = metric->batch_distance();
-  // Refine keeps the caller's FP32 query while reference rows are FP16.  The
-  // ordinary metric API requires equal operand types, so use the dedicated
-  // turbo kernel only for the exact supported combination.
-  fp32_fp16_refine_distance_ = nullptr;
+  // FP16 refine converts the query once before distance computation, so its
+  // homogeneous SIMD kernel can use the regular turbo batch dispatch. Override
+  // the generic metric implementation when the optimized four-way kernel is
+  // available on this CPU.
   if (index_meta_.data_type() == IndexMeta::DataType::DT_FP16 &&
       index_meta_.metric_name() == "SquaredEuclidean") {
-    fp32_fp16_refine_distance_ =
-        turbo::get_fp32_fp16_squared_l2_batch_distance_func();
+    auto turbo_batch = turbo::get_batch_distance_func(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+        turbo::QuantizeType::kDefault);
+    if (turbo_batch) batch_distance_ = std::move(turbo_batch);
   }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
