@@ -153,9 +153,12 @@ class Collection {
   /// Minimal fast path for ann-benchmarks: no locks, no validation,
   /// single-segment assumption, writes doc_ids directly to caller buffer.
   /// Caller must ensure: AnnBenchPrepare + AnnBenchSetQueryParams called,
-  /// output_ids has space for at least topk elements.
+  /// output_ids has space for at least topk elements. For refine queries,
+  /// candidate_topk independently controls the coarse candidate count; zero
+  /// retains the legacy behavior where coarse and result topk are equal.
   virtual void AnnBenchSearchFast(const void *query_vector, int topk,
-                                  int64_t *output_ids) const = 0;
+                                  int64_t *output_ids,
+                                  int candidate_topk = 0) const = 0;
 
   virtual Result<GroupResults> GroupByQuery(
       const GroupByVectorQuery &query) const = 0;

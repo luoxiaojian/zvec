@@ -92,6 +92,14 @@ class FlatStreamer : public IndexStreamer {
                                const IndexQueryMeta &qmeta, uint32_t count,
                                Context::UPointer &context) const override;
 
+  //! Candidate-limited search that writes primary keys directly.  This is the
+  //! doc-id counterpart of search_bf_by_p_keys_impl and deliberately operates
+  //! on a query already expressed in the Flat index's native data type.
+  int search_doc_ids_by_p_keys(const void *query, const uint64_t *keys,
+                               size_t count, int64_t *output_ids, size_t topk,
+                               const IndexQueryMeta &qmeta,
+                               Context::UPointer &context) const;
+
   int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::UPointer &context) const;
 

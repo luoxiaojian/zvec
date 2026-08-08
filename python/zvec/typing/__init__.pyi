@@ -32,6 +32,8 @@ class DataType:
 
     Members:
 
+      UNDEFINED
+
       STRING
 
       BOOL
@@ -99,6 +101,7 @@ class DataType:
     STRING: typing.ClassVar[DataType]  # value = <DataType.STRING: 2>
     UINT32: typing.ClassVar[DataType]  # value = <DataType.UINT32: 6>
     UINT64: typing.ClassVar[DataType]  # value = <DataType.UINT64: 7>
+    UNDEFINED: typing.ClassVar[DataType]  # value = <DataType.UNDEFINED: 0>
     VECTOR_FP16: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP16: 22>
     VECTOR_FP32: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP32: 23>
     VECTOR_FP64: typing.ClassVar[DataType]  # value = <DataType.VECTOR_FP64: 24>
@@ -240,6 +243,8 @@ class QuantizeType:
       UNIFORM_INT8
 
       UNIFORM_UINT8
+
+      UNIFORM_UINT4
     """
 
     FP16: typing.ClassVar[QuantizeType]  # value = <QuantizeType.FP16: 1>
@@ -249,6 +254,7 @@ class QuantizeType:
     UNDEFINED: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNDEFINED: 0>
     UNIFORM_INT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNIFORM_INT8: 5>
     UNIFORM_UINT8: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNIFORM_UINT8: 6>
+    UNIFORM_UINT4: typing.ClassVar[QuantizeType]  # value = <QuantizeType.UNIFORM_UINT4: 7>
     __members__: typing.ClassVar[
         dict[str, QuantizeType]
     ]  # value = {'UNDEFINED': <QuantizeType.UNDEFINED: 0>, 'FP16': <QuantizeType.FP16: 1>, 'INT8': <QuantizeType.INT8: 2>, 'INT4': <QuantizeType.INT4: 3>}

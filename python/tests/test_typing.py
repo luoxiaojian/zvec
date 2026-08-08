@@ -31,11 +31,13 @@ from zvec import (
     "member, name",
     [
         (DataType.FLOAT, "FLOAT"),
+        (DataType.VECTOR_UINT8, "VECTOR_UINT8"),
         (IndexType.HNSW, "HNSW"),
         (MetricType.COSINE, "COSINE"),
         (QuantizeType.INT8, "INT8"),
         (QuantizeType.UNIFORM_INT8, "UNIFORM_INT8"),
         (QuantizeType.UNIFORM_UINT8, "UNIFORM_UINT8"),
+        (QuantizeType.UNIFORM_UINT4, "UNIFORM_UINT4"),
         (StatusCode.OK, "OK"),
     ],
 )
@@ -47,11 +49,13 @@ def test_enum_names(member, name):
     "member, value",
     [
         (DataType.FLOAT, 8),
+        (DataType.VECTOR_UINT8, 28),
         (IndexType.HNSW, 1),
         (MetricType.COSINE, 3),
         (QuantizeType.INT8, 2),
         (QuantizeType.UNIFORM_INT8, 5),
         (QuantizeType.UNIFORM_UINT8, 6),
+        (QuantizeType.UNIFORM_UINT4, 7),
         (StatusCode.OK, 0),
     ],
 )
@@ -79,6 +83,7 @@ def test_metric_type_has_member(member):
         "VECTOR_FP32",
         "VECTOR_FP64",
         "VECTOR_INT8",
+        "VECTOR_UINT8",
         "SPARSE_VECTOR_FP32",
         "SPARSE_VECTOR_FP16",
         "ARRAY_STRING",
@@ -101,7 +106,16 @@ def test_index_type_has_member(member):
 
 
 @pytest.mark.parametrize(
-    "member", ["FP16", "INT8", "INT4", "UNIFORM_INT8", "UNIFORM_UINT8", "UNDEFINED"]
+    "member",
+    [
+        "FP16",
+        "INT8",
+        "INT4",
+        "UNIFORM_INT8",
+        "UNIFORM_UINT8",
+        "UNIFORM_UINT4",
+        "UNDEFINED",
+    ],
 )
 def test_quantize_type_has_member(member):
     assert member in QuantizeType.__members__

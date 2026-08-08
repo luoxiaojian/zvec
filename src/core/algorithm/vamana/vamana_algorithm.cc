@@ -178,7 +178,7 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VamanaDistCalculator &dc, uint32_t pool_capacity,
                         node_id_t entry_point, uint32_t prefetch_lines,
                         uint32_t prefetch_offset, bool enforce_scan_limit,
-                        const VamanaContext *ctx,
+                        VamanaContext *ctx,
                         typename VisitImpl::Context *visit_ctx) {
   const uint32_t max_deg = entity.max_degree();
   pool.reset(static_cast<int32_t>(pool_capacity),
@@ -194,10 +194,13 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
   pool.push_block(&ep_dist, &entry_point, 1);
 
   uint32_t buf_capacity = max_deg;
-  std::vector<node_id_t> neighbor_ids(buf_capacity);
-  std::vector<float> dists(buf_capacity);
-  std::vector<const void *> neighbor_vecs(buf_capacity);
-  std::vector<const void *> extra_values;
+  auto &neighbor_ids = ctx->search_neighbor_ids_buf();
+  auto &dists = ctx->search_dists_buf();
+  auto &neighbor_vecs = ctx->search_vecs_buf();
+  neighbor_ids.resize(buf_capacity);
+  dists.resize(buf_capacity);
+  neighbor_vecs.resize(buf_capacity);
+  auto &extra_values = ctx->search_extra_values_buf();
   if constexpr (HasExtraValues) {
     extra_values.resize(buf_capacity);
   }
@@ -301,7 +304,9 @@ struct VamanaFastGreedyRunner {
       fast_greedy_search<HasExtraValues, EntityType, BlockHeap, VisitImpl>(
           entity, pool, dc, pool_capacity, entry_point, prefetch_lines,
           ctx->po(), enforce_scan_limit, ctx, visit_ctx);
-      copy_pool_to_topk(pool, topk_heap);
+      if (!ctx->direct_pool_result()) {
+        copy_pool_to_topk(pool, topk_heap);
+      }
     } else {
       auto &pool = ctx->pool();
       fast_greedy_search<HasExtraValues, EntityType, LinearPool<float>,

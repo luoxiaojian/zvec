@@ -153,6 +153,20 @@ TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
   ASSERT_EQ(2, context->result().size());
   EXPECT_EQ(17, context->result()[0].key());
 
+  // Equal-distance candidates use doc id as a deterministic secondary key.
+  // This matches the direct doc-id API's historical behavior and matters for
+  // low-precision FP16/UINT8 rows, where ties are common.
+  NumericalVector<float> tied_query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    tied_query[j] = 18.0f;
+  }
+  const uint64_t tied_keys[] = {19, 17, 31};
+  int64_t tied_result[1] = {-1};
+  ASSERT_EQ(0, flat->search_doc_ids_by_p_keys(
+                   tied_query.data(), tied_keys, 3, tied_result, 1, qmeta,
+                   context));
+  EXPECT_EQ(17, tied_result[0]);
+
   NumericalVector<float> appended(dim);
   for (size_t j = 0; j < dim; ++j) {
     appended[j] = 64.0f;
@@ -163,6 +177,66 @@ TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
   ASSERT_EQ(0, streamer->get_vector_by_id(64, block));
   ASSERT_NE(nullptr, block.data());
   EXPECT_FLOAT_EQ(64.0f, static_cast<const float *>(block.data())[0]);
+}
+
+TEST_F(FlatStreamerTest, TestContiguousFp16CandidateSearch) {
+  constexpr size_t kDimension = 17;
+  const std::string path = dir_ + "Test/ContiguousFp16CandidateSearch";
+  IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, kDimension);
+  fp16_meta.set_metric("SquaredEuclidean", 0, Params());
+
+  Params params;
+  params.set(PARAM_FLAT_USE_ID_MAP, false);
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP16, kDimension);
+
+  {
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0, streamer->init(fp16_meta, params));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    for (uint32_t id = 0; id < 8; ++id) {
+      NumericalVector<Float16> vec(kDimension);
+      for (size_t d = 0; d < kDimension; ++d) {
+        vec[d] = static_cast<float>(id);
+      }
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vec.data(), qmeta, context));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(path, false));
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(fp16_meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  ASSERT_TRUE(flat->entity().is_contiguous());
+
+  NumericalVector<Float16> query(kDimension);
+  for (size_t d = 0; d < kDimension; ++d) {
+    query[d] = 2.1f;
+  }
+  std::vector<std::vector<uint64_t>> keys{{5, 1, 3, 2}};
+  auto context = streamer->create_context();
+  context->set_topk(2);
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                                  context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(2, context->result()[0].key());
+  EXPECT_EQ(3, context->result()[1].key());
 }
 
 // Concurrent readers over the contiguous snapshot while a writer inserts and

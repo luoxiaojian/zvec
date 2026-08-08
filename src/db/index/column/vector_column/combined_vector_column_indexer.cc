@@ -101,6 +101,10 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::Search(
       } else if (q_params->type() == IndexType::IVF) {
         scale_factor =
             std::dynamic_pointer_cast<IVFQueryParams>(q_params)->scale_factor();
+      } else if (q_params->type() == IndexType::VAMANA) {
+        scale_factor =
+            std::dynamic_pointer_cast<VamanaQueryParams>(q_params)
+                ->scale_factor();
       }
       need_refine = true;
     }

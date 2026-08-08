@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
+#include <algorithm>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -62,6 +63,13 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
                                               : IndexMeta::MO_ROW);
   }
   // Verify column major order
+  if (meta_.data_type() == IndexMeta::DataType::DT_UINT8) {
+    if (meta_.major_order() == IndexMeta::MO_COLUMN) {
+      LOG_ERROR("Raw UINT8 Flat only supports row-major storage.");
+      return IndexError_Unsupported;
+    }
+    meta_.set_major_order(IndexMeta::MO_ROW);
+  }
   if (meta_.major_order() != IndexMeta::MO_ROW) {
     IndexMeta::DataType ft = meta_.data_type();
 
@@ -392,11 +400,9 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
   // enables lock-free per-candidate lookups (null for non-contiguous mode).
   auto read_pin = entity_->acquire_read_pin();
 
-  // Scratch buffers for the one-to-many (batch) refine distance. Gathering the
-  // candidate vector pointers from the pinned contiguous snapshot lets us call
-  // the SIMD batch kernel once per query instead of one scalar distance call
-  // per candidate. Declared outside the query loop so their capacity is reused
-  // across queries (a single amortized allocation per search call).
+  // Gather candidate pointers from the pinned contiguous snapshot so the SIMD
+  // batch kernel runs once per query instead of one scalar call per candidate.
+  // Keep the buffers outside the query loop to reuse their capacity.
   std::vector<const void *> batch_ptrs;
   std::vector<uint64_t> batch_keys;
   std::vector<float> batch_dists;
@@ -407,8 +413,9 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 
     if (read_pin) {
       // Contiguous mode: gather stable pointers into the pinned snapshot and
-      // refine with the SIMD one-to-many kernel. Candidates missing from the
-      // snapshot (e.g. inserted after it was built) fall back to scalar.
+      // evaluate them with the SIMD one-to-many kernel. Candidates missing
+      // from the snapshot (e.g. inserted after it was built) fall back to
+      // scalar.
       batch_ptrs.clear();
       batch_keys.clear();
       batch_ptrs.reserve(cand.size());
@@ -453,6 +460,67 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     heap->sort();
     bf_context->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_doc_ids_by_p_keys(
+    const void *query, const uint64_t *keys, size_t count,
+    int64_t *output_ids, size_t topk, const IndexQueryMeta &qmeta,
+    Context::UPointer &context) const {
+  if (!query || !output_ids || topk == 0 || !context ||
+      !metric_->is_matched(meta_, qmeta)) {
+    return IndexError_InvalidArgument;
+  }
+  if (!keys || topk > count) {
+    return IndexError_NotImplemented;
+  }
+
+  auto *flat_context =
+      dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!flat_context) {
+    return IndexError_InvalidArgument;
+  }
+  if (flat_context->magic() != magic_) {
+    flat_context->reset(this);
+  }
+
+  // This fast path requires stable, directly addressable rows.  Other Flat
+  // layouts keep using the existing generic candidate-search implementation.
+  auto read_pin = entity_->acquire_read_pin();
+  if (!read_pin) {
+    return IndexError_NotImplemented;
+  }
+
+  auto &ptrs = flat_context->candidate_ptrs();
+  auto &distances = flat_context->candidate_distances();
+  auto &documents = flat_context->candidate_documents();
+  ptrs.resize(count);
+  distances.resize(count);
+  documents.resize(count);
+
+  for (size_t i = 0; i < count; ++i) {
+    ptrs[i] = read_pin->locate(keys[i]);
+    if (!ptrs[i]) {
+      return IndexError_NotImplemented;
+    }
+  }
+
+  entity_->row_major_batch_distance(query, ptrs.data(), count,
+                                    distances.data());
+  for (size_t i = 0; i < count; ++i) {
+    documents[i] = {keys[i], distances[i]};
+  }
+
+  std::partial_sort(
+      documents.begin(), documents.begin() + topk, documents.end(),
+      [](const auto &lhs, const auto &rhs) {
+        return lhs.distance < rhs.distance ||
+               (lhs.distance == rhs.distance && lhs.key < rhs.key);
+      });
+  for (size_t i = 0; i < topk; ++i) {
+    output_ids[i] = static_cast<int64_t>(documents[i].key);
   }
   return 0;
 }
@@ -563,6 +631,15 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
   }
   return 0;
 }
+
+// The direct doc-id entry point is non-virtual, so instantiate the streamer
+// variants registered below explicitly.
+template int FlatStreamer<16>::search_doc_ids_by_p_keys(
+    const void *, const uint64_t *, size_t, int64_t *, size_t,
+    const IndexQueryMeta &, Context::UPointer &) const;
+template int FlatStreamer<32>::search_doc_ids_by_p_keys(
+    const void *, const uint64_t *, size_t, int64_t *, size_t,
+    const IndexQueryMeta &, Context::UPointer &) const;
 
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);

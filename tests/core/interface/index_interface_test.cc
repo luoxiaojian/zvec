@@ -169,8 +169,8 @@ TEST(IndexInterface, General) {
            .with_ef_search(50)
            .build());
 
-  // Vamana with topk > ef_search to exercise _get_coarse_search_topk branch
-  // that picks max(topk, ef_search).
+  // A regular (non-refine) Vamana query remains valid when topk exceeds
+  // ef_search. Refine candidate sizing is controlled separately by its scale.
   func(VamanaIndexParamBuilder()
            .WithMetricType(MetricType::kInnerProduct)
            .WithDataType(DataType::DT_FP32)
@@ -693,6 +693,7 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
   run_merge(false, false, QuantizerType::kNone);
   run_merge(false, true, QuantizerType::kUniformUint8);
   run_merge(true, true, QuantizerType::kUniformUint8);
+  run_merge(true, true, QuantizerType::kUniformUint4);
   run_merge(true, true, QuantizerType::kInt8);
 
   ASSERT_EQ(0, source->Close());

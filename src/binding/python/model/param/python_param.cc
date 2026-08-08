@@ -74,8 +74,25 @@ static std::string quantize_type_to_string(const QuantizeType type) {
       return "UNIFORM_INT8";
     case QuantizeType::UNIFORM_UINT8:
       return "UNIFORM_UINT8";
+    case QuantizeType::UNIFORM_UINT4:
+      return "UNIFORM_UINT4";
     default:
       return "UNDEFINED";
+  }
+}
+
+static std::string data_type_to_string(const DataType type) {
+  switch (type) {
+    case DataType::VECTOR_FP16:
+      return "VECTOR_FP16";
+    case DataType::VECTOR_FP32:
+      return "VECTOR_FP32";
+    case DataType::VECTOR_UINT8:
+      return "VECTOR_UINT8";
+    case DataType::UNDEFINED:
+      return "UNDEFINED";
+    default:
+      return "UNSUPPORTED";
   }
 }
 
@@ -411,6 +428,11 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index used for refine. ``DataType.UNDEFINED`` inherits the vector
+        field data type. ``DataType.VECTOR_UINT8`` directly stores each
+        original component as one unsigned byte (no scale/bias or record
+        tail) and is currently supported for FP32 vectors with L2 metric.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -425,14 +447,15 @@ Examples:
     {'metric_type': 'IP', 'm': 16, 'ef_construction': 200, 'quantize_type': 'INT8', 'use_contiguous_memory': True}
 )pbdoc");
   hnsw_params
-      .def(py::init<MetricType, int, int, QuantizeType, bool, bool>(),
+      .def(py::init<MetricType, int, int, QuantizeType, bool, bool, DataType>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
            py::arg("ef_construction") =
                core_interface::kDefaultHnswEfConstruction,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_contiguous_memory") = false,
-           py::arg("use_flat_contiguous_memory") = false)
+           py::arg("use_flat_contiguous_memory") = false,
+           py::arg("flat_data_type") = DataType::UNDEFINED)
       .def_property_readonly(
           "m", &HnswIndexParams::m,
           "int: Maximum number of neighbors per node in upper layers.")
@@ -447,8 +470,12 @@ Examples:
       .def_property_readonly(
           "use_flat_contiguous_memory",
           &HnswIndexParams::use_flat_contiguous_memory,
-          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "bool: Whether the Flat reference index uses contiguous "
           "memory for refine. Defaults to False.")
+      .def_property_readonly(
+          "flat_data_type", &HnswIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index. "
+          "UNDEFINED inherits the vector field data type.")
       .def(
           "to_dict",
           [](const HnswIndexParams &self) -> py::dict {
@@ -462,6 +489,7 @@ Examples:
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -479,6 +507,8 @@ Examples:
                     (self.use_contiguous_memory() ? "true" : "false") +
                     ", \"use_flat_contiguous_memory\":" +
                     (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
                     "}";
            })
       .def(py::pickle(
@@ -486,15 +516,17 @@ Examples:
             return py::make_tuple(self.metric_type(), self.m(),
                                   self.ef_construction(), self.quantize_type(),
                                   self.use_contiguous_memory(),
-                                  self.use_flat_contiguous_memory());
+                                  self.use_flat_contiguous_memory(),
+                                  self.flat_data_type());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 7)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<bool>(),
-                t.size() == 6 ? t[5].cast<bool>() : false);
+                t.size() >= 6 ? t[5].cast<bool>() : false,
+                t.size() == 7 ? t[6].cast<DataType>() : DataType::UNDEFINED);
           }));
 
   // binding hnsw rabitq index params
@@ -647,6 +679,11 @@ Attributes:
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
+    flat_data_type (DataType): Physical data type stored by the Flat reference
+        index used for refine. ``DataType.UNDEFINED`` inherits the vector
+        field data type. ``DataType.VECTOR_UINT8`` directly stores each
+        original component as one unsigned byte (no scale/bias or record
+        tail) and is currently supported for FP32 vectors with L2 metric.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -660,7 +697,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool, int, int, int, bool>(),
+                    QuantizeType, bool, int, int, int, DataType, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -678,6 +715,7 @@ Examples:
                core_interface::kDefaultVamanaBuildPrefetchOffset,
            py::arg("build_prefetch_lines") =
                core_interface::kDefaultVamanaBuildPrefetchLines,
+           py::arg("flat_data_type") = DataType::UNDEFINED,
            py::arg("use_optimized_build") =
                core_interface::kDefaultVamanaUseOptimizedBuild)
       .def_property_readonly(
@@ -708,8 +746,12 @@ Examples:
       .def_property_readonly(
           "use_flat_contiguous_memory",
           &VamanaIndexParams::use_flat_contiguous_memory,
-          "bool: Whether the raw-vector Flat reference index uses contiguous "
+          "bool: Whether the Flat reference index uses contiguous "
           "memory for refine.")
+      .def_property_readonly(
+          "flat_data_type", &VamanaIndexParams::flat_data_type,
+          "DataType: Physical data type of the Flat reference index. "
+          "UNDEFINED inherits the vector field data type.")
       .def_property_readonly(
           "reverse_prune_batch_size",
           &VamanaIndexParams::reverse_prune_batch_size,
@@ -739,6 +781,7 @@ Examples:
             dict["two_pass_build"] = self.two_pass_build();
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
+            dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
             dict["build_prefetch_offset"] = self.build_prefetch_offset();
             dict["build_prefetch_lines"] = self.build_prefetch_lines();
@@ -777,6 +820,8 @@ Examples:
                     std::to_string(self.build_prefetch_offset()) +
                     ", \"build_prefetch_lines\":" +
                     std::to_string(self.build_prefetch_lines()) +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
                     ", \"use_optimized_build\":" +
                     std::string(self.use_optimized_build() ? "true"
                                                            : "false") +
@@ -792,12 +837,13 @@ Examples:
                 self.two_pass_build(), self.quantize_type(),
                 self.use_flat_contiguous_memory(),
                 self.reverse_prune_batch_size(), self.build_prefetch_offset(),
-                self.build_prefetch_lines(), self.use_optimized_build());
+                self.build_prefetch_lines(), self.flat_data_type(),
+                self.use_optimized_build());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
                 t.size() != 11 && t.size() != 12 && t.size() != 13 &&
-                t.size() != 14)
+                t.size() != 14 && t.size() != 15)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -827,16 +873,27 @@ Examples:
                 t.size() >= 13
                     ? t[12].cast<int>()
                     : core_interface::kDefaultVamanaBuildPrefetchLines;
+            // Both parent branches emitted a 14-item pickle: the pacing
+            // branch appended a bool, while uniform_uint8 appended DataType.
+            // Accept both legacy forms and emit the combined 15-item form.
+            const bool legacy_pacing_flag =
+                t.size() == 14 && py::isinstance<py::bool_>(t[13]);
+            const auto flat_data_type =
+                t.size() >= 15 || (t.size() == 14 && !legacy_pacing_flag)
+                    ? t[13].cast<DataType>()
+                    : DataType::UNDEFINED;
             const bool use_optimized_build =
-                t.size() >= 14
-                    ? t[13].cast<bool>()
-                    : core_interface::kDefaultVamanaUseOptimizedBuild;
+                t.size() >= 15
+                    ? t[14].cast<bool>()
+                    : (legacy_pacing_flag
+                           ? t[13].cast<bool>()
+                           : core_interface::kDefaultVamanaUseOptimizedBuild);
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
                 t[9].cast<bool>(), t[10].cast<int>(), build_prefetch_offset,
-                build_prefetch_lines, use_optimized_build);
+                build_prefetch_lines, flat_data_type, use_optimized_build);
           }));
 
   // FlatIndexParams
@@ -1461,6 +1518,8 @@ Attributes:
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float): Number of coarse candidates passed to the refiner,
+        relative to query top-k. Default is 1.0.
 
 Examples:
     >>> params = VamanaQueryParam(ef_search=200)
@@ -1469,9 +1528,11 @@ Examples:
 )pbdoc");
   vamana_query_params
       .def(py::init([](int ef_search, float radius, bool is_linear,
-                       bool is_using_refiner, py::dict extra_params) {
+                       bool is_using_refiner, py::dict extra_params,
+                       float scale_factor) {
              auto obj = std::make_shared<VamanaQueryParams>(
                  ef_search, radius, is_linear, is_using_refiner);
+             obj->set_scale_factor(scale_factor);
              if (extra_params.contains("prefetch_offset")) {
                obj->set_prefetch_offset(
                    extra_params["prefetch_offset"].cast<uint32_t>());
@@ -1486,6 +1547,7 @@ Examples:
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
            py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = 1.0f,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1496,6 +1558,8 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float, optional): Number of coarse candidates passed to the
+        refiner, relative to query top-k. Default is 1.0.
     extra_params (dict, optional): Additional search parameters. Supported keys:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
           ``0`` disables prefetching. Default is ``8``.
@@ -1508,6 +1572,12 @@ Args:
           "ef_search",
           [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
           "int: Size of the dynamic candidate list during Vamana search.")
+      .def_property_readonly(
+          "scale_factor",
+          [](const VamanaQueryParams &self) -> float {
+            return self.scale_factor();
+          },
+          "float: Coarse candidate count relative to query top-k.")
       .def_property_readonly(
           "prefetch_offset",
           [](const VamanaQueryParams &self) -> uint32_t {
@@ -1533,17 +1603,19 @@ Args:
                     ", \"prefetch_offset\":" +
                     std::to_string(self.prefetch_offset()) +
                     ", \"prefetch_lines\":" +
-                    std::to_string(self.prefetch_lines()) + "}";
+                    std::to_string(self.prefetch_lines()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
                                   self.is_linear(), self.is_using_refiner(),
                                   self.prefetch_offset(),
-                                  self.prefetch_lines());
+                                  self.prefetch_lines(), self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
+            if (t.size() < 4 || t.size() > 7)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
@@ -1554,6 +1626,9 @@ Args:
             }
             if (t.size() >= 6) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
+            if (t.size() >= 7) {
+              obj->set_scale_factor(t[6].cast<float>());
             }
             return obj;
           }));

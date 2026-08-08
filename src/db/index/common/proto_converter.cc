@@ -23,7 +23,8 @@ HnswIndexParams::OPtr ProtoConverter::FromPb(
       params_pb.ef_construction(),
       QuantizeTypeCodeBook::Get(params_pb.base().quantize_type()),
       params_pb.use_contiguous_memory(),
-      params_pb.use_flat_contiguous_memory());
+      params_pb.use_flat_contiguous_memory(),
+      DataTypeCodeBook::Get(params_pb.flat_data_type()));
 
   return params;
 }
@@ -39,6 +40,7 @@ proto::HnswIndexParams ProtoConverter::ToPb(const HnswIndexParams *params) {
   params_pb.set_use_contiguous_memory(params->use_contiguous_memory());
   params_pb.set_use_flat_contiguous_memory(
       params->use_flat_contiguous_memory());
+  params_pb.set_flat_data_type(DataTypeCodeBook::Get(params->flat_data_type()));
   return params_pb;
 }
 
@@ -127,6 +129,7 @@ VamanaIndexParams::OPtr ProtoConverter::FromPb(
       params_pb.has_build_prefetch_lines()
           ? params_pb.build_prefetch_lines()
           : core_interface::kDefaultVamanaBuildPrefetchLines,
+      DataTypeCodeBook::Get(params_pb.flat_data_type()),
       params_pb.has_use_optimized_build()
           ? params_pb.use_optimized_build()
           : core_interface::kDefaultVamanaUseOptimizedBuild);
@@ -151,6 +154,7 @@ proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
   params_pb.set_build_prefetch_offset(params->build_prefetch_offset());
   params_pb.set_build_prefetch_lines(params->build_prefetch_lines());
   params_pb.set_use_optimized_build(params->use_optimized_build());
+  params_pb.set_flat_data_type(DataTypeCodeBook::Get(params->flat_data_type()));
   return params_pb;
 }
 

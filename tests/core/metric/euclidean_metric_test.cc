@@ -77,6 +77,41 @@ TEST(SquaredEuclideanMetric, General) {
   EXPECT_FLOAT_EQ(1.0f, result);
 }
 
+TEST(SquaredEuclideanMetric, RawUint8) {
+  constexpr size_t kDimension = 128;
+  auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_TRUE(metric);
+
+  IndexMeta meta(IndexMeta::DataType::DT_UINT8, kDimension);
+  ASSERT_EQ(0, metric->init(meta, ailego::Params()));
+  EXPECT_EQ(meta.element_size(), kDimension);
+
+  std::vector<uint8_t> query(kDimension);
+  std::vector<uint8_t> row0(kDimension);
+  std::vector<uint8_t> row1(kDimension);
+  uint64_t expected0 = 0;
+  uint64_t expected1 = 0;
+  for (size_t i = 0; i < kDimension; ++i) {
+    query[i] = static_cast<uint8_t>((i * 17) & 0xff);
+    row0[i] = static_cast<uint8_t>((i * 31 + 3) & 0xff);
+    row1[i] = static_cast<uint8_t>(255 - query[i]);
+    const int d0 = static_cast<int>(row0[i]) - query[i];
+    const int d1 = static_cast<int>(row1[i]) - query[i];
+    expected0 += d0 * d0;
+    expected1 += d1 * d1;
+  }
+
+  float single = 0.0F;
+  metric->distance()(row0.data(), query.data(), kDimension, &single);
+  EXPECT_FLOAT_EQ(single, static_cast<float>(expected0));
+
+  const void *rows[] = {row0.data(), row1.data()};
+  float batch[2] = {};
+  metric->batch_distance()(rows, query.data(), 2, kDimension, batch, nullptr);
+  EXPECT_FLOAT_EQ(batch[0], static_cast<float>(expected0));
+  EXPECT_FLOAT_EQ(batch[1], static_cast<float>(expected1));
+}
+
 TEST(EuclideanMetric, General) {
   auto metric = IndexFactory::CreateMetric("Euclidean");
   EXPECT_TRUE(metric);

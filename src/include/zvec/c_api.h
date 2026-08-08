@@ -803,6 +803,7 @@ typedef uint32_t zvec_data_type_t;
 #define ZVEC_DATA_TYPE_VECTOR_INT4 25
 #define ZVEC_DATA_TYPE_VECTOR_INT8 26
 #define ZVEC_DATA_TYPE_VECTOR_INT16 27
+#define ZVEC_DATA_TYPE_VECTOR_UINT8 28
 #define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16 30
 #define ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 31
 #define ZVEC_DATA_TYPE_ARRAY_BINARY 40
@@ -859,6 +860,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_RABITQ 4
 #define ZVEC_QUANTIZE_TYPE_UNIFORM_INT8 5
 #define ZVEC_QUANTIZE_TYPE_UNIFORM_UINT8 6
+#define ZVEC_QUANTIZE_TYPE_UNIFORM_UINT4 7
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -1574,6 +1576,24 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_query_params_vamana_set_ef_search(
  * @return int Candidate list size
  */
 ZVEC_EXPORT int ZVEC_CALL zvec_query_params_vamana_get_ef_search(
+    const zvec_vamana_query_params_t *params);
+
+/**
+ * @brief Set the coarse-candidate scale used by the refiner
+ * @param params Vamana query parameters pointer
+ * @param scale_factor Coarse candidate count relative to query top-k
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_vamana_set_scale_factor(
+    zvec_vamana_query_params_t *params, float scale_factor);
+
+/**
+ * @brief Get the coarse-candidate scale used by the refiner
+ * @param params Vamana query parameters pointer
+ * @return float Coarse candidate count relative to query top-k
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_vamana_get_scale_factor(
     const zvec_vamana_query_params_t *params);
 
 /**

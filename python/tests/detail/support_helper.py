@@ -105,6 +105,7 @@ SUPPORT_VECTOR_DATA_TYPE_QUANT_MAP = {
         QuantizeType.INT4,
         QuantizeType.UNIFORM_INT8,
         QuantizeType.UNIFORM_UINT8,
+        QuantizeType.UNIFORM_UINT4,
     ],
     DataType.SPARSE_VECTOR_FP32: [QuantizeType.FP16],
 }

@@ -107,6 +107,8 @@ TEST(DataTypeCodeBookTest, ProtoToCppConversion) {
             DataType::VECTOR_INT8);
   EXPECT_EQ(DataTypeCodeBook::Get(proto::DT_VECTOR_INT16),
             DataType::VECTOR_INT16);
+  EXPECT_EQ(DataTypeCodeBook::Get(proto::DT_VECTOR_UINT8),
+            DataType::VECTOR_UINT8);
   EXPECT_EQ(DataTypeCodeBook::Get(proto::DT_SPARSE_VECTOR_FP32),
             DataType::SPARSE_VECTOR_FP32);
   EXPECT_EQ(DataTypeCodeBook::Get(proto::DT_ARRAY_BINARY),
@@ -158,6 +160,8 @@ TEST(DataTypeCodeBookTest, CppToProtoConversion) {
             proto::DT_VECTOR_INT8);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::VECTOR_INT16),
             proto::DT_VECTOR_INT16);
+  EXPECT_EQ(DataTypeCodeBook::Get(DataType::VECTOR_UINT8),
+            proto::DT_VECTOR_UINT8);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::SPARSE_VECTOR_FP16),
             proto::DT_SPARSE_VECTOR_FP16);
   EXPECT_EQ(DataTypeCodeBook::Get(DataType::SPARSE_VECTOR_FP32),
@@ -205,6 +209,8 @@ TEST(DataTypeCodeBookTest, CppToStringConversion) {
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT4), "VECTOR_INT4");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT8), "VECTOR_INT8");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_INT16), "VECTOR_INT16");
+  EXPECT_EQ(DataTypeCodeBook::AsString(DataType::VECTOR_UINT8),
+            "VECTOR_UINT8");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::ARRAY_BINARY), "ARRAY_BINARY");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::ARRAY_STRING), "ARRAY_STRING");
   EXPECT_EQ(DataTypeCodeBook::AsString(DataType::ARRAY_BOOL), "ARRAY_BOOL");

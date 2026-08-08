@@ -13,12 +13,36 @@
 // limitations under the License.
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math_batch/distance_batch.h>
+#include <cstdint>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_metric.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
+
+static void SquaredEuclideanDistanceRawUint8(const void *lhs,
+                                             const void *rhs, size_t dimension,
+                                             float *distance) {
+  const auto *left = static_cast<const uint8_t *>(lhs);
+  const auto *right = static_cast<const uint8_t *>(rhs);
+  uint64_t sum = 0;
+  for (size_t i = 0; i < dimension; ++i) {
+    const int delta = static_cast<int>(left[i]) - static_cast<int>(right[i]);
+    sum += static_cast<uint64_t>(delta * delta);
+  }
+  *distance = static_cast<float>(sum);
+}
+
+static void SquaredEuclideanDistanceRawUint8Batch(
+    const void **vectors, const void *query, size_t count, size_t dimension,
+    float *distances, const void ** /*extra_values*/) {
+  for (size_t i = 0; i < count; ++i) {
+    SquaredEuclideanDistanceRawUint8(vectors[i], query, dimension,
+                                    distances + i);
+  }
+}
 
 //! Retrieve distance function for index features
 static inline IndexMetric::MatrixDistanceHandle
@@ -513,7 +537,8 @@ class SquaredEuclideanMetric : public IndexMetric {
     if (dt != IndexMeta::DataType::DT_FP16 &&
         dt != IndexMeta::DataType::DT_FP32 &&
         dt != IndexMeta::DataType::DT_INT8 &&
-        dt != IndexMeta::DataType::DT_INT4) {
+        dt != IndexMeta::DataType::DT_INT4 &&
+        dt != IndexMeta::DataType::DT_UINT8) {
       return IndexError_Unsupported;
     }
     if (IndexMeta::UnitSizeof(dt) != meta.unit_size()) {
@@ -564,6 +589,14 @@ class SquaredEuclideanMetric : public IndexMetric {
         return reinterpret_cast<MatrixDistanceHandle>(
             ailego::SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute);
 
+      case IndexMeta::DataType::DT_UINT8: {
+        auto distance = turbo::get_distance_func(
+            turbo::MetricType::kSquaredEuclidean, turbo::DataType::kUint8,
+            turbo::QuantizeType::kDefault);
+        return distance ? std::move(distance)
+                        : MatrixDistance(SquaredEuclideanDistanceRawUint8);
+      }
+
       default:
         return nullptr;
     }
@@ -589,6 +622,9 @@ class SquaredEuclideanMetric : public IndexMetric {
 
       case IndexMeta::DataType::DT_INT4:
         return SquaredEuclideanDistanceMatrixInt4(m, n);
+
+      case IndexMeta::DataType::DT_UINT8:
+        return m == 1 && n == 1 ? SquaredEuclideanDistanceRawUint8 : nullptr;
 
       default:
         return nullptr;
@@ -617,6 +653,15 @@ class SquaredEuclideanMetric : public IndexMetric {
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
             ailego::BaseDistance<ailego::SquaredEuclideanDistanceMatrix,
                                  uint8_t, 12, 2>::ComputeBatch);
+
+      case IndexMeta::DataType::DT_UINT8: {
+        auto distance = turbo::get_batch_distance_func(
+            turbo::MetricType::kSquaredEuclidean, turbo::DataType::kUint8,
+            turbo::QuantizeType::kDefault);
+        return distance
+                   ? std::move(distance)
+                   : MatrixBatchDistance(SquaredEuclideanDistanceRawUint8Batch);
+      }
 
       default:
         return nullptr;
