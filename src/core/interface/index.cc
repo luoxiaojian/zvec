@@ -919,41 +919,43 @@ int Index::SearchDocIds(const VectorData &vector_data,
     }
   }
 
-  // Fast contiguous refine: encode the FP32 query once, pin Flat's hugepage
-  // once, run the homogeneous Turbo batch kernel, and write doc ids directly.
-  // FP16 and raw UINT8 each convert the query once into the Flat row type.
-  // Unsupported Flat configurations fall through to the generic SearchDocIds
-  // path below.
-  if (std::holds_alternative<DenseVector>(vector_data.vector) &&
-      input_vector_meta_.data_type() == IndexMeta::DataType::DT_FP32) {
+  // Keep the native Flat query buffer on the query thread so FP16/UINT8
+  // conversion does not allocate for every request.
+  thread_local std::string flat_query_storage;
+  VectorData flat_query;
+  ret = PrepareNativeFlatQuery(
+      vector_data, input_vector_meta_, reference_index->input_vector_meta_,
+      &flat_query_storage, &flat_query);
+  if (ret != 0) {
+    context->reset();
+    return ret;
+  }
+
+  // Use Flat's generic candidate-limited doc-id operation when its rows are
+  // contiguous.  This avoids copying candidate ids into query parameters and
+  // avoids a recursive Index::SearchDocIds/result-heap/materialization pass.
+  if (std::holds_alternative<DenseVector>(flat_query.vector)) {
     auto &reference_context = reference_index->acquire_context();
     if (reference_context) {
-      const auto &dense = std::get<DenseVector>(vector_data.vector);
       const auto *flat_streamer =
           dynamic_cast<const core::FlatStreamer<32> *>(
               reference_index->streamer_.get());
-      int direct_ret =
+      const auto &dense = std::get<DenseVector>(flat_query.vector);
+      const int direct_ret =
           flat_streamer
-              ? flat_streamer->refine_doc_ids_fp32_fp16(
-                    static_cast<const float *>(dense.data),
-                    direct_search_keys.data(), direct_search_keys.size(),
-                    output_ids, static_cast<size_t>(topk), reference_context)
+              ? flat_streamer->search_doc_ids_by_p_keys(
+                    dense.data, direct_search_keys.data(),
+                    direct_search_keys.size(), output_ids,
+                    static_cast<size_t>(topk),
+                    reference_index->input_vector_meta_, reference_context)
               : core::IndexError_NotImplemented;
-      if (direct_ret == core::IndexError_NotImplemented && flat_streamer &&
-          flat_streamer->meta().data_type() ==
-              IndexMeta::DataType::DT_UINT8) {
-        direct_ret = flat_streamer->refine_doc_ids_fp32_uint8(
-            static_cast<const float *>(dense.data), direct_search_keys.data(),
-            direct_search_keys.size(), output_ids, static_cast<size_t>(topk),
-            reference_context);
-      }
       reference_context->reset();
       if (direct_ret == 0) {
         context->reset();
         return 0;
       }
       if (direct_ret != core::IndexError_NotImplemented) {
-        LOG_ERROR("Failed direct contiguous refine, error=%d", direct_ret);
+        LOG_ERROR("Failed direct Flat candidate search, error=%d", direct_ret);
         context->reset();
         return direct_ret;
       }
@@ -968,16 +970,8 @@ int Index::SearchDocIds(const VectorData &vector_data,
   flat_search_param->fetch_vector = false;
   flat_search_param->filter = search_param->filter;
   flat_search_param->bf_pks = std::move(keys);
-
-  std::string flat_query_storage;
-  VectorData flat_query;
-  ret = PrepareNativeFlatQuery(
-      vector_data, input_vector_meta_, reference_index->input_vector_meta_,
-      &flat_query_storage, &flat_query);
-  if (ret == 0) {
-    ret = reference_index->SearchDocIds(flat_query, flat_search_param,
-                                        output_ids, topk);
-  }
+  ret = reference_index->SearchDocIds(flat_query, flat_search_param, output_ids,
+                                      topk);
   context->reset();
   return ret;
 }

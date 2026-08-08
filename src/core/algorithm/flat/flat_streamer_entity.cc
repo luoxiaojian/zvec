@@ -80,14 +80,12 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   row_distance_ = metric->distance();
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
-  // One-to-many SIMD kernel for the refine stage (raw/unquantized vectors).
-  // May be null for metrics without a batch kernel; callers fall back to the
-  // scalar per-vector distance in that case.
+  // One-to-many SIMD kernel for row-major candidate searches. May be null for
+  // metrics without a batch kernel; callers then use scalar distances.
   batch_distance_ = metric->batch_distance();
-  // FP16 refine converts the query once before distance computation, so its
-  // homogeneous SIMD kernel can use the regular turbo batch dispatch. Override
-  // the generic metric implementation when the optimized four-way kernel is
-  // available on this CPU.
+  // Native FP16 queries and rows use the regular homogeneous turbo dispatch.
+  // Override the generic metric implementation when the optimized four-way
+  // kernel is available on this CPU.
   if (index_meta_.data_type() == IndexMeta::DataType::DT_FP16 &&
       index_meta_.metric_name() == "SquaredEuclidean") {
     auto turbo_batch = turbo::get_batch_distance_func(

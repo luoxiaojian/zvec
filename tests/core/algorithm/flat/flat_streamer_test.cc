@@ -153,6 +153,20 @@ TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
   ASSERT_EQ(2, context->result().size());
   EXPECT_EQ(17, context->result()[0].key());
 
+  // Equal-distance candidates use doc id as a deterministic secondary key.
+  // This matches the direct doc-id API's historical behavior and matters for
+  // low-precision FP16/UINT8 rows, where ties are common.
+  NumericalVector<float> tied_query(dim);
+  for (size_t j = 0; j < dim; ++j) {
+    tied_query[j] = 18.0f;
+  }
+  const uint64_t tied_keys[] = {19, 17, 31};
+  int64_t tied_result[1] = {-1};
+  ASSERT_EQ(0, flat->search_doc_ids_by_p_keys(
+                   tied_query.data(), tied_keys, 3, tied_result, 1, qmeta,
+                   context));
+  EXPECT_EQ(17, tied_result[0]);
+
   NumericalVector<float> appended(dim);
   for (size_t j = 0; j < dim; ++j) {
     appended[j] = 64.0f;
@@ -165,9 +179,9 @@ TEST_F(FlatStreamerTest, TestContiguousEntityLookupAndInsertFallback) {
   EXPECT_FLOAT_EQ(64.0f, static_cast<const float *>(block.data())[0]);
 }
 
-TEST_F(FlatStreamerTest, TestContiguousFp16DirectRefine) {
+TEST_F(FlatStreamerTest, TestContiguousFp16CandidateSearch) {
   constexpr size_t kDimension = 17;
-  const std::string path = dir_ + "Test/ContiguousFp16Refine";
+  const std::string path = dir_ + "Test/ContiguousFp16CandidateSearch";
   IndexMeta fp16_meta(IndexMeta::DataType::DT_FP16, kDimension);
   fp16_meta.set_metric("SquaredEuclidean", 0, Params());
 
@@ -211,15 +225,18 @@ TEST_F(FlatStreamerTest, TestContiguousFp16DirectRefine) {
   ASSERT_NE(nullptr, flat);
   ASSERT_TRUE(flat->entity().is_contiguous());
 
-  std::vector<float> query(kDimension, 2.1f);
-  std::vector<uint64_t> keys{5, 1, 3, 2};
-  std::vector<int64_t> output(2, -1);
+  NumericalVector<Float16> query(kDimension);
+  for (size_t d = 0; d < kDimension; ++d) {
+    query[d] = 2.1f;
+  }
+  std::vector<std::vector<uint64_t>> keys{{5, 1, 3, 2}};
   auto context = streamer->create_context();
-  ASSERT_EQ(0, flat->refine_doc_ids_fp32_fp16(
-                   query.data(), keys.data(), keys.size(), output.data(),
-                   output.size(), context));
-  EXPECT_EQ(2, output[0]);
-  EXPECT_EQ(3, output[1]);
+  context->set_topk(2);
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(query.data(), keys, qmeta, 1,
+                                                  context));
+  ASSERT_EQ(2, context->result().size());
+  EXPECT_EQ(2, context->result()[0].key());
+  EXPECT_EQ(3, context->result()[1].key());
 }
 
 // Concurrent readers over the contiguous snapshot while a writer inserts and

@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <zvec/ailego/utility/float_helper.h>
 #include "flat_streamer.h"
 
 namespace zvec {
@@ -25,10 +24,11 @@ namespace core {
 template <size_t BATCH_SIZE>
 class FlatStreamerContext : public IndexStreamer::Context {
  public:
-  struct RefineCandidate {
+  struct CandidateDocument {
     uint64_t key;
     float distance;
   };
+
   //! Constructor
   FlatStreamerContext(const FlatStreamer<BATCH_SIZE> *owner) {
     this->reset(owner);
@@ -63,24 +63,19 @@ class FlatStreamerContext : public IndexStreamer::Context {
     return &result_heap_;
   }
 
-  std::vector<const void *> &refine_ptrs(void) {
-    return refine_ptrs_;
+  // Scratch space shared by candidate-limited Flat searches.  Keeping it in
+  // the context preserves capacity across queries without attaching any
+  // refine-specific meaning to FlatStreamer.
+  std::vector<const void *> &candidate_ptrs(void) {
+    return candidate_ptrs_;
   }
 
-  std::vector<float> &refine_distances(void) {
-    return refine_distances_;
+  std::vector<float> &candidate_distances(void) {
+    return candidate_distances_;
   }
 
-  std::vector<RefineCandidate> &refine_candidates(void) {
-    return refine_candidates_;
-  }
-
-  std::vector<ailego::Float16> &refine_query_fp16(void) {
-    return refine_query_fp16_;
-  }
-
-  std::vector<uint8_t> &refine_query_uint8(void) {
-    return refine_query_uint8_;
+  std::vector<CandidateDocument> &candidate_documents(void) {
+    return candidate_documents_;
   }
 
   //! Retrieve search group result with index
@@ -262,14 +257,9 @@ class FlatStreamerContext : public IndexStreamer::Context {
   uint32_t actual_read_size_{0};
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};
-  // Reused by the direct contiguous refine paths. Capacities survive reset(),
-  // eliminating per-query allocations, including homogeneous FP16/UINT8
-  // query buffers.
-  std::vector<const void *> refine_ptrs_{};
-  std::vector<float> refine_distances_{};
-  std::vector<RefineCandidate> refine_candidates_{};
-  std::vector<ailego::Float16> refine_query_fp16_{};
-  std::vector<uint8_t> refine_query_uint8_{};
+  std::vector<const void *> candidate_ptrs_{};
+  std::vector<float> candidate_distances_{};
+  std::vector<CandidateDocument> candidate_documents_{};
   std::string batch_queries_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};
