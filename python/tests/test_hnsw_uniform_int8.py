@@ -154,6 +154,8 @@ class TestUniformInt8QuantizeTypeSurface:
         assert QuantizeType.UNIFORM_INT8.name == "UNIFORM_INT8"
         assert QuantizeType.UNIFORM_UINT8.value == 6
         assert QuantizeType.UNIFORM_UINT8.name == "UNIFORM_UINT8"
+        assert QuantizeType.UNIFORM_UINT4.value == 7
+        assert QuantizeType.UNIFORM_UINT4.name == "UNIFORM_UINT4"
 
     def test_top_level_namespace(self):
         assert zvec.QuantizeType.UNIFORM_INT8 is QuantizeType.UNIFORM_INT8

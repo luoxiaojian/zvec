@@ -14,17 +14,28 @@
 
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#include "avx512_vnni/fp16/squared_euclidean.h"
+#include "avx512_vnni/raw_uint8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_int8/quantize.h"
 #include "avx512_vnni/uniform_int8/squared_euclidean.h"
 #include "avx512_vnni/uniform_uint8/quantize.h"
 #include "avx512_vnni/uniform_uint8/squared_euclidean.h"
+#include "avx512_vnni/uniform_uint4/quantize.h"
+#include "avx512_vnni/uniform_uint4/squared_euclidean.h"
 
 namespace zvec::turbo {
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
                                QuantizeType quantize_type) {
+  if (data_type == DataType::kUint8 &&
+      quantize_type == QuantizeType::kDefault &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512BW) {
+    return avx512_vnni::squared_euclidean_uint8_distance;
+  }
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
@@ -51,12 +62,33 @@ DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
       }
     }
   }
+  if (data_type == DataType::kInt4 &&
+      quantize_type == QuantizeType::kUniformUint4 &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+    return avx512_vnni::uniform_squared_euclidean_uint4_distance;
+  }
   return nullptr;
 }
 
 BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
                                           DataType data_type,
                                           QuantizeType quantize_type) {
+  if (data_type == DataType::kUint8 &&
+      quantize_type == QuantizeType::kDefault &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512BW) {
+    return avx512_vnni::squared_euclidean_uint8_batch_distance;
+  }
+  if (data_type == DataType::kFp16 &&
+      quantize_type == QuantizeType::kDefault &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512DQ &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.F16C) {
+    return avx512_vnni::squared_euclidean_fp16_batch_distance;
+  }
   if (data_type == DataType::kInt8) {
     if (quantize_type == QuantizeType::kDefault) {
       if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
@@ -82,6 +114,12 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
         }
       }
     }
+  }
+  if (data_type == DataType::kInt4 &&
+      quantize_type == QuantizeType::kUniformUint4 &&
+      metric_type == MetricType::kSquaredEuclidean &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+    return avx512_vnni::uniform_squared_euclidean_uint4_batch_distance;
   }
   return nullptr;
 }
@@ -128,6 +166,30 @@ UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type) {
     if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
       return avx512_vnni::uniform_uint8_quantize;
     }
+  }
+  return nullptr;
+}
+
+UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type) {
+  if (data_type == DataType::kInt4 &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+    return avx512_vnni::uniform_uint4_quantize;
+  }
+  return nullptr;
+}
+
+RawUint8ConvertFunc get_raw_uint8_convert_func() {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512BW) {
+    return avx512_vnni::fp32_to_raw_uint8;
+  }
+  return nullptr;
+}
+
+Fp32ToFp16ConvertFunc get_fp32_to_fp16_convert_func() {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.F16C) {
+    return avx512_vnni::fp32_to_fp16;
   }
   return nullptr;
 }

@@ -165,6 +165,9 @@ struct DataTypeCodeBook {
       case proto::DataType::DT_VECTOR_INT16:
         data_types = DataType::VECTOR_INT16;
         break;
+      case proto::DataType::DT_VECTOR_UINT8:
+        data_types = DataType::VECTOR_UINT8;
+        break;
       case proto::DataType::DT_SPARSE_VECTOR_FP16:
         data_types = DataType::SPARSE_VECTOR_FP16;
         break;
@@ -258,6 +261,9 @@ struct DataTypeCodeBook {
         break;
       case DataType::VECTOR_INT16:
         data_type = proto::DataType::DT_VECTOR_INT16;
+        break;
+      case DataType::VECTOR_UINT8:
+        data_type = proto::DataType::DT_VECTOR_UINT8;
         break;
       case DataType::SPARSE_VECTOR_FP16:
         data_type = proto::DataType::DT_SPARSE_VECTOR_FP16;
@@ -353,6 +359,9 @@ struct DataTypeCodeBook {
         break;
       case DataType::VECTOR_INT16:
         data_type = "VECTOR_INT16";
+        break;
+      case DataType::VECTOR_UINT8:
+        data_type = "VECTOR_UINT8";
         break;
       case DataType::SPARSE_VECTOR_FP16:
         data_type = "SPARSE_VECTOR_FP16";
@@ -453,6 +462,8 @@ struct QuantizeTypeCodeBook {
         return QuantizeType::UNIFORM_INT8;
       case proto::QuantizeType::QT_UNIFORM_UINT8:
         return QuantizeType::UNIFORM_UINT8;
+      case proto::QuantizeType::QT_UNIFORM_UINT4:
+        return QuantizeType::UNIFORM_UINT4;
       default:
         return QuantizeType::UNDEFINED;
     }
@@ -472,6 +483,8 @@ struct QuantizeTypeCodeBook {
         return proto::QuantizeType::QT_UNIFORM_INT8;
       case QuantizeType::UNIFORM_UINT8:
         return proto::QuantizeType::QT_UNIFORM_UINT8;
+      case QuantizeType::UNIFORM_UINT4:
+        return proto::QuantizeType::QT_UNIFORM_UINT4;
       default:
         return proto::QuantizeType::QT_UNDEFINED;
     }
@@ -491,6 +504,8 @@ struct QuantizeTypeCodeBook {
         return "UNIFORM_INT8";
       case QuantizeType::UNIFORM_UINT8:
         return "UNIFORM_UINT8";
+      case QuantizeType::UNIFORM_UINT4:
+        return "UNIFORM_UINT4";
       default:
         return "UNDEFINED";
     }

@@ -12,19 +12,85 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "mixed_streamer_reducer.h"
+#include <cstring>
+#include <vector>
 #include <ailego/pattern/defer.h>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_logger.h>
+#include <zvec/turbo/turbo.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+int ConvertNativeVector(const void *source, const IndexQueryMeta &source_meta,
+                        const IndexQueryMeta &target_meta,
+                        std::string *storage) {
+  if (!source || !storage ||
+      source_meta.dimension() != target_meta.dimension()) {
+    return IndexError_InvalidArgument;
+  }
+  const auto source_type = source_meta.data_type();
+  const auto target_type = target_meta.data_type();
+  const bool source_supported =
+      source_type == IndexMeta::DataType::DT_FP32 ||
+      source_type == IndexMeta::DataType::DT_FP16 ||
+      source_type == IndexMeta::DataType::DT_UINT8;
+  const bool target_supported =
+      target_type == IndexMeta::DataType::DT_FP32 ||
+      target_type == IndexMeta::DataType::DT_FP16 ||
+      target_type == IndexMeta::DataType::DT_UINT8;
+  if (!source_supported || !target_supported) return IndexError_Unsupported;
+
+  const size_t dimension = source_meta.dimension();
+  std::vector<float> decoded;
+  const float *fp32 = nullptr;
+  if (source_type == IndexMeta::DataType::DT_FP32) {
+    fp32 = static_cast<const float *>(source);
+  } else {
+    decoded.resize(dimension);
+    if (source_type == IndexMeta::DataType::DT_FP16) {
+      ailego::FloatHelper::ToFP32(static_cast<const uint16_t *>(source),
+                                 dimension, decoded.data());
+    } else {
+      const auto *input = static_cast<const uint8_t *>(source);
+      for (size_t i = 0; i < dimension; ++i) {
+        decoded[i] = static_cast<float>(input[i]);
+      }
+    }
+    fp32 = decoded.data();
+  }
+
+  storage->resize(target_meta.element_size());
+  if (target_type == IndexMeta::DataType::DT_FP32) {
+    std::memcpy(storage->data(), fp32, storage->size());
+  } else if (target_type == IndexMeta::DataType::DT_FP16) {
+    ailego::FloatHelper::ToFP16(
+        fp32, dimension, reinterpret_cast<uint16_t *>(storage->data()));
+  } else {
+    auto *output = reinterpret_cast<uint8_t *>(storage->data());
+    const auto convert = turbo::get_raw_uint8_convert_func();
+    if (convert) {
+      convert(fp32, dimension, output);
+    } else {
+      for (size_t i = 0; i < dimension; ++i) {
+        output[i] = static_cast<uint8_t>(fp32[i]);
+      }
+    }
+  }
+  return IndexError_Success;
+}
+
+}  // namespace
 
 int MixedStreamerReducer::init(const ailego::Params &params) {
   enable_pk_rewrite_ =
@@ -324,12 +390,23 @@ void MixedStreamerReducer::add_vec(int *result) {
     const void *vector = vector_item.vec_.data();
     std::string new_vector;
 
-
     if (need_convert) {
       IndexQueryMeta new_meta;
       if (target_streamer_reformer_->convert(vector, original_query_meta_,
                                              &new_vector, &new_meta) != 0) {
         LOG_ERROR("Failed to transform vector");
+        *result = IndexError_Runtime;
+        return;
+      }
+      vector = new_vector.data();
+    } else if (target_streamer_reformer_ == nullptr &&
+               (original_query_meta_.data_type() !=
+                    target_streamer_query_meta.data_type() ||
+                original_query_meta_.dimension() !=
+                    target_streamer_query_meta.dimension())) {
+      if (ConvertNativeVector(vector, original_query_meta_,
+                              target_streamer_query_meta, &new_vector) != 0) {
+        LOG_ERROR("Failed to convert native Flat vector type");
         *result = IndexError_Runtime;
         return;
       }
@@ -557,6 +634,22 @@ int MixedStreamerReducer::IndexBuild() {
              core::IndexMeta::DataType::DT_INT8) {
     auto holder = std::make_shared<
         zvec::core::MultiPassIndexHolder<core::IndexMeta::DataType::DT_INT8>>(
+        original_query_meta_.dimension());
+    for (auto doc : doc_cache_) {
+      ailego::NumericalVector<uint8_t> vec(doc.second);
+      if (doc.first == kInvalidKey) {
+        continue;
+      }
+      if (!holder->emplace(doc.first, vec)) {
+        LOG_ERROR("Failed to add vector");
+        return core::IndexError_Runtime;
+      }
+    }
+    target_holder = holder;
+  } else if (original_query_meta_.data_type() ==
+             core::IndexMeta::DataType::DT_UINT8) {
+    auto holder = std::make_shared<
+        zvec::core::MultiPassIndexHolder<core::IndexMeta::DataType::DT_UINT8>>(
         original_query_meta_.dimension());
     for (auto doc : doc_cache_) {
       ailego::NumericalVector<uint8_t> vec(doc.second);

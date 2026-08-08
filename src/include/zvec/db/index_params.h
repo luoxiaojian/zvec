@@ -157,6 +157,11 @@ class VectorIndexParams : public IndexParams {
   virtual bool use_flat_contiguous_memory() const {
     return false;
   }
+  // Data type of the auxiliary Flat index used as the refinement source.
+  // UNDEFINED means inherit the vector field's data type.
+  virtual DataType flat_data_type() const {
+    return DataType::UNDEFINED;
+  }
 
  protected:
   MetricType metric_type_;
@@ -173,12 +178,14 @@ class HnswIndexParams : public VectorIndexParams {
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       bool use_contiguous_memory = false,
-      bool use_flat_contiguous_memory = false)
+      bool use_flat_contiguous_memory = false,
+      DataType flat_data_type = DataType::UNDEFINED)
       : VectorIndexParams(IndexType::HNSW, metric_type, quantize_type),
         m_(m),
         ef_construction_(ef_construction),
         use_contiguous_memory_(use_contiguous_memory),
-        use_flat_contiguous_memory_(use_flat_contiguous_memory) {}
+        use_flat_contiguous_memory_(use_flat_contiguous_memory),
+        flat_data_type_(flat_data_type) {}
 
   using OPtr = std::shared_ptr<HnswIndexParams>;
 
@@ -187,7 +194,8 @@ class HnswIndexParams : public VectorIndexParams {
     return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
                                              quantize_type_,
                                              use_contiguous_memory_,
-                                             use_flat_contiguous_memory_);
+                                             use_flat_contiguous_memory_,
+                                             flat_data_type_);
   }
 
   std::string to_string() const override {
@@ -198,7 +206,8 @@ class HnswIndexParams : public VectorIndexParams {
         << ",use_contiguous_memory:"
         << (use_contiguous_memory_ ? "true" : "false")
         << ",use_flat_contiguous_memory:"
-        << (use_flat_contiguous_memory_ ? "true" : "false") << "}";
+        << (use_flat_contiguous_memory_ ? "true" : "false")
+        << ",flat_data_type:" << static_cast<uint32_t>(flat_data_type_) << "}";
     return oss.str();
   }
 
@@ -215,7 +224,9 @@ class HnswIndexParams : public VectorIndexParams {
                                          .use_contiguous_memory_ &&
            use_flat_contiguous_memory_ ==
                static_cast<const HnswIndexParams &>(other)
-                   .use_flat_contiguous_memory_;
+                   .use_flat_contiguous_memory_ &&
+           flat_data_type_ ==
+               static_cast<const HnswIndexParams &>(other).flat_data_type_;
   }
 
   void set_m(int m) {
@@ -243,6 +254,12 @@ class HnswIndexParams : public VectorIndexParams {
   bool use_flat_contiguous_memory() const override {
     return use_flat_contiguous_memory_;
   }
+  void set_flat_data_type(DataType flat_data_type) {
+    flat_data_type_ = flat_data_type;
+  }
+  DataType flat_data_type() const override {
+    return flat_data_type_;
+  }
 
  protected:
   int m_;
@@ -253,6 +270,7 @@ class HnswIndexParams : public VectorIndexParams {
   // compatibility.
   bool use_contiguous_memory_{false};
   bool use_flat_contiguous_memory_{false};
+  DataType flat_data_type_{DataType::UNDEFINED};
 };
 
 class HnswRabitqIndexParams : public VectorIndexParams {
@@ -412,6 +430,12 @@ class FlatIndexParams : public VectorIndexParams {
 
 // define default index params
 const FlatIndexParams DefaultVectorIndexParams(MetricType::IP);
+
+inline DataType ResolveFlatDataType(DataType source_data_type,
+                                    DataType flat_data_type) {
+  return flat_data_type == DataType::UNDEFINED ? source_data_type
+                                               : flat_data_type;
+}
 
 inline FlatIndexParams MakeDefaultVectorIndexParams(
     MetricType metric_type, bool use_contiguous_memory = false) {
@@ -583,7 +607,8 @@ class VamanaIndexParams : public VectorIndexParams {
       int build_prefetch_offset =
           core_interface::kDefaultVamanaBuildPrefetchOffset,
       int build_prefetch_lines =
-          core_interface::kDefaultVamanaBuildPrefetchLines)
+          core_interface::kDefaultVamanaBuildPrefetchLines,
+      DataType flat_data_type = DataType::UNDEFINED)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
@@ -595,7 +620,8 @@ class VamanaIndexParams : public VectorIndexParams {
         use_flat_contiguous_memory_(use_flat_contiguous_memory),
         reverse_prune_batch_size_(reverse_prune_batch_size),
         build_prefetch_offset_(build_prefetch_offset),
-        build_prefetch_lines_(build_prefetch_lines) {}
+        build_prefetch_lines_(build_prefetch_lines),
+        flat_data_type_(flat_data_type) {}
 
   VamanaIndexParams(MetricType metric_type, int max_degree,
                     int search_list_size, float alpha, bool saturate_graph,
@@ -613,7 +639,7 @@ class VamanaIndexParams : public VectorIndexParams {
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
         use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_,
         use_flat_contiguous_memory_, reverse_prune_batch_size_,
-        build_prefetch_offset_, build_prefetch_lines_);
+        build_prefetch_offset_, build_prefetch_lines_, flat_data_type_);
   }
 
   std::string to_string() const override {
@@ -631,7 +657,8 @@ class VamanaIndexParams : public VectorIndexParams {
         << (use_flat_contiguous_memory_ ? "true" : "false")
         << ",reverse_prune_batch_size:" << reverse_prune_batch_size_
         << ",build_prefetch_offset:" << build_prefetch_offset_
-        << ",build_prefetch_lines:" << build_prefetch_lines_ << "}";
+        << ",build_prefetch_lines:" << build_prefetch_lines_
+        << ",flat_data_type:" << static_cast<uint32_t>(flat_data_type_) << "}";
     return oss.str();
   }
 
@@ -651,7 +678,8 @@ class VamanaIndexParams : public VectorIndexParams {
            use_flat_contiguous_memory_ == rhs.use_flat_contiguous_memory_ &&
            reverse_prune_batch_size_ == rhs.reverse_prune_batch_size_ &&
            build_prefetch_offset_ == rhs.build_prefetch_offset_ &&
-           build_prefetch_lines_ == rhs.build_prefetch_lines_;
+           build_prefetch_lines_ == rhs.build_prefetch_lines_ &&
+           flat_data_type_ == rhs.flat_data_type_;
   }
 
   int max_degree() const {
@@ -732,6 +760,13 @@ class VamanaIndexParams : public VectorIndexParams {
     use_flat_contiguous_memory_ = use_flat_contiguous_memory;
   }
 
+  DataType flat_data_type() const override {
+    return flat_data_type_;
+  }
+  void set_flat_data_type(DataType flat_data_type) {
+    flat_data_type_ = flat_data_type;
+  }
+
  private:
   int max_degree_;
   int search_list_size_;
@@ -747,6 +782,7 @@ class VamanaIndexParams : public VectorIndexParams {
   int reverse_prune_batch_size_;
   int build_prefetch_offset_;
   int build_prefetch_lines_;
+  DataType flat_data_type_{DataType::UNDEFINED};
 };
 
 /*

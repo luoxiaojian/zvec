@@ -50,6 +50,7 @@ TEST(ConverterTest, HnswIndexParamsConversion) {
   base_params->set_quantize_type(proto::QT_FP16);
   hnsw_pb.set_m(16);
   hnsw_pb.set_ef_construction(100);
+  hnsw_pb.set_flat_data_type(proto::DT_VECTOR_FP16);
 
   auto hnsw_params = ProtoConverter::FromPb(hnsw_pb);
   ASSERT_NE(hnsw_params, nullptr);
@@ -57,15 +58,49 @@ TEST(ConverterTest, HnswIndexParamsConversion) {
   EXPECT_EQ(hnsw_params->m(), 16);
   EXPECT_EQ(hnsw_params->ef_construction(), 100);
   EXPECT_EQ(hnsw_params->quantize_type(), QuantizeType::FP16);
+  EXPECT_EQ(hnsw_params->flat_data_type(), DataType::VECTOR_FP16);
   EXPECT_EQ(hnsw_params->type(), IndexType::HNSW);
 
   // Test conversion from C++ to protobuf
-  HnswIndexParams original_params(MetricType::IP, 32, 200, QuantizeType::INT8);
+  HnswIndexParams original_params(MetricType::IP, 32, 200, QuantizeType::INT8,
+                                  true, true, DataType::VECTOR_FP16);
   auto pb_result = ProtoConverter::ToPb(&original_params);
   EXPECT_EQ(pb_result.base().metric_type(), proto::MT_IP);
   EXPECT_EQ(pb_result.m(), 32);
   EXPECT_EQ(pb_result.ef_construction(), 200);
   EXPECT_EQ(pb_result.base().quantize_type(), proto::QT_INT8);
+  EXPECT_EQ(pb_result.flat_data_type(), proto::DT_VECTOR_FP16);
+}
+
+TEST(ConverterTest, VamanaFlatDataTypeConversion) {
+  proto::VamanaIndexParams vamana_pb;
+  vamana_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  vamana_pb.mutable_base()->set_quantize_type(proto::QT_UNIFORM_UINT4);
+  vamana_pb.set_max_degree(32);
+  vamana_pb.set_search_list_size(100);
+  vamana_pb.set_alpha(1.2F);
+  vamana_pb.set_flat_data_type(proto::DT_VECTOR_FP16);
+
+  auto params = ProtoConverter::FromPb(vamana_pb);
+  ASSERT_NE(params, nullptr);
+  EXPECT_EQ(params->flat_data_type(), DataType::VECTOR_FP16);
+
+  auto round_trip = ProtoConverter::ToPb(params.get());
+  EXPECT_EQ(round_trip.flat_data_type(), proto::DT_VECTOR_FP16);
+}
+
+TEST(ConverterTest, VamanaUint8FlatDataTypeConversion) {
+  proto::VamanaIndexParams vamana_pb;
+  vamana_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  vamana_pb.mutable_base()->set_quantize_type(proto::QT_UNIFORM_UINT4);
+  vamana_pb.set_flat_data_type(proto::DT_VECTOR_UINT8);
+
+  auto params = ProtoConverter::FromPb(vamana_pb);
+  ASSERT_NE(params, nullptr);
+  EXPECT_EQ(params->flat_data_type(), DataType::VECTOR_UINT8);
+
+  auto round_trip = ProtoConverter::ToPb(params.get());
+  EXPECT_EQ(round_trip.flat_data_type(), proto::DT_VECTOR_UINT8);
 }
 
 TEST(ConverterTest, FlatIndexParamsConversion) {

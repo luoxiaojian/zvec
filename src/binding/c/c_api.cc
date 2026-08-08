@@ -2602,6 +2602,8 @@ const char *zvec_data_type_to_string(zvec_data_type_t data_type) {
       return "VECTOR_INT8";
     case ZVEC_DATA_TYPE_VECTOR_INT16:
       return "VECTOR_INT16";
+    case ZVEC_DATA_TYPE_VECTOR_UINT8:
+      return "VECTOR_UINT8";
     case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP16:
       return "SPARSE_VECTOR_FP16";
     case ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32:
@@ -5244,6 +5246,25 @@ int zvec_query_params_vamana_get_ef_search(
   if (!params) return zvec::core_interface::kDefaultVamanaEfSearch;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->ef_search();
+}
+
+zvec_error_code_t zvec_query_params_vamana_set_scale_factor(
+    zvec_vamana_query_params_t *params, float scale_factor) {
+  if (!params) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Vamana query params pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::VamanaQueryParams *>(params);
+  ptr->set_scale_factor(scale_factor);
+  return ZVEC_OK;
+}
+
+float zvec_query_params_vamana_get_scale_factor(
+    const zvec_vamana_query_params_t *params) {
+  if (!params) return 1.0f;
+  auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
+  return ptr->scale_factor();
 }
 
 zvec_error_code_t zvec_query_params_vamana_set_radius(

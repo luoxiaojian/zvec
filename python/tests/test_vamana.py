@@ -82,6 +82,8 @@ def _build_schema(
     search_list_size: int = 64,
     alpha: float = 1.2,
     use_contiguous_memory: bool = False,
+    use_flat_contiguous_memory: bool = False,
+    flat_data_type: DataType = DataType.UNDEFINED,
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
     build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
     build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
@@ -108,6 +110,8 @@ def _build_schema(
                     search_list_size=search_list_size,
                     alpha=alpha,
                     use_contiguous_memory=use_contiguous_memory,
+                    use_flat_contiguous_memory=use_flat_contiguous_memory,
+                    flat_data_type=flat_data_type,
                     quantize_type=quantize_type,
                     reverse_prune_batch_size=reverse_prune_batch_size,
                     build_prefetch_offset=build_prefetch_offset,
@@ -173,6 +177,7 @@ class TestVamanaIndexParamSurface:
         assert param.build_prefetch_offset == DEFAULT_BUILD_PREFETCH_OFFSET
         assert param.build_prefetch_lines == DEFAULT_BUILD_PREFETCH_LINES
         assert param.quantize_type == QuantizeType.UNDEFINED
+        assert param.flat_data_type == DataType.UNDEFINED
 
     def test_custom_construction(self):
         param = VamanaIndexParam(
@@ -187,6 +192,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=8,
             build_prefetch_offset=32,
             build_prefetch_lines=2,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -200,6 +206,7 @@ class TestVamanaIndexParamSurface:
         assert param.build_prefetch_offset == 32
         assert param.build_prefetch_lines == 2
         assert param.quantize_type == QuantizeType.INT8
+        assert param.flat_data_type == DataType.VECTOR_FP16
 
     def test_to_dict_includes_all_fields(self):
         param = VamanaIndexParam(
@@ -214,6 +221,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=4,
             build_prefetch_offset=0,
             build_prefetch_lines=0,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -228,6 +236,7 @@ class TestVamanaIndexParamSurface:
         assert data["build_prefetch_offset"] == 0
         assert data["build_prefetch_lines"] == 0
         assert data["quantize_type"] == "FP16"
+        assert data["flat_data_type"] == "VECTOR_FP16"
 
     def test_repr_contains_key_fields(self):
         text = repr(
@@ -267,6 +276,7 @@ class TestVamanaIndexParamSurface:
             ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
             ("build_prefetch_offset", dict(build_prefetch_offset=24)),
             ("build_prefetch_lines", dict(build_prefetch_lines=3)),
+            ("flat_data_type", dict(flat_data_type=DataType.VECTOR_FP16)),
         ],
     )
     def test_readonly_properties(self, field, kwargs):
@@ -291,6 +301,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=8,
             build_prefetch_offset=48,
             build_prefetch_lines=3,
+            flat_data_type=DataType.VECTOR_FP16,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -305,6 +316,7 @@ class TestVamanaIndexParamSurface:
         assert restored.build_prefetch_offset == 48
         assert restored.build_prefetch_lines == 3
         assert restored.quantize_type == QuantizeType.INT8
+        assert restored.flat_data_type == DataType.VECTOR_FP16
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
 
@@ -319,6 +331,7 @@ class TestVamanaQueryParamSurface:
         assert q.radius == pytest.approx(0.0)
         assert q.is_linear is False
         assert q.is_using_refiner is False
+        assert q.scale_factor == pytest.approx(1.0)
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 0
 
@@ -332,20 +345,27 @@ class TestVamanaQueryParamSurface:
                 "prefetch_offset": 8,
                 "prefetch_lines": 2,
             },
+            scale_factor=6.4,
         )
         assert q.type == IndexType.VAMANA
         assert q.ef_search == 300
         assert q.radius == pytest.approx(0.5)
         assert q.is_linear is True
         assert q.is_using_refiner is True
+        assert q.scale_factor == pytest.approx(6.4)
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
 
     def test_repr_contains_key_fields(self):
-        text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
+        text = repr(
+            VamanaQueryParam(
+                ef_search=128, radius=0.25, scale_factor=3.5
+            )
+        )
         assert "VAMANA" in text
         assert "ef_search" in text and "128" in text
         assert "radius" in text
+        assert "scale_factor" in text and "3.500000" in text
 
     def test_readonly_ef_search(self):
         q = VamanaQueryParam(ef_search=100)
@@ -366,6 +386,7 @@ class TestVamanaQueryParamSurface:
                 "prefetch_offset": 4,
                 "prefetch_lines": 3,
             },
+            scale_factor=8.0,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -373,6 +394,7 @@ class TestVamanaQueryParamSurface:
         assert restored.radius == pytest.approx(0.3)
         assert restored.is_linear is False
         assert restored.is_using_refiner is True
+        assert restored.scale_factor == pytest.approx(8.0)
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
 
@@ -551,6 +573,177 @@ class TestVamanaEndToEnd:
         finally:
             coll.destroy()
 
+    def test_uniform_uint4_fp16_flat_refine_reopen_and_reoptimize(
+        self, tmp_path_factory, collection_option
+    ):
+        """The refine Flat may persist FP16 independently of graph U4.
+
+        Two optimize rounds cover the merge boundary where the U4 builder
+        consumes the native FP16 Flat source directly.
+        """
+        schema = _build_schema(
+            "vamana_u4_fp16_flat_refine",
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT4,
+            max_degree=16,
+            search_list_size=32,
+            use_contiguous_memory=True,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_FP16,
+        )
+        path = tmp_path_factory.mktemp("zvec") / "vamana_u4_fp16_flat_refine"
+        path_str = str(path)
+        vectors = np.random.default_rng(7).standard_normal((256, DIMENSION))
+        vectors = vectors.astype(np.float32)
+        docs = [
+            Doc(
+                id=str(i),
+                fields={"id": i},
+                vectors={"dense": vectors[i].tolist()},
+            )
+            for i in range(len(vectors))
+        ]
+
+        coll = zvec.create_and_open(
+            path=path_str, schema=schema, option=collection_option
+        )
+        try:
+            for batch in (docs[:128], docs[128:]):
+                for result in coll.insert(docs=batch):
+                    assert result.ok()
+                coll.optimize()
+
+            refine_param = VamanaQueryParam(
+                ef_search=64,
+                is_using_refiner=True,
+                scale_factor=64 / TOPK,
+            )
+            for probe in (0, 127, 128, 255):
+                hits = coll.query(
+                    Query(
+                        field_name="dense",
+                        vector=vectors[probe],
+                        param=refine_param,
+                    ),
+                    topk=TOPK,
+                )
+                assert hits and hits[0].id == str(probe)
+            assert (
+                coll.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_FP16
+            )
+            coll.flush()
+        finally:
+            del coll
+
+        reopened = zvec.open(path=path_str, option=collection_option)
+        try:
+            assert (
+                reopened.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_FP16
+            )
+            for probe in (0, 127, 128, 255):
+                hits = reopened.query(
+                    Query(
+                        field_name="dense",
+                        vector=vectors[probe],
+                        param=refine_param,
+                    ),
+                    topk=TOPK,
+                )
+                assert hits and hits[0].id == str(probe)
+        finally:
+            reopened.destroy()
+
+    def test_uniform_uint4_uint8_flat_refine_exact_and_reopen(
+        self, tmp_path_factory, collection_option
+    ):
+        """SIFT-like integer vectors use an exact raw UINT8 Flat refiner.
+
+        Exercise both the regular query path and the ann-bench doc-id bypass;
+        the latter is the performance-critical contiguous/Turbo route.
+        """
+        count = 96
+        schema = _build_schema(
+            "vamana_u4_uint8_flat_refine",
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT4,
+            max_degree=16,
+            search_list_size=64,
+            use_contiguous_memory=True,
+            use_flat_contiguous_memory=True,
+            flat_data_type=DataType.VECTOR_UINT8,
+        )
+        path = tmp_path_factory.mktemp("zvec") / "vamana_u4_uint8_flat_refine"
+        path_str = str(path)
+        rng = np.random.default_rng(20260808)
+        vectors = rng.integers(0, 256, size=(count, DIMENSION)).astype(np.float32)
+        vectors[0, 0] = 0.0
+        vectors[0, 1] = 255.0
+        docs = [
+            Doc(
+                id=str(i),
+                fields={"id": i},
+                vectors={"dense": vectors[i].tolist()},
+            )
+            for i in range(count)
+        ]
+        query = rng.integers(0, 256, size=DIMENSION).astype(np.float32)
+        exact = np.argsort(
+            np.sum((vectors.astype(np.int32) - query.astype(np.int32)) ** 2,
+                   axis=1),
+            kind="stable",
+        )[:TOPK]
+        refine_param = VamanaQueryParam(
+            ef_search=count,
+            is_using_refiner=True,
+            scale_factor=count / TOPK,
+        )
+
+        coll = zvec.create_and_open(
+            path=path_str, schema=schema, option=collection_option
+        )
+        try:
+            for batch in (docs[: count // 2], docs[count // 2 :]):
+                for result in coll.insert(docs=batch):
+                    assert result.ok()
+                coll.optimize()
+
+            hits = coll.query(
+                Query(
+                    field_name="dense",
+                    vector=query.tolist(),
+                    param=refine_param,
+                ),
+                topk=TOPK,
+            )
+            assert [int(hit.id) for hit in hits] == exact.tolist()
+
+            coll.ann_bench_prepare("dense")
+            coll.ann_bench_set_query_params(refine_param)
+            ids = coll.ann_bench_search_doc_ids_only(query, TOPK)
+            assert ids.tolist() == exact.tolist()
+            assert (
+                coll.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_UINT8
+            )
+            coll.flush()
+        finally:
+            del coll
+
+        reopened = zvec.open(path=path_str, option=collection_option)
+        try:
+            assert (
+                reopened.schema.vectors[0].index_param.flat_data_type
+                == DataType.VECTOR_UINT8
+            )
+            reopened.ann_bench_prepare("dense")
+            reopened.ann_bench_set_query_params(refine_param)
+            ids = reopened.ann_bench_search_doc_ids_only(query, TOPK)
+            assert ids.tolist() == exact.tolist()
+        finally:
+            reopened.destroy()
+
     @pytest.mark.parametrize(
         "use_contiguous_memory", [False, True], ids=["inline", "columns"]
     )
@@ -661,3 +854,58 @@ class TestVamanaEndToEnd:
                 assert ids[0] == str(probe)
         finally:
             coll.destroy()
+
+    @pytest.mark.parametrize(
+        "use_contiguous_memory", [False, True], ids=["inline", "columns"]
+    )
+    def test_uniform_uint4_optimize_reopen_and_query(
+        self, tmp_path_factory, collection_option, use_contiguous_memory
+    ):
+        """Packed SQ4 stays searchable across optimize and reopen."""
+        dimension = 131  # Covers nibble packing and 128-dimension padding.
+        num_docs = 1100  # Exceed Vamana's brute-force threshold.
+        schema = _build_schema(
+            f"vamana_uniform_uint4_e2e_{int(use_contiguous_memory)}",
+            dimension=dimension,
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.UNIFORM_UINT4,
+            max_degree=64,
+            search_list_size=500,
+            use_contiguous_memory=use_contiguous_memory,
+        )
+        path = (
+            tmp_path_factory.mktemp("zvec")
+            / f"vamana_uniform_uint4_e2e_{int(use_contiguous_memory)}"
+        )
+        rng = np.random.default_rng(20260807)
+        vectors = rng.normal(size=(num_docs, dimension)).astype(np.float32)
+        docs = [
+            Doc(
+                id=str(i),
+                fields={"id": i},
+                vectors={"dense": vectors[i].tolist()},
+            )
+            for i in range(num_docs)
+        ]
+
+        coll = zvec.create_and_open(
+            path=str(path), schema=schema, option=collection_option
+        )
+        try:
+            for start in range(0, num_docs, 512):
+                for result in coll.insert(docs=docs[start : start + 512]):
+                    assert result.ok()
+            coll.optimize()
+            for probe in (0, 17, 103, num_docs - 1):
+                ids = _query_topk(coll, vectors[probe].tolist(), ef_search=num_docs)
+                assert ids[0] == str(probe)
+            coll.flush()
+        finally:
+            del coll
+
+        reopened = zvec.open(path=str(path), option=collection_option)
+        try:
+            ids = _query_topk(reopened, vectors[103].tolist(), ef_search=num_docs)
+            assert ids[0] == "103"
+        finally:
+            reopened.destroy()

@@ -35,6 +35,20 @@ using QueryPreprocessFunc =
 using UniformQuantizeFunc = void (*)(const float *in, size_t dim, float scale,
                                      float bias, int8_t *out);
 
+// Packed global uint4 quantization. Two codes are stored per byte (low nibble
+// first), and the logical dimension is padded to a multiple of 128.
+using UniformUint4QuantizeFunc = void (*)(const float *in, size_t dim,
+                                          float minimum, float range,
+                                          uint8_t *out);
+
+// Direct physical FP32 -> uint8_t conversion for values already represented
+// in the unsigned-byte domain. This is not an affine quantizer.
+using RawUint8ConvertFunc = void (*)(const float *in, size_t dim,
+                                     uint8_t *out);
+
+using Fp32ToFp16ConvertFunc = void (*)(const float *in, size_t dim,
+                                       uint16_t *out);
+
 enum class MetricType {
   kSquaredEuclidean,
   kCosine,
@@ -44,6 +58,9 @@ enum class MetricType {
 
 enum class DataType {
   kInt8,
+  kInt4,
+  kFp16,
+  kUint8,
   kUnknown,
 };
 
@@ -51,6 +68,7 @@ enum class QuantizeType {
   kDefault,
   kUniform,
   kUniformUint8,
+  kUniformUint4,
 };
 
 DistanceFunc get_distance_func(MetricType metric_type, DataType data_type,
@@ -69,11 +87,17 @@ QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,
 // available (callers must keep a scalar fallback). This is a
 // uniform-specific accessor intentionally kept outside of the generic
 // (metric/data/quantize) dispatch above; data_type is retained so the
-// interface can grow to cover other output types (e.g. fp16) in the future.
+// interface can grow to cover additional quantized output types.
 UniformQuantizeFunc get_uniform_quantize_func(DataType data_type);
 
 // Same dispatch shape as get_uniform_quantize_func, but quantizes through
 // [0, 255] and emits the canonical shifted int8(value - 128) representation.
 UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type);
+
+UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type);
+
+RawUint8ConvertFunc get_raw_uint8_convert_func();
+
+Fp32ToFp16ConvertFunc get_fp32_to_fp16_convert_func();
 
 }  // namespace zvec::turbo

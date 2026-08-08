@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vamana_streamer.h"
 #include <iostream>
+#include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "vamana_algorithm.h"
@@ -432,17 +433,20 @@ int VamanaStreamer::dump(const IndexDumper::Pointer &dumper) {
 void VamanaStreamer::update_entry_point_to_medoid() {
   // Calculate medoid (DiskANN standard: entry point = closest to centroid).
   // At dump time, data_type and dimension are fully known from meta_.
-  // UNIFORM_UINT8 stores shifted int8 values followed by an int32 sum_sq tail:
-  // exclude the tail from the centroid computation.
+  // UNIFORM_UINT8 excludes its int32 sum_sq tail. UNIFORM_UINT4 asks the
+  // entity to decode the two packed nibbles in each physical byte.
   if (entity_->doc_cnt() > 0) {
     const bool is_uniform_uint8 = (meta_.metric_name() == "UniformUint8");
+    const bool is_uniform_uint4 = (meta_.metric_name() == "UniformUint4");
     uint32_t medoid_dim = meta_.dimension();
     constexpr uint32_t kUniformUint8TailBytes = sizeof(int32_t);
     if (is_uniform_uint8 && medoid_dim > kUniformUint8TailBytes) {
       medoid_dim -= kUniformUint8TailBytes;
     }
+    if (is_uniform_uint4) medoid_dim *= 2U;
     node_id_t medoid = entity_->calculate_medoid(
-        medoid_dim, static_cast<uint32_t>(meta_.data_type()));
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()),
+        is_uniform_uint4);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
@@ -883,6 +887,58 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
 int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                 Context::Pointer &context) const {
   return search_impl(query, qmeta, 1, context);
+}
+
+int VamanaStreamer::search_keys_direct(
+    const void *query, const IndexQueryMeta &qmeta,
+    std::vector<uint64_t> *keys, Context::Pointer &context) const {
+  if (keys == nullptr) return IndexError_InvalidArgument;
+
+  int ret = check_params(query, qmeta);
+  if (ailego_unlikely(ret != 0)) return ret;
+
+  VamanaContext *ctx = dynamic_cast<VamanaContext *>(context.get());
+  ailego_do_if_false(ctx) {
+    LOG_ERROR("Cast context to VamanaContext failed");
+    return IndexError_Cast;
+  }
+
+  // Filtered and brute-force searches have different result semantics.  The
+  // buffer-pool algorithm and non-AVX2 machines use LinearPool, so there is no
+  // BlockHeap result to export in those cases.
+  if (ctx->filter().is_valid() ||
+      entity_->storage_mode() == VamanaStorageMode::kBufferPool ||
+      !zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 ||
+      entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+    return IndexError_NotImplemented;
+  }
+
+  if (ctx->magic() != magic_) {
+    ret = update_context(ctx);
+    if (ret != 0) return ret;
+  }
+
+  ctx->clear();
+  ctx->update_dist_caculator_distance(search_distance_, search_batch_distance_);
+  ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  ctx->reset_query(query);
+  ctx->set_direct_pool_result(true);
+  ret = alg_->search(ctx);
+  ctx->set_direct_pool_result(false);
+  if (ailego_unlikely(ret != 0)) {
+    LOG_ERROR("Vamana direct candidate search failed");
+    return ret;
+  }
+  if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
+
+  const BlockHeap &pool = ctx->block_pool();
+  const size_t count = std::min(static_cast<size_t>(ctx->topk()),
+                                static_cast<size_t>(pool.size()));
+  keys->resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    (*keys)[i] = entity_->get_key(pool.id(static_cast<int32_t>(i)));
+  }
+  return 0;
 }
 
 int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,

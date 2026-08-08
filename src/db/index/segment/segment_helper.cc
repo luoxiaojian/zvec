@@ -688,6 +688,8 @@ Status SegmentHelper::ReduceVectorIndex(
           output_segment_path, field->name(), vector_block_id);
 
       auto field_without_quantize = std::make_shared<FieldSchema>(*field);
+      field_without_quantize->set_data_type(ResolveFlatDataType(
+          field->data_type(), vector_index_params->flat_data_type()));
       field_without_quantize->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
           vector_index_params->use_flat_contiguous_memory()));
@@ -734,7 +736,8 @@ Status SegmentHelper::ReduceVectorIndex(
       auto quant_merge_sources =
           (vector_index_params->quantize_type() == QuantizeType::RABITQ ||
            vector_index_params->quantize_type() == QuantizeType::UNIFORM_INT8 ||
-           vector_index_params->quantize_type() == QuantizeType::UNIFORM_UINT8)
+           vector_index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
+           vector_index_params->quantize_type() == QuantizeType::UNIFORM_UINT4)
               ? collect_merge_indexers(&Segment::get_vector_indexer)
               : collect_merge_indexers(&Segment::get_quant_vector_indexer);
 

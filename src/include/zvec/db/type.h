@@ -56,6 +56,10 @@ enum class DataType : uint32_t {
   VECTOR_INT4 = 25,
   VECTOR_INT8 = 26,
   VECTOR_INT16 = 27,
+  // Unsigned 8-bit physical storage. This is currently supported as the Flat
+  // reference data type for FP32 dense vectors. Each source component is
+  // stored directly as one uint8_t; there is no affine quantization metadata.
+  VECTOR_UINT8 = 28,
 
   SPARSE_VECTOR_FP16 = 30,
   SPARSE_VECTOR_FP32 = 31,
@@ -79,6 +83,7 @@ enum class QuantizeType : uint32_t {
   RABITQ = 4,
   UNIFORM_INT8 = 5,
   UNIFORM_UINT8 = 6,
+  UNIFORM_UINT4 = 7,
 };
 
 enum class MetricType : uint32_t {

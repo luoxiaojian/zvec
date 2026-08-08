@@ -398,16 +398,17 @@ void ZVecPyCollection::bind_dql_methods(
           "ann_bench_search_fast",
           [](const Collection &self,
              const py::array_t<float, py::array::c_style> &vector,
-             py::array_t<int64_t> &output) {
+             py::array_t<int64_t> &output, int candidate_topk) {
             const float *ptr = vector.data();
             int topk = static_cast<int>(output.size());
             int64_t *out_ptr = output.mutable_data();
             {
               py::gil_scoped_release release;
-              self.AnnBenchSearchFast(ptr, topk, out_ptr);
+              self.AnnBenchSearchFast(ptr, topk, out_ptr, candidate_topk);
             }
           },
-          py::arg("vector"), py::arg("output"))
+          py::arg("vector"), py::arg("output"),
+          py::arg("candidate_topk") = 0)
       // Batch version of fast_query_doc_ids_only: process all queries in a
       // single C++ loop with the GIL released, eliminating per-query Python
       // dispatch overhead. Input: (nq, dim) array. Output: (nq, topk) int64.

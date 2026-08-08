@@ -32,12 +32,14 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/parallel/thread_queue.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/turbo/turbo.h>
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
@@ -666,6 +668,38 @@ Status SegmentImpl::InsertVector(VectorColumnIndexer::Ptr &indexer,
       vector_data.vector = vector_column_params::SparseVector{
           (uint32_t)sparse_indices.size(), (void *)sparse_indices.data(),
           (void *)sparse_value.data()};
+    } else if constexpr (std::is_same_v<ValueType, std::vector<float>>) {
+      const auto &source = value.value();
+      const auto target_type = indexer->field_schema().data_type();
+      if (target_type == DataType::VECTOR_FP16) {
+        static thread_local std::vector<float16_t> fp16_buffer;
+        fp16_buffer.resize(source.size());
+        ailego::FloatHelper::ToFP16(
+            source.data(), source.size(),
+            reinterpret_cast<uint16_t *>(fp16_buffer.data()));
+        vector_data.vector =
+            vector_column_params::DenseVector{fp16_buffer.data()};
+      } else if (target_type == DataType::VECTOR_UINT8) {
+        static thread_local std::vector<uint8_t> uint8_buffer;
+        uint8_buffer.resize(source.size());
+        const auto convert = turbo::get_raw_uint8_convert_func();
+        if (convert) {
+          convert(source.data(), source.size(), uint8_buffer.data());
+        } else {
+          for (size_t i = 0; i < source.size(); ++i) {
+            uint8_buffer[i] = static_cast<uint8_t>(source[i]);
+          }
+        }
+        vector_data.vector =
+            vector_column_params::DenseVector{uint8_buffer.data()};
+      } else if (target_type == DataType::VECTOR_FP32) {
+        vector_data.vector =
+            vector_column_params::DenseVector{source.data()};
+      } else {
+        return Status::InvalidArgument(
+            "unsupported Flat target data type: ",
+            DataTypeCodeBook::AsString(target_type));
+      }
     } else {
       vector_data.vector =
           vector_column_params::DenseVector{value.value().data()};
@@ -782,7 +816,9 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
       } else if (vector_index_params->quantize_type() !=
                      QuantizeType::UNIFORM_INT8 &&
                  vector_index_params->quantize_type() !=
-                     QuantizeType::UNIFORM_UINT8) {
+                     QuantizeType::UNIFORM_UINT8 &&
+                 vector_index_params->quantize_type() !=
+                     QuantizeType::UNIFORM_UINT4) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
@@ -1740,15 +1776,20 @@ Status SegmentImpl::create_vector_index(
   } else {
     auto original_index_params =
         std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
+    const auto desired_flat_data_type = ResolveFlatDataType(
+        field->data_type(), vector_index_params->flat_data_type());
 
     core::IndexProvider::Pointer raw_vector_provider;
 
     if (!(vector_index_params->metric_type() ==
               original_index_params->metric_type() &&
-          vector_indexers_[column].size() == 1)) {
+          vector_indexers_[column].size() == 1 &&
+          vector_indexers_[column][0]->field_schema().data_type() ==
+              desired_flat_data_type)) {
       BlockID block_id = allocate_block_id();
 
       auto field_with_flat = std::make_shared<FieldSchema>(*field);
+      field_with_flat->set_data_type(desired_flat_data_type);
       field_with_flat->set_index_params(MakeDefaultVectorIndexParams(
           vector_index_params->metric_type(),
           vector_index_params->use_flat_contiguous_memory()));
@@ -4031,6 +4072,9 @@ Status SegmentImpl::load_vector_index_blocks() {
       if (block.type_ == BlockType::VECTOR_INDEX) {
         if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED ||
             !segment_meta_->vector_indexed(column)) {
+          new_field_params.set_data_type(ResolveFlatDataType(
+              new_field_params.data_type(),
+              vector_index_params->flat_data_type()));
           new_field_params.set_index_params(MakeDefaultVectorIndexParams(
               vector_index_params->metric_type(),
               vector_index_params->use_flat_contiguous_memory()));
@@ -4146,6 +4190,8 @@ Status SegmentImpl::init_memory_components() {
     if (index_params->quantize_type() == QuantizeType::UNDEFINED) {
       // create normal vector indexer
       FieldSchema normal_field(*field);
+      normal_field.set_data_type(ResolveFlatDataType(
+          field->data_type(), index_params->flat_data_type()));
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
           index_params->use_flat_contiguous_memory()));
@@ -4160,6 +4206,8 @@ Status SegmentImpl::init_memory_components() {
     } else {
       // first create normal vector indexer
       FieldSchema normal_field(*field);
+      normal_field.set_data_type(ResolveFlatDataType(
+          field->data_type(), index_params->flat_data_type()));
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
           index_params->use_flat_contiguous_memory()));
@@ -4176,7 +4224,8 @@ Status SegmentImpl::init_memory_components() {
       // quant index can be built. The quant index is created at optimize();
       // until then searches use the raw in-memory FLAT indexer above.
       if (index_params->quantize_type() == QuantizeType::UNIFORM_INT8 ||
-          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8) {
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4) {
         continue;
       }
 

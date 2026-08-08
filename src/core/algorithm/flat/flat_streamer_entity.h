@@ -21,6 +21,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include <zvec/turbo/turbo.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -170,9 +171,9 @@ class FlatStreamerEntity {
 
   /*! One-to-many distance: compute the distance from a single query to `fnum`
    *  feature vectors addressed by the `features` pointer array, writing `fnum`
-   *  results to `out`. Used by the refine stage over unquantized (raw) vectors
-   *  to amortize the query load and exploit the metric's SIMD batch kernel.
-   *  Falls back to the scalar per-vector distance when no batch kernel exists.
+   *  results to `out`. Candidate-limited searches use this to amortize the
+   *  query load and exploit the metric's SIMD batch kernel. Falls back to the
+   *  scalar per-vector distance when no batch kernel exists.
    */
   inline void row_major_batch_distance(const void *query,
                                        const void **features, size_t fnum,
@@ -480,8 +481,8 @@ class FlatStreamerEntity {
 /*! Flat contiguous streamer entity.
  *
  * Materializes the immutable row-major vector payload into one hugepage-backed
- * array. Refine lookups can then address vectors directly instead of acquiring
- * a storage block for every candidate.
+ * array. Candidate lookups can then address vectors directly instead of
+ * acquiring a storage block for every key.
  */
 class FlatContiguousStreamerEntity : public FlatStreamerEntity {
  public:
@@ -546,6 +547,7 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
       }
       return base + position * stride;
     }
+
   };
 
   void degrade_to_storage(void);

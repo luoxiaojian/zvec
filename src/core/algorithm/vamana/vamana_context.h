@@ -137,6 +137,15 @@ class VamanaContext : public IndexContext {
   inline BlockHeap &block_pool() {
     return block_pool_;
   }
+  // The direct-refine path consumes the already sorted BlockHeap candidate
+  // ids itself.  In that mode the generic TopkHeap/result materialization is
+  // unnecessary and is deliberately skipped by the fast search runner.
+  inline void set_direct_pool_result(bool enabled) {
+    direct_pool_result_ = enabled;
+  }
+  inline bool direct_pool_result() const {
+    return direct_pool_result_;
+  }
   inline VisitFilter &visit_filter() {
     return visit_filter_;
   }
@@ -165,6 +174,22 @@ class VamanaContext : public IndexContext {
   }
   inline std::vector<uint32_t> &batch_indices_buf() {
     return batch_indices_buf_;
+  }
+
+  // Reusable scratch for the mmap/contiguous query fast path. Keeping these
+  // buffers in the context avoids allocating and freeing three (or four for
+  // metrics with extra values) max-degree arrays for every query.
+  inline std::vector<node_id_t> &search_neighbor_ids_buf() {
+    return search_neighbor_ids_buf_;
+  }
+  inline std::vector<float> &search_dists_buf() {
+    return search_dists_buf_;
+  }
+  inline std::vector<const void *> &search_vecs_buf() {
+    return search_vecs_buf_;
+  }
+  inline std::vector<const void *> &search_extra_values_buf() {
+    return search_extra_values_buf_;
   }
 
   //! Build-time distance offset cached from the metric. Used by RobustPrune
@@ -346,6 +371,7 @@ class VamanaContext : public IndexContext {
   uint32_t bruteforce_threshold_{};
   bool fetch_vector_{false};
   bool build_fast_search_{false};
+  bool direct_pool_result_{false};
   uint32_t type_{kUnknownContext};
   std::string preprocess_buffer_;
 
@@ -357,6 +383,10 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+  std::vector<node_id_t> search_neighbor_ids_buf_;
+  std::vector<float> search_dists_buf_;
+  std::vector<const void *> search_vecs_buf_;
+  std::vector<const void *> search_extra_values_buf_;
 
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};

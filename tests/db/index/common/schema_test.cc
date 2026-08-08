@@ -378,6 +378,24 @@ TEST(FieldSchemaTest, Validate) {
   }
 
   {
+    auto hnsw_params = std::make_shared<HnswIndexParams>(
+        MetricType::L2, 16, 100, QuantizeType::UNIFORM_UINT4, true, true,
+        DataType::VECTOR_FP16);
+    FieldSchema field("fp16_flat_reference", DataType::VECTOR_FP32, 128,
+                      false, hnsw_params);
+    EXPECT_TRUE(field.validate().ok());
+  }
+
+  {
+    auto hnsw_params = std::make_shared<HnswIndexParams>(
+        MetricType::L2, 16, 100, QuantizeType::UNDEFINED, false, false,
+        DataType::VECTOR_FP32);
+    FieldSchema field("invalid_flat_expansion", DataType::VECTOR_FP16, 128,
+                      false, hnsw_params);
+    EXPECT_FALSE(field.validate().ok());
+  }
+
+  {
     // Test that SPARSE_VECTOR_FP32 with FP16 quantize type should fail
     auto hnsw_params = std::make_shared<HnswIndexParams>(
         MetricType::IP, 16, 100, QuantizeType::FP16);
@@ -999,4 +1017,32 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
         << "Error message should mention sparse vector index support, got: "
         << status.message();
   }
+}
+
+TEST(FieldSchemaTest, VamanaUint8FlatReferenceValidation) {
+  auto make_params = [](MetricType metric, QuantizeType quantize) {
+    return std::make_shared<VamanaIndexParams>(
+        metric, 32, 64, 1.2F, false, true, false, false, quantize, true, 1,
+        16, 4, DataType::VECTOR_UINT8);
+  };
+
+  FieldSchema valid("vector_field", DataType::VECTOR_FP32, 128, false,
+                    make_params(MetricType::L2,
+                                QuantizeType::UNIFORM_UINT4));
+  EXPECT_TRUE(valid.validate().ok());
+
+  FieldSchema wrong_metric("vector_field", DataType::VECTOR_FP32, 128, false,
+                           make_params(MetricType::COSINE,
+                                       QuantizeType::UNIFORM_UINT4));
+  EXPECT_FALSE(wrong_metric.validate().ok());
+
+  FieldSchema wrong_source("vector_field", DataType::VECTOR_FP16, 128, false,
+                           make_params(MetricType::L2,
+                                       QuantizeType::UNIFORM_UINT4));
+  EXPECT_FALSE(wrong_source.validate().ok());
+
+  FieldSchema no_refiner("vector_field", DataType::VECTOR_FP32, 128, false,
+                         make_params(MetricType::L2,
+                                     QuantizeType::UNDEFINED));
+  EXPECT_TRUE(no_refiner.validate().ok());
 }

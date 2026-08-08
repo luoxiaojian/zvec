@@ -3701,6 +3701,8 @@ void test_query_params_functions(void) {
   TEST_ASSERT(vamana_params != NULL);
 
   TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 256);
+  TEST_ASSERT(zvec_query_params_vamana_get_scale_factor(vamana_params) ==
+              1.0f);
   TEST_ASSERT(zvec_query_params_vamana_get_radius(vamana_params) == 0.3f);
   TEST_ASSERT(zvec_query_params_vamana_get_is_linear(vamana_params) == false);
   TEST_ASSERT(zvec_query_params_vamana_get_is_using_refiner(vamana_params) ==
@@ -3710,6 +3712,11 @@ void test_query_params_functions(void) {
   err = zvec_query_params_vamana_set_ef_search(vamana_params, 512);
   TEST_ASSERT(err == ZVEC_OK);
   TEST_ASSERT(zvec_query_params_vamana_get_ef_search(vamana_params) == 512);
+
+  err = zvec_query_params_vamana_set_scale_factor(vamana_params, 6.4f);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(zvec_query_params_vamana_get_scale_factor(vamana_params) ==
+              6.4f);
 
   err = zvec_query_params_vamana_set_radius(vamana_params, 0.5f);
   TEST_ASSERT(err == ZVEC_OK);
