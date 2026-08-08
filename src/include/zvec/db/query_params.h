@@ -225,11 +225,13 @@ class VamanaQueryParams : public QueryParams {
       float radius = 0.0f, bool is_linear = false,
       bool is_using_refiner = false,
       uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
-      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
+      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines,
+      float scale_factor = 1.0f)
       : QueryParams(IndexType::VAMANA),
         ef_search_(ef_search),
         prefetch_offset_(prefetch_offset),
-        prefetch_lines_(prefetch_lines) {
+        prefetch_lines_(prefetch_lines),
+        scale_factor_(scale_factor) {
     set_radius(radius);
     set_is_linear(is_linear);
     set_is_using_refiner(is_using_refiner);
@@ -261,10 +263,21 @@ class VamanaQueryParams : public QueryParams {
     prefetch_lines_ = prefetch_lines;
   }
 
+  float scale_factor() const {
+    return scale_factor_;
+  }
+
+  void set_scale_factor(float scale_factor) {
+    scale_factor_ = scale_factor;
+  }
+
  private:
   int ef_search_;
   uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
   uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+  // Before Vamana exposed this parameter, the zero-initialized DB refiner
+  // scale was interpreted as 1.0 by core. Keep that effective default.
+  float scale_factor_{1.0f};
 };
 
 class FtsQueryParams : public QueryParams {

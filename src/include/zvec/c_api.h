@@ -1579,6 +1579,24 @@ ZVEC_EXPORT int ZVEC_CALL zvec_query_params_vamana_get_ef_search(
     const zvec_vamana_query_params_t *params);
 
 /**
+ * @brief Set the coarse-candidate scale used by the refiner
+ * @param params Vamana query parameters pointer
+ * @param scale_factor Coarse candidate count relative to query top-k
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_query_params_vamana_set_scale_factor(
+    zvec_vamana_query_params_t *params, float scale_factor);
+
+/**
+ * @brief Get the coarse-candidate scale used by the refiner
+ * @param params Vamana query parameters pointer
+ * @return float Coarse candidate count relative to query top-k
+ */
+ZVEC_EXPORT float ZVEC_CALL zvec_query_params_vamana_get_scale_factor(
+    const zvec_vamana_query_params_t *params);
+
+/**
  * @brief Set search radius
  * @param params Vamana query parameters pointer
  * @param radius Search radius

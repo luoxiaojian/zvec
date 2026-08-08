@@ -329,8 +329,6 @@ class VamanaIndex : public Index {
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
-  int _get_coarse_search_topk(
-      const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
   VamanaIndexParam param_{};

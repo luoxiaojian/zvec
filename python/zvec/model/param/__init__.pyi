@@ -666,6 +666,8 @@ class VamanaQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool): Whether to use refiner. Default is False.
+        scale_factor (float): Number of coarse candidates passed to the refiner,
+            relative to query top-k. Default is 1.0.
         prefetch_offset (int): Graph prefetch offset (PO). Default is 8.
         prefetch_lines (int): Cache lines to prefetch per vector (PL). Default is 0 (auto).
 
@@ -682,6 +684,7 @@ class VamanaQueryParam(QueryParam):
         is_linear: bool = False,
         is_using_refiner: bool = False,
         extra_params: dict[str, int] = ...,
+        scale_factor: typing.SupportsFloat = 1.0,
     ) -> None:
         """
         Constructs a VamanaQueryParam instance.
@@ -691,6 +694,8 @@ class VamanaQueryParam(QueryParam):
             radius (float, optional): Search radius for range queries. Default is 0.0.
             is_linear (bool, optional): Force linear search. Default is False.
             is_using_refiner (bool, optional): Whether to use refiner. Default is False.
+            scale_factor (float, optional): Number of coarse candidates passed to
+                the refiner, relative to query top-k. Default is 1.0.
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Graph prefetch offset (PO).
                   ``0`` disables prefetching. Default is ``8``.
@@ -702,6 +707,9 @@ class VamanaQueryParam(QueryParam):
     @property
     def ef_search(self) -> int:
         """int: Size of the dynamic candidate list during Vamana search."""
+    @property
+    def scale_factor(self) -> float:
+        """float: Coarse candidate count relative to query top-k."""
     @property
     def prefetch_offset(self) -> int:
         """int: Graph prefetch offset used by the Vamana fast path."""

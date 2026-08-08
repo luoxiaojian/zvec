@@ -331,6 +331,7 @@ class TestVamanaQueryParamSurface:
         assert q.radius == pytest.approx(0.0)
         assert q.is_linear is False
         assert q.is_using_refiner is False
+        assert q.scale_factor == pytest.approx(1.0)
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 0
 
@@ -344,20 +345,27 @@ class TestVamanaQueryParamSurface:
                 "prefetch_offset": 8,
                 "prefetch_lines": 2,
             },
+            scale_factor=6.4,
         )
         assert q.type == IndexType.VAMANA
         assert q.ef_search == 300
         assert q.radius == pytest.approx(0.5)
         assert q.is_linear is True
         assert q.is_using_refiner is True
+        assert q.scale_factor == pytest.approx(6.4)
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
 
     def test_repr_contains_key_fields(self):
-        text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
+        text = repr(
+            VamanaQueryParam(
+                ef_search=128, radius=0.25, scale_factor=3.5
+            )
+        )
         assert "VAMANA" in text
         assert "ef_search" in text and "128" in text
         assert "radius" in text
+        assert "scale_factor" in text and "3.500000" in text
 
     def test_readonly_ef_search(self):
         q = VamanaQueryParam(ef_search=100)
@@ -378,6 +386,7 @@ class TestVamanaQueryParamSurface:
                 "prefetch_offset": 4,
                 "prefetch_lines": 3,
             },
+            scale_factor=8.0,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -385,6 +394,7 @@ class TestVamanaQueryParamSurface:
         assert restored.radius == pytest.approx(0.3)
         assert restored.is_linear is False
         assert restored.is_using_refiner is True
+        assert restored.scale_factor == pytest.approx(8.0)
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
 
@@ -604,7 +614,9 @@ class TestVamanaEndToEnd:
                 coll.optimize()
 
             refine_param = VamanaQueryParam(
-                ef_search=64, is_using_refiner=True
+                ef_search=64,
+                is_using_refiner=True,
+                scale_factor=64 / TOPK,
             )
             for probe in (0, 127, 128, 255):
                 hits = coll.query(
@@ -683,7 +695,9 @@ class TestVamanaEndToEnd:
             kind="stable",
         )[:TOPK]
         refine_param = VamanaQueryParam(
-            ef_search=count, is_using_refiner=True
+            ef_search=count,
+            is_using_refiner=True,
+            scale_factor=count / TOPK,
         )
 
         coll = zvec.create_and_open(

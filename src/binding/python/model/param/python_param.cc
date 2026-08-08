@@ -1490,6 +1490,8 @@ Attributes:
     is_linear (bool): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float): Number of coarse candidates passed to the refiner,
+        relative to query top-k. Default is 1.0.
 
 Examples:
     >>> params = VamanaQueryParam(ef_search=200)
@@ -1498,9 +1500,11 @@ Examples:
 )pbdoc");
   vamana_query_params
       .def(py::init([](int ef_search, float radius, bool is_linear,
-                       bool is_using_refiner, py::dict extra_params) {
+                       bool is_using_refiner, py::dict extra_params,
+                       float scale_factor) {
              auto obj = std::make_shared<VamanaQueryParams>(
                  ef_search, radius, is_linear, is_using_refiner);
+             obj->set_scale_factor(scale_factor);
              if (extra_params.contains("prefetch_offset")) {
                obj->set_prefetch_offset(
                    extra_params["prefetch_offset"].cast<uint32_t>());
@@ -1515,6 +1519,7 @@ Examples:
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
            py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = 1.0f,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1525,6 +1530,8 @@ Args:
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query.
         Default is False.
+    scale_factor (float, optional): Number of coarse candidates passed to the
+        refiner, relative to query top-k. Default is 1.0.
     extra_params (dict, optional): Additional search parameters. Supported keys:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
           ``0`` disables prefetching. Default is ``8``.
@@ -1537,6 +1544,12 @@ Args:
           "ef_search",
           [](const VamanaQueryParams &self) -> int { return self.ef_search(); },
           "int: Size of the dynamic candidate list during Vamana search.")
+      .def_property_readonly(
+          "scale_factor",
+          [](const VamanaQueryParams &self) -> float {
+            return self.scale_factor();
+          },
+          "float: Coarse candidate count relative to query top-k.")
       .def_property_readonly(
           "prefetch_offset",
           [](const VamanaQueryParams &self) -> uint32_t {
@@ -1562,17 +1575,19 @@ Args:
                     ", \"prefetch_offset\":" +
                     std::to_string(self.prefetch_offset()) +
                     ", \"prefetch_lines\":" +
-                    std::to_string(self.prefetch_lines()) + "}";
+                    std::to_string(self.prefetch_lines()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
                                   self.is_linear(), self.is_using_refiner(),
                                   self.prefetch_offset(),
-                                  self.prefetch_lines());
+                                  self.prefetch_lines(), self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 4 && t.size() != 5 && t.size() != 6)
+            if (t.size() < 4 || t.size() > 7)
               throw std::runtime_error("Invalid state for VamanaQueryParams");
             auto obj = std::make_shared<VamanaQueryParams>(t[0].cast<int>());
             obj->set_radius(t[1].cast<float>());
@@ -1583,6 +1598,9 @@ Args:
             }
             if (t.size() >= 6) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
+            }
+            if (t.size() >= 7) {
+              obj->set_scale_factor(t[6].cast<float>());
             }
             return obj;
           }));
