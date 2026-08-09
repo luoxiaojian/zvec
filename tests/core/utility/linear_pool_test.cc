@@ -24,7 +24,7 @@ TEST(LinearPool, InsertImmediatelyExposesAndRewindsNextCandidate) {
   EXPECT_TRUE(pool.insert(20, 20.0f));
   ASSERT_TRUE(pool.has_next());
 
-  int next = -1;
+  uint32_t next = UINT32_MAX;
   EXPECT_EQ(10, pool.pop(&next));
   EXPECT_EQ(20, next);
 
@@ -40,6 +40,8 @@ TEST(LinearPool, InsertImmediatelyExposesAndRewindsNextCandidate) {
   EXPECT_FALSE(rewound);
   EXPECT_EQ(20, pool.pop(&next));
   EXPECT_EQ(30, next);
+  EXPECT_EQ(30, pool.pop(&next));
+  EXPECT_EQ(UINT32_MAX, next);
 }
 
 TEST(LinearPool, RejectedCandidateDoesNotRewind) {

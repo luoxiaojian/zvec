@@ -333,19 +333,18 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
   while (pool.has_next() && (!enforce_scan_limit || !ctx->reach_scan_limit())) {
     node_id_t current_node;
     if constexpr (FullGraphPrefetch) {
-      int next = -1;
+      node_id_t next = kInvalidNodeId;
       current_node = static_cast<node_id_t>(pool.pop(&next));
-      if (next >= 0) {
-        prefetch_graph_row(entity, static_cast<node_id_t>(next));
+      prefetch_graph_row(entity, current_node);
+      if (next != kInvalidNodeId) {
+        prefetch_graph_row(entity, next);
       }
     } else {
       current_node = static_cast<node_id_t>(pool.pop());
     }
 
     const auto neighbors = entity.get_neighbors_typed(current_node);
-    if constexpr (FullGraphPrefetch) {
-      prefetch_graph_row(entity, neighbors);
-    } else {
+    if constexpr (!FullGraphPrefetch) {
       ailego_prefetch(neighbors.data);
     }
 
@@ -659,17 +658,18 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
             .run(ctx->visit_filter());
       }
     } else {
-      // Query optimization rungs: cached greedy entry, a sorted LinearPool,
-      // and full graph-row prefetch. Keeping these as template switches makes
-      // each hot loop branchless and permits independent wheel-level ablation.
+      // Query optimization rungs are template switches so each hot loop stays
+      // branchless and each pool/prefetch combination can be ablated in an
+      // independent wheel. This variant keeps BlockHeap batch insertion and
+      // enables cached greedy entry plus current/next full-row prefetch.
       if (has_extra_values) {
-        VamanaFastGreedyRunner<true, true, true, true, EntityType>{
+        VamanaFastGreedyRunner<true, false, true, true, EntityType>{
             entity,         dc,           ctx,         pool_capacity,
             entry_point,    prefetch_lines, build_search, avx2_ok,
             topk_heap}
             .run(ctx->visit_filter());
       } else {
-        VamanaFastGreedyRunner<false, true, true, true, EntityType>{
+        VamanaFastGreedyRunner<false, false, true, true, EntityType>{
             entity,         dc,           ctx,         pool_capacity,
             entry_point,    prefetch_lines, build_search, avx2_ok,
             topk_heap}

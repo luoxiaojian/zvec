@@ -183,14 +183,16 @@ struct LinearPool {
     return true;
   }
 
-  int pop(int *next_id = nullptr) {
+  int pop(uint32_t *next_id = nullptr) {
     set_checked(data_[cur_].id);
     int pre = cur_;
     while (cur_ < size_ && is_checked(data_[cur_].id)) {
       cur_++;
     }
     if (next_id != nullptr) {
-      *next_id = cur_ < size_ ? get_id(data_[cur_].id) : -1;
+      *next_id = cur_ < size_
+                     ? static_cast<uint32_t>(get_id(data_[cur_].id))
+                     : UINT32_MAX;
     }
     return get_id(data_[pre].id);
   }
