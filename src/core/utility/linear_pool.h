@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
 namespace core {
@@ -155,7 +156,14 @@ struct LinearPool {
     }
   }
 
-  ailego_force_inline bool insert(int u, dist_t dist) {
+  // Insert one candidate and make it immediately visible to has_next()/pop().
+  // If the insertion moves the expansion cursor backwards, report that via
+  // `rewound` so the caller can prefetch the newly exposed graph row.
+  ailego_force_inline bool insert(int u, dist_t dist,
+                                  bool *rewound = nullptr) {
+    if (rewound != nullptr) {
+      *rewound = false;
+    }
     if (size_ == capacity_ && dist >= data_[size_ - 1].distance) {
       return false;
     }
@@ -168,15 +176,23 @@ struct LinearPool {
     }
     if (lo < cur_) {
       cur_ = lo;
+      if (rewound != nullptr) {
+        *rewound = true;
+      }
     }
     return true;
   }
 
-  int pop() {
+  int pop(uint32_t *next_id = nullptr) {
     set_checked(data_[cur_].id);
     int pre = cur_;
     while (cur_ < size_ && is_checked(data_[cur_].id)) {
       cur_++;
+    }
+    if (next_id != nullptr) {
+      *next_id = cur_ < size_
+                     ? static_cast<uint32_t>(get_id(data_[cur_].id))
+                     : UINT32_MAX;
     }
     return get_id(data_[pre].id);
   }
