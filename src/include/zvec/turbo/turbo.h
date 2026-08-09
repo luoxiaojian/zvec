@@ -46,6 +46,9 @@ using UniformUint4QuantizeFunc = void (*)(const float *in, size_t dim,
 using RawUint8ConvertFunc = void (*)(const float *in, size_t dim,
                                      uint8_t *out);
 
+using Fp32ToFp16ConvertFunc = void (*)(const float *in, size_t dim,
+                                       uint16_t *out);
+
 enum class MetricType {
   kSquaredEuclidean,
   kCosine,
@@ -94,5 +97,7 @@ UniformQuantizeFunc get_uniform_uint8_quantize_func(DataType data_type);
 UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type);
 
 RawUint8ConvertFunc get_raw_uint8_convert_func();
+
+Fp32ToFp16ConvertFunc get_fp32_to_fp16_convert_func();
 
 }  // namespace zvec::turbo

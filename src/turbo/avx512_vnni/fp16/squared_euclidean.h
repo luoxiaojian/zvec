@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace zvec::turbo::avx512_vnni {
 
@@ -12,5 +13,8 @@ namespace zvec::turbo::avx512_vnni {
 void squared_euclidean_fp16_batch_distance(
     const void **vectors, const void *query, std::size_t count,
     std::size_t dimension, float *distances, const void **extra_values);
+
+void fp32_to_fp16(const float *input, std::size_t dimension,
+                  std::uint16_t *output);
 
 }  // namespace zvec::turbo::avx512_vnni

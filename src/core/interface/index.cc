@@ -50,9 +50,13 @@ int PrepareNativeFlatQuery(const VectorData &source,
   const auto *input = static_cast<const float *>(dense.data);
   if (flat_meta.data_type() == core::IndexMeta::DataType::DT_FP16) {
     storage->resize(flat_meta.dimension() * sizeof(ailego::Float16));
-    ailego::FloatHelper::ToFP16(
-        input, flat_meta.dimension(),
-        reinterpret_cast<uint16_t *>(storage->data()));
+    static const auto convert = turbo::get_fp32_to_fp16_convert_func();
+    auto *output = reinterpret_cast<uint16_t *>(storage->data());
+    if (convert) {
+      convert(input, flat_meta.dimension(), output);
+    } else {
+      ailego::FloatHelper::ToFP16(input, flat_meta.dimension(), output);
+    }
   } else if (flat_meta.data_type() == core::IndexMeta::DataType::DT_UINT8) {
     storage->resize(flat_meta.dimension());
     auto *output = reinterpret_cast<uint8_t *>(storage->data());

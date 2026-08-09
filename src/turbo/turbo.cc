@@ -186,4 +186,12 @@ RawUint8ConvertFunc get_raw_uint8_convert_func() {
   return nullptr;
 }
 
+Fp32ToFp16ConvertFunc get_fp32_to_fp16_convert_func() {
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.F16C) {
+    return avx512_vnni::fp32_to_fp16;
+  }
+  return nullptr;
+}
+
 }  // namespace zvec::turbo

@@ -119,4 +119,23 @@ void squared_euclidean_fp16_batch_distance(
   }
 }
 
+void fp32_to_fp16(const float *input, size_t dimension, uint16_t *output) {
+  size_t d = 0;
+  constexpr int kRounding = _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC;
+  for (; d + 16 <= dimension; d += 16) {
+    const __m512 values = _mm512_loadu_ps(input + d);
+    const __m256i half = _mm512_cvtps_ph(values, kRounding);
+    _mm256_storeu_si256(reinterpret_cast<__m256i *>(output + d), half);
+  }
+  if (d + 8 <= dimension) {
+    const __m256 values = _mm256_loadu_ps(input + d);
+    const __m128i half = _mm256_cvtps_ph(values, kRounding);
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(output + d), half);
+    d += 8;
+  }
+  for (; d < dimension; ++d) {
+    output[d] = _cvtss_sh(input[d], kRounding);
+  }
+}
+
 }  // namespace zvec::turbo::avx512_vnni

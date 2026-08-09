@@ -138,5 +138,23 @@ TEST(Fp16RefineTurbo, HomogeneousBatchMatchesScalarReference) {
   }
 }
 
+TEST(Fp16RefineTurbo, QueryConversionMatchesFloatHelper) {
+  auto convert = turbo::get_fp32_to_fp16_convert_func();
+  if (!convert) GTEST_SKIP() << "AVX-512F/F16C is unavailable";
+
+  std::mt19937 generator(20260809);
+  std::uniform_real_distribution<float> values(-100.0f, 100.0f);
+  for (const size_t dimension :
+       {1UL, 7UL, 8UL, 15UL, 16UL, 17UL, 31UL, 32UL, 128UL, 131UL}) {
+    std::vector<float> input(dimension);
+    std::vector<uint16_t> expected(dimension);
+    std::vector<uint16_t> actual(dimension);
+    for (float &value : input) value = values(generator);
+    ailego::FloatHelper::ToFP16(input.data(), dimension, expected.data());
+    convert(input.data(), dimension, actual.data());
+    EXPECT_EQ(expected, actual) << "dimension=" << dimension;
+  }
+}
+
 }  // namespace
 }  // namespace zvec::core
