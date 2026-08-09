@@ -45,9 +45,9 @@ namespace core {
 //
 // Derived from pyglass' BlockHeap (https://github.com/zilliztech/pyglass,
 // MIT License; see the NOTICE file and linear_pool.h for the full attribution).
-// The graph prefetch is intentionally omitted: the call-site is expected to
-// issue the neighbor-array prefetch itself (Vamana's greedy_search already
-// does so).
+// Graph prefetch remains a call-site policy. pop() can additionally expose
+// the next unexpanded id so a graph search can overlap the current and next
+// neighbor-row fetches without changing BlockHeap's insertion semantics.
 //
 // AVX2 requirement
 // ----------------
@@ -188,11 +188,15 @@ struct BlockHeap {
 
   // Pop the closest unpopped candidate id (without the check bit).
   // Caller must ensure has_next() is true.
-  uint32_t pop() {
+  uint32_t pop(uint32_t *next_id = nullptr) {
     const size_t result = cur_;
     set_checked(data_[cur_].first);
     while (cur_ < data_.size() && is_checked(data_[cur_].first)) {
       ++cur_;
+    }
+    if (next_id != nullptr) {
+      *next_id = cur_ < data_.size() ? get_id(data_[cur_].first)
+                                     : UINT32_MAX;
     }
     return get_id(data_[result].first);
   }

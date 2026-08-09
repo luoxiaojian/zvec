@@ -137,9 +137,9 @@ class VamanaContext : public IndexContext {
   inline BlockHeap &block_pool() {
     return block_pool_;
   }
-  // The direct-refine path consumes the already sorted BlockHeap candidate
-  // ids itself.  In that mode the generic TopkHeap/result materialization is
-  // unnecessary and is deliberately skipped by the fast search runner.
+  // The direct-refine path consumes the active sorted candidate pool itself.
+  // In that mode the generic TopkHeap/result materialization is unnecessary
+  // and is deliberately skipped by the fast search runner.
   inline void set_direct_pool_result(bool enabled) {
     direct_pool_result_ = enabled;
   }

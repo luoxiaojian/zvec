@@ -927,8 +927,8 @@ int VamanaStreamer::search_keys_direct(
   }
 
   // Filtered and brute-force searches have different result semantics.  The
-  // buffer-pool algorithm and non-AVX2 machines use LinearPool, so there is no
-  // BlockHeap result to export in those cases.
+  // buffer-pool algorithm and non-AVX2 machines do not use the direct
+  // BlockHeap mmap/contiguous pool path.
   if (ctx->filter().is_valid() ||
       entity_->storage_mode() == VamanaStorageMode::kBufferPool ||
       !zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 ||
