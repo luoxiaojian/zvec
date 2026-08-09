@@ -904,11 +904,9 @@ int VamanaStreamer::search_keys_direct(
   }
 
   // Filtered and brute-force searches have different result semantics.  The
-  // buffer-pool algorithm and non-AVX2 machines use LinearPool, so there is no
-  // BlockHeap result to export in those cases.
+  // buffer-pool algorithm does not use the direct mmap/contiguous pool path.
   if (ctx->filter().is_valid() ||
       entity_->storage_mode() == VamanaStorageMode::kBufferPool ||
-      !zvec::ailego::internal::CpuFeatures::static_flags_.AVX2 ||
       entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
     return IndexError_NotImplemented;
   }
@@ -931,7 +929,7 @@ int VamanaStreamer::search_keys_direct(
   }
   if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
 
-  const BlockHeap &pool = ctx->block_pool();
+  const LinearPool<float> &pool = ctx->pool();
   const size_t count = std::min(static_cast<size_t>(ctx->topk()),
                                 static_cast<size_t>(pool.size()));
   keys->resize(count);
