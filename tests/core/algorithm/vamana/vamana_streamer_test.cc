@@ -504,11 +504,19 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
     uint32_t bulk_build_used = 0;
     ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_build_used",
                                                 &bulk_build_used));
+#if ZVEC_VAMANA_AUTO_BULK_BUILD
     EXPECT_EQ(1U, bulk_build_used);
+#else
+    EXPECT_EQ(0U, bulk_build_used);
+#endif
     uint32_t bulk_fast_search_used = 0;
     ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_fast_search_used",
                                                 &bulk_fast_search_used));
+#if ZVEC_VAMANA_AUTO_BULK_BUILD
     EXPECT_EQ(1U, bulk_fast_search_used);
+#else
+    EXPECT_EQ(0U, bulk_fast_search_used);
+#endif
     uint32_t build_prefetch_offset = 0;
     ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_offset",
                                                 &build_prefetch_offset));

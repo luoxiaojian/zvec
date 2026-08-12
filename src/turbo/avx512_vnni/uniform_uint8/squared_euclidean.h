@@ -16,15 +16,20 @@
 
 #include <cstddef>
 
+#ifndef ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
+#define ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE 1
+#endif
+
 namespace zvec::turbo::avx512_vnni {
 
 // Record layout:
 //   [ original_dim bytes: int8 values, stored as uint8(value) - 128 ]
 //   [ int32 sum_sq_u8 ]
 //
-// The index data type remains DT_INT8. All distance functions return true
-// squared L2. Batch queries use a raw uint8 body and query-correction tail,
-// produced once by uniform_squared_euclidean_uint8_query_preprocess.
+// The index data type remains DT_INT8. Stored-to-stored functions always
+// return true squared L2. Query functions either include the query-only
+// correction (the default) or omit it at compile time for the historical
+// ranking-equivalent benchmark path.
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 

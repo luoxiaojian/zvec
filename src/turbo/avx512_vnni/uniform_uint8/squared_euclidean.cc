@@ -297,6 +297,16 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0, __m512i a1,
                        _mm256_extracti128_si256(d, 1));
 }
 
+static ailego_force_inline int32_t query_distance_offset(
+    int32_t query_correction) {
+#if ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
+  return query_correction;
+#else
+  (void)query_correction;
+  return 0;
+#endif
+}
+
 // SIFT contiguous-entity hot path: load the query's two cache lines once per
 // batch call and reuse them for every group of four candidates.
 static ailego_force_inline void uniform_raw_sq_l2_uint8_extra_batch4_128(
@@ -327,7 +337,7 @@ static ailego_force_inline void uniform_raw_sq_l2_uint8_extra_batch4_128(
       load_extra_sum_sq(extra_values[1]), load_extra_sum_sq(extra_values[0]));
   const __m128i distance =
       _mm_add_epi32(_mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1)),
-                    _mm_set1_epi32(query_correction));
+                    _mm_set1_epi32(query_distance_offset(query_correction)));
   _mm_storeu_ps(distances, _mm_cvtepi32_ps(distance));
 }
 
@@ -394,7 +404,7 @@ static ailego_force_inline void uniform_raw_sq_l2_uint8_batch4(
   }
   const __m128i distance =
       _mm_add_epi32(_mm_sub_epi32(norms, _mm_slli_epi32(inner_products, 1)),
-                    _mm_set1_epi32(query_correction));
+                    _mm_set1_epi32(query_distance_offset(query_correction)));
   _mm_storeu_ps(distances, _mm_cvtepi32_ps(distance));
 }
 
@@ -419,7 +429,7 @@ static ailego_force_inline void uniform_raw_sq_l2_uint8_single(
   const int32_t norm = HasExtraValues ? load_extra_sum_sq(extra_value)
                                       : tail(vector, orig_dim)[0];
   *distance = static_cast<float>(static_cast<int64_t>(norm) - 2 * dot +
-                                 query_correction);
+                                 query_distance_offset(query_correction));
 }
 
 template <bool HasExtraValues>

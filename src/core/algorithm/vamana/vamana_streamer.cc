@@ -465,6 +465,10 @@ int VamanaStreamer::begin_bulk_build() {
   // target in normal streaming mode, including a second merge into an index
   // that previously used the bulk path.
   bulk_build_active_ = false;
+#if !ZVEC_VAMANA_AUTO_BULK_BUILD
+  LOG_INFO("Vamana automatic bulk build is disabled at compile time");
+  return 0;
+#endif
   if (entity_->storage_mode() != VamanaStorageMode::kContiguous ||
       entity_->doc_cnt() != 0) {
     return 0;

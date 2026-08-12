@@ -114,6 +114,11 @@ class VamanaContext : public IndexContext {
     dc_.clear_compare_cnt();
   }
 
+  inline void reset_stored_query(const void *query) {
+    dc_.reset_query(query);
+    dc_.clear_compare_cnt();
+  }
+
   inline VamanaDistCalculator &dist_calculator() {
     return dc_;
   }

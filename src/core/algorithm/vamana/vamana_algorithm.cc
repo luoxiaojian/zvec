@@ -74,7 +74,11 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
     LOG_ERROR("Failed to get vector for node %u", id);
     return IndexError_ReadData;
   }
+#if ZVEC_VAMANA_BATCH_ROBUST_PRUNE
   ctx->reset_query(query_vec);
+#else
+  ctx->reset_stored_query(query_vec);
+#endif
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild
@@ -716,7 +720,11 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   ctx->topk_heap().clear();
   ctx->topk_heap().limit(entity_.search_list_size());
   ctx->dist_calculator().clear_compare_cnt();
+#if ZVEC_VAMANA_BATCH_ROBUST_PRUNE
   ctx->reset_query(query_vec);
+#else
+  ctx->reset_stored_query(query_vec);
+#endif
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild
@@ -853,6 +861,7 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
       }
 
       if (batch_count > 0) {
+#if ZVEC_VAMANA_BATCH_ROBUST_PRUNE
         // Compute exact data-to-data distances from the selected candidate to
         // all remaining candidates. RobustPrune runs after GreedySearch, so
         // the search query no longer needs to be preserved. Reuse the normal
@@ -860,6 +869,13 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
         // required by quantized metrics.
         ctx->reset_query(selected_vec);
         dc.batch_dist(batch_vecs.data(), batch_count, batch_dists.data());
+#else
+        // Historical path: compare encoded records directly, without sending
+        // the selected stored vector through asymmetric query preprocessing.
+        for (uint32_t k = 0; k < batch_count; ++k) {
+          batch_dists[k] = dc.dist(selected_vec, batch_vecs[k]);
+        }
+#endif
 
         // DiskANN (L2/Cosine):
         //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /

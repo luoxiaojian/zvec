@@ -54,12 +54,41 @@ IndexMetric::MatrixDistance UniformUint8StoredDistance() {
   return distance;
 }
 
+#if !ZVEC_VAMANA_BATCH_ROBUST_PRUNE
+void UniformUint8StoredSquaredEuclideanBatch(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
+  const auto distance = UniformUint8StoredDistance();
+  for (size_t i = 0; i < n; ++i) {
+    distance(vectors[i], query, dim, distances + i);
+  }
+}
+#endif
+
 void UniformUint8StoredQuerySquaredEuclidean(const void *stored,
                                              const void *query, size_t dim,
                                              float *distance) {
   const size_t orig_dim = original_dim(dim);
   const auto *lhs = reinterpret_cast<const int8_t *>(stored);
   const auto *rhs = reinterpret_cast<const uint8_t *>(query);
+#if !ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
+  // This is the historical ranking-equivalent score. The omitted term is
+  // constant for every candidate of one query. Keep the widened exact path
+  // for dimensions where the int32 record norm may overflow.
+  if (orig_dim <= 8192) {
+    int64_t dot = 0;
+    for (size_t d = 0; d < orig_dim; ++d) {
+      dot += static_cast<int>(lhs[d]) * static_cast<int>(rhs[d]);
+    }
+    int32_t stored_norm = 0;
+    std::memcpy(&stored_norm,
+                reinterpret_cast<const uint8_t *>(stored) + orig_dim,
+                sizeof(stored_norm));
+    *distance =
+        static_cast<float>(static_cast<int64_t>(stored_norm) - 2 * dot);
+    return;
+  }
+#endif
   int64_t dist = 0;
   for (size_t d = 0; d < orig_dim; ++d) {
     const int diff =
@@ -216,6 +245,12 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
     }
     return nullptr;
   }
+
+#if !ZVEC_VAMANA_BATCH_ROBUST_PRUNE
+  MatrixBatchDistance batch_distance(void) const override {
+    return UniformUint8StoredSquaredEuclideanBatch;
+  }
+#endif
 
   // Extra values are a physical-storage optimization for online search.
   // The stored record remains self-contained before contiguous-memory

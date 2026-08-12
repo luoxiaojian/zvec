@@ -81,6 +81,37 @@ option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_TOOLS "Build tools" ON)
+option(
+  ZVEC_VAMANA_AUTO_BULK_BUILD
+  "Automatically use deferred Vamana bulk construction for an empty contiguous merge target"
+  ON
+)
+option(
+  ZVEC_VAMANA_BATCH_ROBUST_PRUNE
+  "Use the batched distance path while Vamana robust-prunes build candidates"
+  ON
+)
+option(
+  ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
+  "Include the query-only constant in UniformUint8 search distances"
+  ON
+)
+
+if(ZVEC_VAMANA_AUTO_BULK_BUILD)
+  add_compile_definitions(ZVEC_VAMANA_AUTO_BULK_BUILD=1)
+else()
+  add_compile_definitions(ZVEC_VAMANA_AUTO_BULK_BUILD=0)
+endif()
+if(ZVEC_VAMANA_BATCH_ROBUST_PRUNE)
+  add_compile_definitions(ZVEC_VAMANA_BATCH_ROBUST_PRUNE=1)
+else()
+  add_compile_definitions(ZVEC_VAMANA_BATCH_ROBUST_PRUNE=0)
+endif()
+if(ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE)
+  add_compile_definitions(ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE=1)
+else()
+  add_compile_definitions(ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE=0)
+endif()
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
@@ -88,6 +119,9 @@ message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
+message(STATUS "ZVEC_VAMANA_AUTO_BULK_BUILD:${ZVEC_VAMANA_AUTO_BULK_BUILD}")
+message(STATUS "ZVEC_VAMANA_BATCH_ROBUST_PRUNE:${ZVEC_VAMANA_BATCH_ROBUST_PRUNE}")
+message(STATUS "ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE:${ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE}")
 
 option(RABITQ_ENABLE_AVX512 "Compile RaBitQ with AVX-512 support" OFF)
 
