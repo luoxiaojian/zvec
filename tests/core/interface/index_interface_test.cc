@@ -586,20 +586,19 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
   remove_files(source_name);
   remove_files(target_name);
 
-  auto source_param =
-      FlatIndexParamBuilder()
-          .WithMetricType(MetricType::kL2sq)
-          .WithDataType(DataType::DT_FP32)
-          .WithDimension(kDimension)
-          .WithIsSparse(false)
-          .Build();
+  auto source_param = FlatIndexParamBuilder()
+                          .WithMetricType(MetricType::kL2sq)
+                          .WithDataType(DataType::DT_FP32)
+                          .WithDimension(kDimension)
+                          .WithIsSparse(false)
+                          .Build();
   auto source = IndexFactory::CreateAndInitIndex(*source_param);
   ASSERT_NE(nullptr, source);
-  ASSERT_EQ(0, source->Open(
-                   source_name, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, source->Open(source_name, {StorageOptions::StorageType::kMMAP, true}));
 
-  std::vector<std::vector<float>> vectors(
-      kVectorCount, std::vector<float>(kDimension));
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
   for (uint32_t i = 0; i < kVectorCount; ++i) {
     for (uint32_t d = 0; d < kDimension; ++d) {
       vectors[i][d] = static_cast<float>((i * 17 + d * 13) % 101);
@@ -627,8 +626,8 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
     auto target_param = target_builder.Build();
     auto target = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, target);
-    ASSERT_EQ(0, target->Open(
-                     target_name, {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, target->Open(target_name,
+                              {StorageOptions::StorageType::kMMAP, true}));
     ASSERT_EQ(0, target->Merge({source}, IndexFilter()));
     ASSERT_EQ(kVectorCount, target->GetDocCount());
 
@@ -675,8 +674,8 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
 
     auto reopened = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, reopened);
-    ASSERT_EQ(0, reopened->Open(
-                     target_name, {StorageOptions::StorageType::kMMAP, false}));
+    ASSERT_EQ(0, reopened->Open(target_name,
+                                {StorageOptions::StorageType::kMMAP, false}));
     auto query_param = VamanaQueryParamBuilder()
                            .with_topk(1)
                            .with_fetch_vector(false)
@@ -823,6 +822,7 @@ TEST(IndexInterface, Serialize) {
                      .WithReversePruneBatchSize(8)
                      .WithBuildPrefetchOffset(32)
                      .WithBuildPrefetchLines(2)
+                     .WithUseBulkBuild(false)
                      .Build();
 
     std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
@@ -847,6 +847,7 @@ TEST(IndexInterface, Serialize) {
     ASSERT_EQ(8, vamana_param->reverse_prune_batch_size);
     ASSERT_EQ(32, vamana_param->build_prefetch_offset);
     ASSERT_EQ(2, vamana_param->build_prefetch_lines);
+    ASSERT_FALSE(vamana_param->use_bulk_build);
   }
 
   {

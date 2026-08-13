@@ -508,16 +508,14 @@ Examples:
                     ", \"use_flat_contiguous_memory\":" +
                     (self.use_flat_contiguous_memory() ? "true" : "false") +
                     ", \"flat_data_type\":\"" +
-                    data_type_to_string(self.flat_data_type()) + "\"" +
-                    "}";
+                    data_type_to_string(self.flat_data_type()) + "\"" + "}";
            })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.m(),
-                                  self.ef_construction(), self.quantize_type(),
-                                  self.use_contiguous_memory(),
-                                  self.use_flat_contiguous_memory(),
-                                  self.flat_data_type());
+            return py::make_tuple(
+                self.metric_type(), self.m(), self.ef_construction(),
+                self.quantize_type(), self.use_contiguous_memory(),
+                self.use_flat_contiguous_memory(), self.flat_data_type());
           },
           [](py::tuple t) {
             if (t.size() != 5 && t.size() != 6 && t.size() != 7)
@@ -672,6 +670,11 @@ Attributes:
     build_prefetch_lines (int): Number of cache lines to prefetch per vector
         during construction. ``0`` means all cache lines occupied by the
         vector body. Valid range is 0 to 256. Default is 4.
+    use_bulk_build (bool): Master switch for the optimized construction
+        pipeline. If True, eligible builds use bulk graph construction, fast
+        build search, batched RobustPrune, and configured reverse-prune
+        batching. If False, the historical incremental construction path is
+        used. Default is True.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -693,7 +696,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool, int, int, int, DataType>(),
+                    QuantizeType, bool, int, int, int, DataType, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -711,7 +714,9 @@ Examples:
                core_interface::kDefaultVamanaBuildPrefetchOffset,
            py::arg("build_prefetch_lines") =
                core_interface::kDefaultVamanaBuildPrefetchLines,
-           py::arg("flat_data_type") = DataType::UNDEFINED)
+           py::arg("flat_data_type") = DataType::UNDEFINED,
+           py::arg("use_bulk_build") =
+               core_interface::kDefaultVamanaUseBulkBuild)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -756,6 +761,9 @@ Examples:
       .def_property_readonly(
           "build_prefetch_lines", &VamanaIndexParams::build_prefetch_lines,
           "int: Number of cache lines prefetched per construction vector.")
+      .def_property_readonly(
+          "use_bulk_build", &VamanaIndexParams::use_bulk_build,
+          "bool: Whether the optimized Vamana construction pipeline is used.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -775,6 +783,7 @@ Examples:
             dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
             dict["build_prefetch_offset"] = self.build_prefetch_offset();
             dict["build_prefetch_lines"] = self.build_prefetch_lines();
+            dict["use_bulk_build"] = self.use_bulk_build();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -809,6 +818,8 @@ Examples:
                     std::to_string(self.build_prefetch_offset()) +
                     ", \"build_prefetch_lines\":" +
                     std::to_string(self.build_prefetch_lines()) +
+                    ", \"use_bulk_build\":" +
+                    std::string(self.use_bulk_build() ? "true" : "false") +
                     ", \"flat_data_type\":\"" +
                     data_type_to_string(self.flat_data_type()) + "\"" +
                     ", \"quantize_type\":\"" +
@@ -823,12 +834,13 @@ Examples:
                 self.two_pass_build(), self.quantize_type(),
                 self.use_flat_contiguous_memory(),
                 self.reverse_prune_batch_size(), self.build_prefetch_offset(),
-                self.build_prefetch_lines(), self.flat_data_type());
+                self.build_prefetch_lines(), self.flat_data_type(),
+                self.use_bulk_build());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
                 t.size() != 11 && t.size() != 12 && t.size() != 13 &&
-                t.size() != 14)
+                t.size() != 14 && t.size() != 15)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -860,12 +872,15 @@ Examples:
                     : core_interface::kDefaultVamanaBuildPrefetchLines;
             const auto flat_data_type =
                 t.size() >= 14 ? t[13].cast<DataType>() : DataType::UNDEFINED;
+            const bool use_bulk_build =
+                t.size() >= 15 ? t[14].cast<bool>()
+                               : core_interface::kDefaultVamanaUseBulkBuild;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
                 t[9].cast<bool>(), t[10].cast<int>(), build_prefetch_offset,
-                build_prefetch_lines, flat_data_type);
+                build_prefetch_lines, flat_data_type, use_bulk_build);
           }));
 
   // FlatIndexParams
@@ -1518,8 +1533,7 @@ Examples:
            py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
            py::arg("radius") = 0.0f, py::arg("is_linear") = false,
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(),
-           py::arg("scale_factor") = 1.0f,
+           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 1.0f,
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
@@ -1583,8 +1597,8 @@ Args:
           [](const VamanaQueryParams &self) {
             return py::make_tuple(self.ef_search(), self.radius(),
                                   self.is_linear(), self.is_using_refiner(),
-                                  self.prefetch_offset(),
-                                  self.prefetch_lines(), self.scale_factor());
+                                  self.prefetch_offset(), self.prefetch_lines(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
             if (t.size() < 4 || t.size() > 7)

@@ -86,9 +86,9 @@ enum class QuantizerType {
   kInt8,
   kInt4,
   kRabitq,
-  kUniformInt8,  // Global uniform int8 quantization (shared scale/bias).
-  kUniformUint8, // Global uniform uint8 quantization (shared scale/bias).
-  kUniformUint4, // Global packed uint4 quantization (shared clipped range).
+  kUniformInt8,   // Global uniform int8 quantization (shared scale/bias).
+  kUniformUint8,  // Global uniform uint8 quantization (shared scale/bias).
+  kUniformUint4,  // Global packed uint4 quantization (shared clipped range).
 };
 
 struct SerializableBase {
@@ -360,6 +360,7 @@ struct VamanaIndexParam : public BaseIndexParam {
   int reverse_prune_batch_size = kDefaultVamanaReversePruneBatchSize;
   int build_prefetch_offset = kDefaultVamanaBuildPrefetchOffset;
   int build_prefetch_lines = kDefaultVamanaBuildPrefetchLines;
+  bool use_bulk_build = kDefaultVamanaUseBulkBuild;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 

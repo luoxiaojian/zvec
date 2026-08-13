@@ -95,8 +95,10 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
     ASSERT_NE(nullptr, metric);
     auto distance = metric->distance();
     auto batch_distance = metric->batch_distance();
+    auto stored_batch_distance = metric->stored_batch_distance();
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
+    ASSERT_TRUE(static_cast<bool>(stored_batch_distance));
 
     const size_t encoded_dimension = original_dimension + kTailBytes;
     std::vector<int8_t> lhs(encoded_dimension, 0);
@@ -123,30 +125,19 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
 
     const void *vectors[] = {lhs.data(), rhs.data()};
     float batch_results[2] = {};
-#if ZVEC_VAMANA_BATCH_ROBUST_PRUNE
     const auto query = PrepareStoredQuery(metric, rhs);
     batch_distance(vectors, query.data(), 2, encoded_dimension, batch_results,
                    nullptr);
-    float expected_lhs = ScalarReference(lhs, rhs, original_dimension);
-    float expected_rhs = 0.0f;
-#if !ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
-    if (original_dimension <= 8192) {
-      int32_t query_correction = 0;
-      std::memcpy(&query_correction, query.data() + original_dimension,
-                  sizeof(query_correction));
-      expected_lhs -= query_correction;
-      expected_rhs -= query_correction;
-    }
-#endif
-#else
-    batch_distance(vectors, rhs.data(), 2, encoded_dimension, batch_results,
-                   nullptr);
-    const float expected_lhs =
-        ScalarReference(lhs, rhs, original_dimension);
+    const float expected_lhs = ScalarReference(lhs, rhs, original_dimension);
     const float expected_rhs = 0.0f;
-#endif
     EXPECT_EQ(expected_lhs, batch_results[0]);
     EXPECT_EQ(expected_rhs, batch_results[1]);
+
+    float stored_batch_results[2] = {};
+    stored_batch_distance(vectors, rhs.data(), 2, encoded_dimension,
+                          stored_batch_results, nullptr);
+    EXPECT_EQ(expected_lhs, stored_batch_results[0]);
+    EXPECT_EQ(expected_rhs, stored_batch_results[1]);
   }
 }
 
@@ -187,23 +178,9 @@ TEST(UniformUint8Metric,
                &expected[i]);
     }
 
-#if ZVEC_VAMANA_BATCH_ROBUST_PRUNE
     const auto prepared_query = PrepareStoredQuery(metric, query);
     batch_distance(pointers.data(), prepared_query.data(), vector_count,
                    encoded_dimension, actual.data(), nullptr);
-#if !ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
-    if (original_dimension <= 8192) {
-      int32_t query_correction = 0;
-      std::memcpy(&query_correction,
-                  prepared_query.data() + original_dimension,
-                  sizeof(query_correction));
-      for (float &value : expected) value -= query_correction;
-    }
-#endif
-#else
-    batch_distance(pointers.data(), query.data(), vector_count,
-                   encoded_dimension, actual.data(), nullptr);
-#endif
     EXPECT_EQ(expected, actual) << "dimension=" << original_dimension;
   }
 }
@@ -271,12 +248,6 @@ TEST(UniformUint8Metric, ExactRawQueryBatchMatchesScalarDistance) {
       pointers[i] = records[i].data();
       expected[i] =
           ScalarRawQueryReference(records[i], query, original_dimension);
-#if !ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
-      if (original_dimension <= 8192) {
-        expected[i] -= actual_query_tail;
-      }
-#endif
-
       float scalar_actual = 0.0f;
       distance(records[i].data(), query.data(), encoded_dimension,
                &scalar_actual);
@@ -349,15 +320,9 @@ TEST(UniformUint8Metric, ExtraValuesQueryDistanceMatchesInlineRecordExactly) {
   std::vector<float> inline_scores(vector_count, 0.0f);
   std::vector<float> extra_values_scores(vector_count, 0.0f);
   std::vector<float> expected_distances(vector_count, 0.0f);
-  int32_t query_correction = 0;
-  std::memcpy(&query_correction, query.data() + original_dimension,
-              sizeof(query_correction));
   for (size_t i = 0; i < vector_count; ++i) {
     expected_distances[i] =
         ScalarRawQueryReference(records[i], query, original_dimension);
-#if !ZVEC_UNIFORM_UINT8_EXACT_QUERY_DISTANCE
-    expected_distances[i] -= query_correction;
-#endif
   }
   batch_distance(inline_vectors.data(), query.data(), vector_count,
                  encoded_dimension, inline_scores.data(), nullptr);

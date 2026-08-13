@@ -87,6 +87,14 @@ struct IndexMetric : public IndexModule {
     return nullptr;
   }
 
+  //! Retrieve a batch distance function whose query is already in the stored
+  //! record representation. Most metrics use the same representation for
+  //! stored vectors and queries. Asymmetric metrics may override this for
+  //! construction paths that deliberately compare stored records directly.
+  virtual MatrixBatchDistance stored_batch_distance(void) const {
+    return batch_distance();
+  }
+
   //! Number of trailing per-record bytes exposed through extra-values
   //! pointers by supporting storage backends.
   virtual size_t extra_values_size_per_vector(void) const {

@@ -602,6 +602,7 @@ class VamanaIndexParam(VectorIndexParam):
             reference index. ``DataType.UNDEFINED`` inherits the vector field.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
         two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is False.
+        use_bulk_build (bool): Enable the optimized Vamana construction pipeline. Default is True.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
 
     Examples:
@@ -624,6 +625,7 @@ class VamanaIndexParam(VectorIndexParam):
         build_prefetch_offset: typing.SupportsInt = 16,
         build_prefetch_lines: typing.SupportsInt = 4,
         flat_data_type: _zvec.typing.DataType = ...,
+        use_bulk_build: bool = True,
     ) -> None: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -655,6 +657,9 @@ class VamanaIndexParam(VectorIndexParam):
     @property
     def two_pass_build(self) -> bool:
         """bool: Whether full-graph two-pass Vamana refinement is enabled."""
+    @property
+    def use_bulk_build(self) -> bool:
+        """bool: Whether the optimized Vamana construction pipeline is used."""
 
 class VamanaQueryParam(QueryParam):
     """

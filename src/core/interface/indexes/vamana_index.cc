@@ -53,6 +53,8 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
                             param_.use_contiguous_memory);
   proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
                             param_.two_pass_build);
+  proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_USE_BULK_BUILD,
+                            param_.use_bulk_build);
   proxima_index_params_.set(
       core::PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE,
       static_cast<uint32_t>(param_.reverse_prune_batch_size));

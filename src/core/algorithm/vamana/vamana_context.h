@@ -236,6 +236,12 @@ class VamanaContext : public IndexContext {
   inline bool build_fast_search() const {
     return build_fast_search_;
   }
+  inline void set_build_optimization_enabled(bool enabled) {
+    build_optimization_enabled_ = enabled;
+  }
+  inline bool build_optimization_enabled() const {
+    return build_optimization_enabled_;
+  }
   inline void set_reverse_prune_batch_size(uint32_t v) {
     reverse_prune_batch_size_ = std::max(1U, v);
   }
@@ -364,6 +370,7 @@ class VamanaContext : public IndexContext {
   uint32_t po_{VamanaEntity::kDefaultBuildPrefetchOffset};
   uint32_t pl_{VamanaEntity::kDefaultBuildPrefetchLines};
   uint32_t reverse_prune_batch_size_{1};
+  bool build_optimization_enabled_{true};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
   size_t max_scan_limit_{VamanaEntity::kDefaultMaxScanLimit};
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};

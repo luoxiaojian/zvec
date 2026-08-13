@@ -463,121 +463,123 @@ TEST_F(VamanaStreamerTest, TestContiguousMemory) {
 TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
   constexpr uint32_t kVectorCount = 96;
 
-  for (bool two_pass_build : {false, true}) {
-    ailego::Params extra;
-    extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
-    extra.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass_build);
-    extra.set(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE, 8U);
-    extra.set(PARAM_VAMANA_STREAMER_PO, 7U);
-    extra.set(PARAM_VAMANA_STREAMER_PL, 2U);
-    extra.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 16U);
-    extra.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 32U);
-    extra.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
-    extra.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
-    auto streamer = CreateVamanaStreamer(extra);
-    ASSERT_NE(nullptr, streamer);
+  for (bool use_bulk_build : {false, true}) {
+    for (bool two_pass_build : {false, true}) {
+      ailego::Params extra;
+      extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+      extra.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass_build);
+      extra.set(PARAM_VAMANA_STREAMER_USE_BULK_BUILD, use_bulk_build);
+      extra.set(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE, 8U);
+      extra.set(PARAM_VAMANA_STREAMER_PO, 7U);
+      extra.set(PARAM_VAMANA_STREAMER_PL, 2U);
+      extra.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 16U);
+      extra.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 32U);
+      extra.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
+      extra.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+      auto streamer = CreateVamanaStreamer(extra);
+      ASSERT_NE(nullptr, streamer);
 
-    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
-    ASSERT_NE(nullptr, storage);
-    ailego::Params stg_params;
-    ASSERT_EQ(0, storage->init(stg_params));
-    const std::string path =
-        dir_ + (two_pass_build ? "BulkTwoPass.index" : "BulkOnePass.index");
-    ASSERT_EQ(0, storage->open(path, true));
-    ASSERT_EQ(0, streamer->open(storage));
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_NE(nullptr, storage);
+      ailego::Params stg_params;
+      ASSERT_EQ(0, storage->init(stg_params));
+      const std::string path =
+          dir_ + (use_bulk_build ? "BulkEnabled" : "BulkDisabled") +
+          (two_pass_build ? "TwoPass.index" : "OnePass.index");
+      ASSERT_EQ(0, storage->open(path, true));
+      ASSERT_EQ(0, streamer->open(storage));
 
-    // Empty + contiguous is selected automatically. During this phase Add
-    // stores records only; finalize_build performs the deferred graph pass.
-    ASSERT_EQ(0, streamer->begin_bulk_build());
-    auto add_ctx = streamer->create_context();
-    ASSERT_TRUE(!!add_ctx);
-    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDim);
-    NumericalVector<float> vec(kDim);
-    for (uint32_t i = 0; i < kVectorCount; ++i) {
-      for (size_t d = 0; d < kDim; ++d) {
-        vec[d] = static_cast<float>((i * 17 + d * 13) % 101);
+      // Empty + contiguous is selected automatically. During this phase Add
+      // stores records only; finalize_build performs the deferred graph pass.
+      ASSERT_EQ(0, streamer->begin_bulk_build());
+      auto add_ctx = streamer->create_context();
+      ASSERT_TRUE(!!add_ctx);
+      IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDim);
+      NumericalVector<float> vec(kDim);
+      for (uint32_t i = 0; i < kVectorCount; ++i) {
+        for (size_t d = 0; d < kDim; ++d) {
+          vec[d] = static_cast<float>((i * 17 + d * 13) % 101);
+        }
+        ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, add_ctx));
       }
-      ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, add_ctx));
-    }
-    ASSERT_EQ(0, streamer->finalize_build());
+      ASSERT_EQ(0, streamer->finalize_build());
 
-    uint32_t bulk_build_used = 0;
-    ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_build_used",
-                                                &bulk_build_used));
-#if ZVEC_VAMANA_AUTO_BULK_BUILD
-    EXPECT_EQ(1U, bulk_build_used);
-#else
-    EXPECT_EQ(0U, bulk_build_used);
-#endif
-    uint32_t bulk_fast_search_used = 0;
-    ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_fast_search_used",
-                                                &bulk_fast_search_used));
-#if ZVEC_VAMANA_AUTO_BULK_BUILD
-    EXPECT_EQ(1U, bulk_fast_search_used);
-#else
-    EXPECT_EQ(0U, bulk_fast_search_used);
-#endif
-    uint32_t build_prefetch_offset = 0;
-    ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_offset",
-                                                &build_prefetch_offset));
-    EXPECT_EQ(7U, build_prefetch_offset);
-    uint32_t build_prefetch_lines = 0;
-    ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_lines",
-                                                &build_prefetch_lines));
-    EXPECT_EQ(2U, build_prefetch_lines);
-    uint32_t refine_pass_count = 0;
-    ASSERT_TRUE(streamer->stats().get_attribute("vamana_refine_pass_count",
-                                                &refine_pass_count));
-    EXPECT_EQ(two_pass_build ? 1U : 0U, refine_pass_count);
+      uint32_t bulk_build_used = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute("vamana_bulk_build_used",
+                                                  &bulk_build_used));
+      EXPECT_EQ(use_bulk_build ? 1U : 0U, bulk_build_used);
+      uint32_t bulk_fast_search_used = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute(
+          "vamana_bulk_fast_search_used", &bulk_fast_search_used));
+      EXPECT_EQ(use_bulk_build ? 1U : 0U, bulk_fast_search_used);
+      uint32_t configured_use_bulk_build = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute("vamana_use_bulk_build",
+                                                  &configured_use_bulk_build));
+      EXPECT_EQ(use_bulk_build ? 1U : 0U, configured_use_bulk_build);
+      uint32_t build_prefetch_offset = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute(
+          "vamana_build_prefetch_offset", &build_prefetch_offset));
+      EXPECT_EQ(7U, build_prefetch_offset);
+      uint32_t build_prefetch_lines = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute("vamana_build_prefetch_lines",
+                                                  &build_prefetch_lines));
+      EXPECT_EQ(2U, build_prefetch_lines);
+      uint32_t refine_pass_count = 0;
+      ASSERT_TRUE(streamer->stats().get_attribute("vamana_refine_pass_count",
+                                                  &refine_pass_count));
+      EXPECT_EQ(two_pass_build ? 1U : 0U, refine_pass_count);
 
-    auto expect_top1 = [&](uint32_t key, const NumericalVector<float> &query) {
-      auto search_ctx = streamer->create_context();
-      ASSERT_TRUE(!!search_ctx);
-      search_ctx->set_topk(1);
-      ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, search_ctx));
-      ASSERT_FALSE(search_ctx->result().empty());
-      EXPECT_EQ(key, search_ctx->result()[0].key());
-    };
+      auto expect_top1 = [&](uint32_t key,
+                             const NumericalVector<float> &query) {
+        auto search_ctx = streamer->create_context();
+        ASSERT_TRUE(!!search_ctx);
+        search_ctx->set_topk(1);
+        ASSERT_EQ(0, streamer->search_impl(query.data(), qmeta, search_ctx));
+        ASSERT_FALSE(search_ctx->result().empty());
+        EXPECT_EQ(key, search_ctx->result()[0].key());
+      };
 
-    for (uint32_t key : {0U, 17U, kVectorCount - 1}) {
-      for (size_t d = 0; d < kDim; ++d) {
-        vec[d] = static_cast<float>((key * 17 + d * 13) % 101);
-      }
-      expect_top1(key, vec);
-    }
-
-    // Once finalized, both ordinary Add and a later ineligible bulk-begin
-    // request must use normal graph insertion rather than merely storing data.
-    for (uint32_t key : {kVectorCount, kVectorCount + 1}) {
-      if (key == kVectorCount + 1) {
-        ASSERT_EQ(0, streamer->begin_bulk_build());
-      }
-      for (size_t d = 0; d < kDim; ++d) {
-        vec[d] = static_cast<float>(1000 + key * 7 + d);
-      }
-      ASSERT_EQ(0, streamer->add_impl(key, vec.data(), qmeta, add_ctx));
-      expect_top1(key, vec);
-    }
-
-    ASSERT_EQ(0, streamer->flush(0UL));
-    ASSERT_EQ(0, streamer->close());
-
-    // Reopening proves that all construction-only overflow rows were pruned
-    // back to max_degree before the graph was persisted.
-    ASSERT_EQ(0, streamer->open(storage));
-    for (uint32_t key : {0U, 17U, kVectorCount - 1, kVectorCount + 1}) {
-      if (key < kVectorCount) {
+      for (uint32_t key : {0U, 17U, kVectorCount - 1}) {
         for (size_t d = 0; d < kDim; ++d) {
           vec[d] = static_cast<float>((key * 17 + d * 13) % 101);
         }
-      } else {
+        expect_top1(key, vec);
+      }
+
+      // Once finalized, both ordinary Add and a later ineligible bulk-begin
+      // request must use normal graph insertion rather than merely storing
+      // data.
+      for (uint32_t key : {kVectorCount, kVectorCount + 1}) {
+        if (key == kVectorCount + 1) {
+          ASSERT_EQ(0, streamer->begin_bulk_build());
+        }
         for (size_t d = 0; d < kDim; ++d) {
           vec[d] = static_cast<float>(1000 + key * 7 + d);
         }
+        ASSERT_EQ(0, streamer->add_impl(key, vec.data(), qmeta, add_ctx));
+        expect_top1(key, vec);
       }
-      expect_top1(key, vec);
+
+      ASSERT_EQ(0, streamer->flush(0UL));
+      ASSERT_EQ(0, streamer->close());
+
+      // Reopening proves that all construction-only overflow rows were pruned
+      // back to max_degree before the graph was persisted.
+      ASSERT_EQ(0, streamer->open(storage));
+      for (uint32_t key : {0U, 17U, kVectorCount - 1, kVectorCount + 1}) {
+        if (key < kVectorCount) {
+          for (size_t d = 0; d < kDim; ++d) {
+            vec[d] = static_cast<float>((key * 17 + d * 13) % 101);
+          }
+        } else {
+          for (size_t d = 0; d < kDim; ++d) {
+            vec[d] = static_cast<float>(1000 + key * 7 + d);
+          }
+        }
+        expect_top1(key, vec);
+      }
+      ASSERT_EQ(0, streamer->close());
     }
-    ASSERT_EQ(0, streamer->close());
   }
 }
 

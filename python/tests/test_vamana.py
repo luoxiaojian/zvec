@@ -65,6 +65,7 @@ DEFAULT_SATURATE_GRAPH = False
 DEFAULT_REVERSE_PRUNE_BATCH_SIZE = 1
 DEFAULT_BUILD_PREFETCH_OFFSET = 16
 DEFAULT_BUILD_PREFETCH_LINES = 4
+DEFAULT_USE_BULK_BUILD = True
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,7 @@ def _build_schema(
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
     build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
     build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
+    use_bulk_build: bool = DEFAULT_USE_BULK_BUILD,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -116,6 +118,7 @@ def _build_schema(
                     reverse_prune_batch_size=reverse_prune_batch_size,
                     build_prefetch_offset=build_prefetch_offset,
                     build_prefetch_lines=build_prefetch_lines,
+                    use_bulk_build=use_bulk_build,
                 ),
             ),
         ],
@@ -176,6 +179,7 @@ class TestVamanaIndexParamSurface:
         )
         assert param.build_prefetch_offset == DEFAULT_BUILD_PREFETCH_OFFSET
         assert param.build_prefetch_lines == DEFAULT_BUILD_PREFETCH_LINES
+        assert param.use_bulk_build is DEFAULT_USE_BULK_BUILD
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.flat_data_type == DataType.UNDEFINED
 
@@ -193,6 +197,7 @@ class TestVamanaIndexParamSurface:
             build_prefetch_offset=32,
             build_prefetch_lines=2,
             flat_data_type=DataType.VECTOR_FP16,
+            use_bulk_build=False,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -207,6 +212,7 @@ class TestVamanaIndexParamSurface:
         assert param.build_prefetch_lines == 2
         assert param.quantize_type == QuantizeType.INT8
         assert param.flat_data_type == DataType.VECTOR_FP16
+        assert param.use_bulk_build is False
 
     def test_to_dict_includes_all_fields(self):
         param = VamanaIndexParam(
@@ -222,6 +228,7 @@ class TestVamanaIndexParamSurface:
             build_prefetch_offset=0,
             build_prefetch_lines=0,
             flat_data_type=DataType.VECTOR_FP16,
+            use_bulk_build=False,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -237,6 +244,7 @@ class TestVamanaIndexParamSurface:
         assert data["build_prefetch_lines"] == 0
         assert data["quantize_type"] == "FP16"
         assert data["flat_data_type"] == "VECTOR_FP16"
+        assert data["use_bulk_build"] is False
 
     def test_repr_contains_key_fields(self):
         text = repr(
@@ -250,6 +258,7 @@ class TestVamanaIndexParamSurface:
                 reverse_prune_batch_size=8,
                 build_prefetch_offset=64,
                 build_prefetch_lines=1,
+                use_bulk_build=False,
             )
         )
         # Spot-check the most diagnostic fields are rendered.
@@ -263,6 +272,7 @@ class TestVamanaIndexParamSurface:
         assert "reverse_prune_batch_size" in text and "8" in text
         assert "build_prefetch_offset" in text and "64" in text
         assert "build_prefetch_lines" in text and "1" in text
+        assert "use_bulk_build" in text and "false" in text
 
     @pytest.mark.parametrize(
         "field, kwargs",
@@ -276,6 +286,7 @@ class TestVamanaIndexParamSurface:
             ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
             ("build_prefetch_offset", dict(build_prefetch_offset=24)),
             ("build_prefetch_lines", dict(build_prefetch_lines=3)),
+            ("use_bulk_build", dict(use_bulk_build=False)),
             ("flat_data_type", dict(flat_data_type=DataType.VECTOR_FP16)),
         ],
     )
@@ -302,6 +313,7 @@ class TestVamanaIndexParamSurface:
             build_prefetch_offset=48,
             build_prefetch_lines=3,
             flat_data_type=DataType.VECTOR_FP16,
+            use_bulk_build=False,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -317,6 +329,7 @@ class TestVamanaIndexParamSurface:
         assert restored.build_prefetch_lines == 3
         assert restored.quantize_type == QuantizeType.INT8
         assert restored.flat_data_type == DataType.VECTOR_FP16
+        assert restored.use_bulk_build is False
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
 
@@ -450,6 +463,7 @@ class TestVamanaEndToEnd:
             reverse_prune_batch_size=8,
             build_prefetch_offset=0,
             build_prefetch_lines=0,
+            use_bulk_build=False,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
@@ -467,6 +481,7 @@ class TestVamanaEndToEnd:
             assert ip.reverse_prune_batch_size == 8
             assert ip.build_prefetch_offset == 0
             assert ip.build_prefetch_lines == 0
+            assert ip.use_bulk_build is False
         finally:
             coll.destroy()
 
@@ -530,7 +545,12 @@ class TestVamanaEndToEnd:
         finally:
             coll.destroy()
 
-    def test_optimize_then_query(self, tmp_path_factory, collection_option, rng):
+    @pytest.mark.parametrize(
+        "use_bulk_build", [False, True], ids=["historical", "optimized"]
+    )
+    def test_optimize_then_query(
+        self, tmp_path_factory, collection_option, rng, use_bulk_build
+    ):
         """The persisted Vamana segment built by ``optimize()`` must serve
         queries correctly.
 
@@ -540,8 +560,9 @@ class TestVamanaEndToEnd:
         ``vamana_streamer.cc`` was never linked in. This test pins down the
         regression.
         """
-        schema = _build_schema("vamana_e2e_optimize")
-        path = tmp_path_factory.mktemp("zvec") / "vamana_e2e_optimize"
+        name = f"vamana_e2e_optimize_{int(use_bulk_build)}"
+        schema = _build_schema(name, use_bulk_build=use_bulk_build)
+        path = tmp_path_factory.mktemp("zvec") / name
         coll = zvec.create_and_open(
             path=str(path), schema=schema, option=collection_option
         )
