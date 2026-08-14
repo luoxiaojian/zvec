@@ -222,6 +222,11 @@ ailego::JsonObject VamanaIndexParam::SerializeToJsonObject(
     json_obj.set("build_prefetch_lines",
                  ailego::JsonValue(build_prefetch_lines));
   }
+  if (!omit_empty_value ||
+      use_optimized_build != kDefaultVamanaUseOptimizedBuild) {
+    json_obj.set("use_optimized_build",
+                 ailego::JsonValue(use_optimized_build));
+  }
   return json_obj;
 }
 
@@ -266,6 +271,7 @@ bool VamanaIndexParam::DeserializeFromJsonObject(
   DESERIALIZE_VALUE_FIELD(json_obj, reverse_prune_batch_size);
   DESERIALIZE_VALUE_FIELD(json_obj, build_prefetch_offset);
   DESERIALIZE_VALUE_FIELD(json_obj, build_prefetch_lines);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_optimized_build);
 
   return true;
 }

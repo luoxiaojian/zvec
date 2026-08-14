@@ -583,7 +583,9 @@ class VamanaIndexParams : public VectorIndexParams {
       int build_prefetch_offset =
           core_interface::kDefaultVamanaBuildPrefetchOffset,
       int build_prefetch_lines =
-          core_interface::kDefaultVamanaBuildPrefetchLines)
+          core_interface::kDefaultVamanaBuildPrefetchLines,
+      bool use_optimized_build =
+          core_interface::kDefaultVamanaUseOptimizedBuild)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
@@ -595,7 +597,8 @@ class VamanaIndexParams : public VectorIndexParams {
         use_flat_contiguous_memory_(use_flat_contiguous_memory),
         reverse_prune_batch_size_(reverse_prune_batch_size),
         build_prefetch_offset_(build_prefetch_offset),
-        build_prefetch_lines_(build_prefetch_lines) {}
+        build_prefetch_lines_(build_prefetch_lines),
+        use_optimized_build_(use_optimized_build) {}
 
   VamanaIndexParams(MetricType metric_type, int max_degree,
                     int search_list_size, float alpha, bool saturate_graph,
@@ -613,7 +616,7 @@ class VamanaIndexParams : public VectorIndexParams {
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
         use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_,
         use_flat_contiguous_memory_, reverse_prune_batch_size_,
-        build_prefetch_offset_, build_prefetch_lines_);
+        build_prefetch_offset_, build_prefetch_lines_, use_optimized_build_);
   }
 
   std::string to_string() const override {
@@ -631,7 +634,9 @@ class VamanaIndexParams : public VectorIndexParams {
         << (use_flat_contiguous_memory_ ? "true" : "false")
         << ",reverse_prune_batch_size:" << reverse_prune_batch_size_
         << ",build_prefetch_offset:" << build_prefetch_offset_
-        << ",build_prefetch_lines:" << build_prefetch_lines_ << "}";
+        << ",build_prefetch_lines:" << build_prefetch_lines_
+        << ",use_optimized_build:"
+        << (use_optimized_build_ ? "true" : "false") << "}";
     return oss.str();
   }
 
@@ -651,7 +656,8 @@ class VamanaIndexParams : public VectorIndexParams {
            use_flat_contiguous_memory_ == rhs.use_flat_contiguous_memory_ &&
            reverse_prune_batch_size_ == rhs.reverse_prune_batch_size_ &&
            build_prefetch_offset_ == rhs.build_prefetch_offset_ &&
-           build_prefetch_lines_ == rhs.build_prefetch_lines_;
+           build_prefetch_lines_ == rhs.build_prefetch_lines_ &&
+           use_optimized_build_ == rhs.use_optimized_build_;
   }
 
   int max_degree() const {
@@ -725,6 +731,13 @@ class VamanaIndexParams : public VectorIndexParams {
     build_prefetch_lines_ = build_prefetch_lines;
   }
 
+  bool use_optimized_build() const {
+    return use_optimized_build_;
+  }
+  void set_use_optimized_build(bool use_optimized_build) {
+    use_optimized_build_ = use_optimized_build;
+  }
+
   bool use_flat_contiguous_memory() const override {
     return use_flat_contiguous_memory_;
   }
@@ -747,6 +760,7 @@ class VamanaIndexParams : public VectorIndexParams {
   int reverse_prune_batch_size_;
   int build_prefetch_offset_;
   int build_prefetch_lines_;
+  bool use_optimized_build_;
 };
 
 /*

@@ -126,7 +126,10 @@ VamanaIndexParams::OPtr ProtoConverter::FromPb(
           : core_interface::kDefaultVamanaBuildPrefetchOffset,
       params_pb.has_build_prefetch_lines()
           ? params_pb.build_prefetch_lines()
-          : core_interface::kDefaultVamanaBuildPrefetchLines);
+          : core_interface::kDefaultVamanaBuildPrefetchLines,
+      params_pb.has_use_optimized_build()
+          ? params_pb.use_optimized_build()
+          : core_interface::kDefaultVamanaUseOptimizedBuild);
 }
 
 proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
@@ -147,6 +150,7 @@ proto::VamanaIndexParams ProtoConverter::ToPb(const VamanaIndexParams *params) {
   params_pb.set_reverse_prune_batch_size(params->reverse_prune_batch_size());
   params_pb.set_build_prefetch_offset(params->build_prefetch_offset());
   params_pb.set_build_prefetch_lines(params->build_prefetch_lines());
+  params_pb.set_use_optimized_build(params->use_optimized_build());
   return params_pb;
 }
 

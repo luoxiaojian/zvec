@@ -198,6 +198,7 @@ class VamanaStreamer : public IndexStreamer {
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
   bool two_pass_build_enabled_{false};
+  bool use_optimized_build_{true};
   bool bulk_build_active_{false};
   std::atomic<bool> build_finalized_{false};
 

@@ -80,6 +80,8 @@ static const std::string PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE(
     "proxima.vamana.streamer.two_pass_build_enable");
 static const std::string PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE(
     "proxima.vamana.streamer.reverse_prune_batch_size");
+static const std::string PARAM_VAMANA_STREAMER_USE_OPTIMIZED_BUILD(
+    "proxima.vamana.streamer.use_optimized_build");
 
 }  // namespace core
 }  // namespace zvec

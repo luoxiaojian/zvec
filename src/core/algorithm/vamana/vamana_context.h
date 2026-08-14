@@ -212,6 +212,12 @@ class VamanaContext : public IndexContext {
   inline uint32_t reverse_prune_batch_size() const {
     return reverse_prune_batch_size_;
   }
+  inline void set_use_batch_prune_distance(bool enabled) {
+    use_batch_prune_distance_ = enabled;
+  }
+  inline bool use_batch_prune_distance() const {
+    return use_batch_prune_distance_;
+  }
   inline void set_max_scan_ratio(float v) {
     max_scan_ratio_ = v;
   }
@@ -346,6 +352,7 @@ class VamanaContext : public IndexContext {
   uint32_t bruteforce_threshold_{};
   bool fetch_vector_{false};
   bool build_fast_search_{false};
+  bool use_batch_prune_distance_{true};
   uint32_t type_{kUnknownContext};
   std::string preprocess_buffer_;
 

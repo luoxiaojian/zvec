@@ -822,6 +822,7 @@ TEST(IndexInterface, Serialize) {
                      .WithReversePruneBatchSize(8)
                      .WithBuildPrefetchOffset(32)
                      .WithBuildPrefetchLines(2)
+                     .WithUseOptimizedBuild(false)
                      .Build();
 
     std::cout << "vamana index -- omit=true: " << param->SerializeToJson(true)
@@ -846,6 +847,7 @@ TEST(IndexInterface, Serialize) {
     ASSERT_EQ(8, vamana_param->reverse_prune_batch_size);
     ASSERT_EQ(32, vamana_param->build_prefetch_offset);
     ASSERT_EQ(2, vamana_param->build_prefetch_lines);
+    ASSERT_FALSE(vamana_param->use_optimized_build);
   }
 
   {

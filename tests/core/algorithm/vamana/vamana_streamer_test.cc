@@ -573,6 +573,84 @@ TEST_F(VamanaStreamerTest, TestAutomaticBulkBuildLifecycle) {
   }
 }
 
+TEST_F(VamanaStreamerTest, TestOptimizedBuildCompatibilityGuard) {
+  constexpr uint32_t kVectorCount = 96;
+
+  for (bool two_pass_build : {false, true}) {
+    ailego::Params extra;
+    extra.set(PARAM_VAMANA_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+    extra.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, two_pass_build);
+    extra.set(PARAM_VAMANA_STREAMER_USE_OPTIMIZED_BUILD, false);
+    // Deliberately request B's optimized values. The compatibility guard must
+    // override all construction-only knobs with X's behavior.
+    extra.set(PARAM_VAMANA_STREAMER_REVERSE_PRUNE_BATCH_SIZE, 8U);
+    extra.set(PARAM_VAMANA_STREAMER_PO, 7U);
+    extra.set(PARAM_VAMANA_STREAMER_PL, 2U);
+    extra.set(PARAM_VAMANA_STREAMER_MAX_DEGREE, 16U);
+    extra.set(PARAM_VAMANA_STREAMER_SEARCH_LIST_SIZE, 32U);
+    extra.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
+    extra.set(PARAM_VAMANA_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    auto streamer = CreateVamanaStreamer(extra);
+    ASSERT_NE(nullptr, streamer);
+
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ailego::Params stg_params;
+    ASSERT_EQ(0, storage->init(stg_params));
+    const std::string path =
+        dir_ + (two_pass_build ? "CompatTwoPass.index"
+                               : "CompatOnePass.index");
+    ASSERT_EQ(0, storage->open(path, true));
+    ASSERT_EQ(0, streamer->open(storage));
+
+    // begin_bulk_build remains a valid call, but construction is performed
+    // incrementally, exactly as it was before the automatic bulk-build path.
+    ASSERT_EQ(0, streamer->begin_bulk_build());
+    auto add_ctx = streamer->create_context();
+    ASSERT_TRUE(!!add_ctx);
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDim);
+    NumericalVector<float> vec(kDim);
+    for (uint32_t i = 0; i < kVectorCount; ++i) {
+      for (size_t d = 0; d < kDim; ++d) {
+        vec[d] = static_cast<float>((i * 17 + d * 13) % 101);
+      }
+      ASSERT_EQ(0, streamer->add_impl(i, vec.data(), qmeta, add_ctx));
+    }
+    ASSERT_EQ(0, streamer->finalize_build());
+
+    uint32_t value = 1;
+    ASSERT_TRUE(
+        streamer->stats().get_attribute("vamana_bulk_build_used", &value));
+    EXPECT_EQ(0U, value);
+    ASSERT_TRUE(streamer->stats().get_attribute(
+        "vamana_bulk_fast_search_used", &value));
+    EXPECT_EQ(0U, value);
+    ASSERT_TRUE(streamer->stats().get_attribute(
+        "vamana_use_optimized_build", &value));
+    EXPECT_EQ(0U, value);
+    ASSERT_TRUE(streamer->stats().get_attribute(
+        "vamana_build_prefetch_offset", &value));
+    EXPECT_EQ(8U, value);
+    ASSERT_TRUE(streamer->stats().get_attribute(
+        "vamana_build_prefetch_lines", &value));
+    EXPECT_EQ(0U, value);
+
+    auto search_ctx = streamer->create_context();
+    ASSERT_TRUE(!!search_ctx);
+    search_ctx->set_topk(1);
+    for (uint32_t key : {0U, 17U, kVectorCount - 1}) {
+      for (size_t d = 0; d < kDim; ++d) {
+        vec[d] = static_cast<float>((key * 17 + d * 13) % 101);
+      }
+      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, search_ctx));
+      ASSERT_FALSE(search_ctx->result().empty());
+      EXPECT_EQ(key, search_ctx->result()[0].key());
+    }
+
+    ASSERT_EQ(0, streamer->close());
+  }
+}
+
 TEST_F(VamanaStreamerTest, TestContiguousMultiThreadSearch) {
   constexpr size_t dim = 32;
   IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);

@@ -155,6 +155,9 @@ message VamanaIndexParams {
   // tracked because zero explicitly disables the corresponding prefetch.
   optional int32 build_prefetch_offset = 11;
   optional int32 build_prefetch_lines = 12;
+  // Gates the post-X construction optimizations as a group. Presence is
+  // tracked so schemas written before this field retain the optimized default.
+  optional bool use_optimized_build = 13;
 }
 
 message FtsIndexParams {

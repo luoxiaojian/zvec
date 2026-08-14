@@ -65,6 +65,7 @@ DEFAULT_SATURATE_GRAPH = False
 DEFAULT_REVERSE_PRUNE_BATCH_SIZE = 1
 DEFAULT_BUILD_PREFETCH_OFFSET = 16
 DEFAULT_BUILD_PREFETCH_LINES = 4
+DEFAULT_USE_OPTIMIZED_BUILD = True
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,7 @@ def _build_schema(
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
     build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
     build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
+    use_optimized_build: bool = DEFAULT_USE_OPTIMIZED_BUILD,
 ) -> CollectionSchema:
     """Create a simple schema with a single FP32 Vamana vector column."""
     return CollectionSchema(
@@ -112,6 +114,7 @@ def _build_schema(
                     reverse_prune_batch_size=reverse_prune_batch_size,
                     build_prefetch_offset=build_prefetch_offset,
                     build_prefetch_lines=build_prefetch_lines,
+                    use_optimized_build=use_optimized_build,
                 ),
             ),
         ],
@@ -172,6 +175,7 @@ class TestVamanaIndexParamSurface:
         )
         assert param.build_prefetch_offset == DEFAULT_BUILD_PREFETCH_OFFSET
         assert param.build_prefetch_lines == DEFAULT_BUILD_PREFETCH_LINES
+        assert param.use_optimized_build is DEFAULT_USE_OPTIMIZED_BUILD
         assert param.quantize_type == QuantizeType.UNDEFINED
 
     def test_custom_construction(self):
@@ -187,6 +191,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=8,
             build_prefetch_offset=32,
             build_prefetch_lines=2,
+            use_optimized_build=False,
         )
         assert param.type == IndexType.VAMANA
         assert param.metric_type == MetricType.COSINE
@@ -199,6 +204,7 @@ class TestVamanaIndexParamSurface:
         assert param.reverse_prune_batch_size == 8
         assert param.build_prefetch_offset == 32
         assert param.build_prefetch_lines == 2
+        assert param.use_optimized_build is False
         assert param.quantize_type == QuantizeType.INT8
 
     def test_to_dict_includes_all_fields(self):
@@ -214,6 +220,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=4,
             build_prefetch_offset=0,
             build_prefetch_lines=0,
+            use_optimized_build=False,
         )
         data = param.to_dict()
         assert data["type"] == "VAMANA"
@@ -227,6 +234,7 @@ class TestVamanaIndexParamSurface:
         assert data["reverse_prune_batch_size"] == 4
         assert data["build_prefetch_offset"] == 0
         assert data["build_prefetch_lines"] == 0
+        assert data["use_optimized_build"] is False
         assert data["quantize_type"] == "FP16"
 
     def test_repr_contains_key_fields(self):
@@ -241,6 +249,7 @@ class TestVamanaIndexParamSurface:
                 reverse_prune_batch_size=8,
                 build_prefetch_offset=64,
                 build_prefetch_lines=1,
+                use_optimized_build=False,
             )
         )
         # Spot-check the most diagnostic fields are rendered.
@@ -254,6 +263,7 @@ class TestVamanaIndexParamSurface:
         assert "reverse_prune_batch_size" in text and "8" in text
         assert "build_prefetch_offset" in text and "64" in text
         assert "build_prefetch_lines" in text and "1" in text
+        assert "use_optimized_build" in text and "false" in text
 
     @pytest.mark.parametrize(
         "field, kwargs",
@@ -267,6 +277,7 @@ class TestVamanaIndexParamSurface:
             ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
             ("build_prefetch_offset", dict(build_prefetch_offset=24)),
             ("build_prefetch_lines", dict(build_prefetch_lines=3)),
+            ("use_optimized_build", dict(use_optimized_build=False)),
         ],
     )
     def test_readonly_properties(self, field, kwargs):
@@ -291,6 +302,7 @@ class TestVamanaIndexParamSurface:
             reverse_prune_batch_size=8,
             build_prefetch_offset=48,
             build_prefetch_lines=3,
+            use_optimized_build=False,
         )
         restored = pickle.loads(pickle.dumps(original))
         assert restored.type == IndexType.VAMANA
@@ -304,6 +316,7 @@ class TestVamanaIndexParamSurface:
         assert restored.reverse_prune_batch_size == 8
         assert restored.build_prefetch_offset == 48
         assert restored.build_prefetch_lines == 3
+        assert restored.use_optimized_build is False
         assert restored.quantize_type == QuantizeType.INT8
         # to_dict equality is the strongest end-to-end equivalence we have.
         assert restored.to_dict() == original.to_dict()
@@ -428,6 +441,7 @@ class TestVamanaEndToEnd:
             reverse_prune_batch_size=8,
             build_prefetch_offset=0,
             build_prefetch_lines=0,
+            use_optimized_build=False,
         )
         path = tmp_path_factory.mktemp("zvec") / "vamana_schema_rt"
         coll = zvec.create_and_open(
@@ -445,6 +459,7 @@ class TestVamanaEndToEnd:
             assert ip.reverse_prune_batch_size == 8
             assert ip.build_prefetch_offset == 0
             assert ip.build_prefetch_lines == 0
+            assert ip.use_optimized_build is False
         finally:
             coll.destroy()
 
@@ -548,6 +563,33 @@ class TestVamanaEndToEnd:
                 f"post-optimize top-1 should still be probe id, got {ids_post}"
             )
             assert len(ids_post) == TOPK
+        finally:
+            coll.destroy()
+
+    def test_compatibility_build_int8_optimize_then_query(
+        self, tmp_path_factory, collection_option, rng
+    ):
+        """The public guard reaches the GIST-like record-INT8 build path."""
+        schema = _build_schema(
+            "vamana_compat_int8",
+            quantize_type=QuantizeType.INT8,
+            use_contiguous_memory=True,
+            use_optimized_build=False,
+        )
+        path = tmp_path_factory.mktemp("zvec") / "vamana_compat_int8"
+        coll = zvec.create_and_open(
+            path=str(path), schema=schema, option=collection_option
+        )
+        try:
+            docs = _generate_docs(rng)
+            for result in coll.insert(docs=docs):
+                assert result.ok()
+
+            query_vec = docs[5].vector("dense")
+            coll.optimize()
+            ids = _query_topk(coll, query_vec)
+            assert ids[0] == "5"
+            assert len(ids) == TOPK
         finally:
             coll.destroy()
 

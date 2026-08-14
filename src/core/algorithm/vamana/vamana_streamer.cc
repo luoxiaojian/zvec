@@ -73,6 +73,17 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
              &use_contiguous_memory_);
   params.get(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
              &two_pass_build_enabled_);
+  params.get(PARAM_VAMANA_STREAMER_USE_OPTIMIZED_BUILD,
+             &use_optimized_build_);
+
+  // The compatibility mode deliberately restores the construction behavior
+  // used by historical benchmark X. Query-time prefetch is configured on the
+  // query context and is unaffected by these construction-only values.
+  if (!use_optimized_build_) {
+    reverse_prune_batch_size_ = 1;
+    build_prefetch_offset_ = 8;
+    build_prefetch_lines_ = 0;
+  }
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -121,12 +132,13 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
       "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u "
       "reversePruneBatchSize=%u buildPrefetchOffset=%u "
-      "buildPrefetchLines=%u",
+      "buildPrefetchLines=%u useOptimizedBuild=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
       get_vector_enabled_, force_padding_topk_enabled_, two_pass_build_enabled_,
-      reverse_prune_batch_size_, build_prefetch_offset_, build_prefetch_lines_);
+      reverse_prune_batch_size_, build_prefetch_offset_, build_prefetch_lines_,
+      use_optimized_build_);
 
   const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
   bulk_build_active_ = false;
@@ -137,6 +149,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
                                    build_prefetch_offset_);
   stats_.mutable_attributes()->set("vamana_build_prefetch_lines",
                                    build_prefetch_lines_);
+  stats_.mutable_attributes()->set("vamana_use_optimized_build",
+                                   static_cast<uint32_t>(use_optimized_build_));
   stats_.mutable_attributes()->set("vamana_refine_pass_count", uint32_t{0});
   stats_.mutable_attributes()->set("vamana_build_pass_count", uint32_t{1});
   stats_.mutable_attributes()->set("vamana_initial_build_alpha",
@@ -178,6 +192,7 @@ int VamanaStreamer::cleanup(void) {
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
   two_pass_build_enabled_ = false;
+  use_optimized_build_ = true;
   bulk_build_active_ = false;
   build_finalized_.store(false);
 
@@ -461,6 +476,10 @@ int VamanaStreamer::begin_bulk_build() {
   // target in normal streaming mode, including a second merge into an index
   // that previously used the bulk path.
   bulk_build_active_ = false;
+  if (!use_optimized_build_) {
+    LOG_INFO("Vamana optimized bulk build disabled; using incremental build");
+    return 0;
+  }
   if (entity_->storage_mode() != VamanaStorageMode::kContiguous ||
       entity_->doc_cnt() != 0) {
     return 0;
@@ -507,6 +526,7 @@ int VamanaStreamer::build_bulk_graph_locked() {
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
   ctx->set_build_fast_search(true);
+  ctx->set_use_batch_prune_distance(use_optimized_build_);
   ctx->set_reverse_prune_batch_size(reverse_prune_batch_size_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
@@ -609,6 +629,7 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
   ctx->set_build_fast_search(bulk_build);
+  ctx->set_use_batch_prune_distance(use_optimized_build_);
   // Construction-only overflow storage exists only in bulk contiguous mode.
   // Keep streaming and mmap construction on the immediate-prune path.
   ctx->set_reverse_prune_batch_size(
@@ -673,6 +694,7 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
   ctx->set_ef(ef_);
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
+  ctx->set_use_batch_prune_distance(use_optimized_build_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);
@@ -714,6 +736,7 @@ int VamanaStreamer::update_context(VamanaContext *ctx) const {
   ctx->set_max_scan_ratio(max_scan_ratio_);
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
+  ctx->set_use_batch_prune_distance(use_optimized_build_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
   return ctx->update_context(VamanaContext::kStreamerContext, meta_, metric_,
                              entity, magic_);

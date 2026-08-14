@@ -510,6 +510,8 @@ class ProximaEngineHelper {
             db_index_params->build_prefetch_offset());
         index_param_builder->WithBuildPrefetchLines(
             db_index_params->build_prefetch_lines());
+        index_param_builder->WithUseOptimizedBuild(
+            db_index_params->use_optimized_build());
         // db_index_params->use_id_map() is intentionally ignored here:
         // db ensures id is consecutive (see _build_common_index_param), so
         // the engine-level use_id_map is forced to false in the common

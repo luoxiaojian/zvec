@@ -61,6 +61,8 @@ int VamanaIndex::CreateAndInitStreamer(const BaseIndexParam &param) {
       static_cast<uint32_t>(param_.build_prefetch_offset));
   proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_PL,
                             static_cast<uint32_t>(param_.build_prefetch_lines));
+  proxima_index_params_.set(core::PARAM_VAMANA_STREAMER_USE_OPTIMIZED_BUILD,
+                            param_.use_optimized_build);
 
   streamer_ = core::IndexFactory::CreateStreamer("VamanaStreamer");
 

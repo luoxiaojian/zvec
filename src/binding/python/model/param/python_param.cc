@@ -640,6 +640,10 @@ Attributes:
     build_prefetch_lines (int): Number of cache lines to prefetch per vector
         during construction. ``0`` means all cache lines occupied by the
         vector body. Valid range is 0 to 256. Default is 4.
+    use_optimized_build (bool): Enable the optimized bulk-build, fast
+        construction search, batched reverse-prune, tuned construction
+        prefetch, and batched RobustPrune distance path. Set to ``False`` to
+        reproduce the pre-optimization construction path. Default is True.
     quantize_type (QuantizeType): Optional quantization type for vector
         compression (e.g., FP16, INT8). Default is ``QuantizeType.UNDEFINED``
         to disable quantization.
@@ -656,7 +660,7 @@ Examples:
 )pbdoc");
   vamana_params
       .def(py::init<MetricType, int, int, float, bool, bool, bool, bool,
-                    QuantizeType, bool, int, int, int>(),
+                    QuantizeType, bool, int, int, int, bool>(),
            py::arg("metric_type") = MetricType::IP,
            py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
            py::arg("search_list_size") =
@@ -673,7 +677,9 @@ Examples:
            py::arg("build_prefetch_offset") =
                core_interface::kDefaultVamanaBuildPrefetchOffset,
            py::arg("build_prefetch_lines") =
-               core_interface::kDefaultVamanaBuildPrefetchLines)
+               core_interface::kDefaultVamanaBuildPrefetchLines,
+           py::arg("use_optimized_build") =
+               core_interface::kDefaultVamanaUseOptimizedBuild)
       .def_property_readonly(
           "max_degree", &VamanaIndexParams::max_degree,
           "int: Maximum out-degree (R) of every node in the Vamana graph.")
@@ -714,6 +720,10 @@ Examples:
       .def_property_readonly(
           "build_prefetch_lines", &VamanaIndexParams::build_prefetch_lines,
           "int: Number of cache lines prefetched per construction vector.")
+      .def_property_readonly(
+          "use_optimized_build", &VamanaIndexParams::use_optimized_build,
+          "bool: Whether the grouped Vamana construction optimizations are "
+          "enabled.")
       .def(
           "to_dict",
           [](const VamanaIndexParams &self) -> py::dict {
@@ -732,6 +742,7 @@ Examples:
             dict["reverse_prune_batch_size"] = self.reverse_prune_batch_size();
             dict["build_prefetch_offset"] = self.build_prefetch_offset();
             dict["build_prefetch_lines"] = self.build_prefetch_lines();
+            dict["use_optimized_build"] = self.use_optimized_build();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             return dict;
@@ -766,6 +777,9 @@ Examples:
                     std::to_string(self.build_prefetch_offset()) +
                     ", \"build_prefetch_lines\":" +
                     std::to_string(self.build_prefetch_lines()) +
+                    ", \"use_optimized_build\":" +
+                    std::string(self.use_optimized_build() ? "true"
+                                                           : "false") +
                     ", \"quantize_type\":\"" +
                     quantize_type_to_string(self.quantize_type()) + "\"}";
            })
@@ -778,11 +792,12 @@ Examples:
                 self.two_pass_build(), self.quantize_type(),
                 self.use_flat_contiguous_memory(),
                 self.reverse_prune_batch_size(), self.build_prefetch_offset(),
-                self.build_prefetch_lines());
+                self.build_prefetch_lines(), self.use_optimized_build());
           },
           [](py::tuple t) {
             if (t.size() != 8 && t.size() != 9 && t.size() != 10 &&
-                t.size() != 11 && t.size() != 12 && t.size() != 13)
+                t.size() != 11 && t.size() != 12 && t.size() != 13 &&
+                t.size() != 14)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             if (t.size() == 8) {
               return std::make_shared<VamanaIndexParams>(
@@ -812,12 +827,16 @@ Examples:
                 t.size() >= 13
                     ? t[12].cast<int>()
                     : core_interface::kDefaultVamanaBuildPrefetchLines;
+            const bool use_optimized_build =
+                t.size() >= 14
+                    ? t[13].cast<bool>()
+                    : core_interface::kDefaultVamanaUseOptimizedBuild;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<float>(), t[4].cast<bool>(), t[5].cast<bool>(),
                 t[6].cast<bool>(), t[7].cast<bool>(), t[8].cast<QuantizeType>(),
                 t[9].cast<bool>(), t[10].cast<int>(), build_prefetch_offset,
-                build_prefetch_lines);
+                build_prefetch_lines, use_optimized_build);
           }));
 
   // FlatIndexParams

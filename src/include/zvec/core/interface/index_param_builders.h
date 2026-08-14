@@ -266,6 +266,10 @@ class VamanaIndexParamBuilder
     param->build_prefetch_lines = build_prefetch_lines;
     return *this;
   }
+  VamanaIndexParamBuilder &WithUseOptimizedBuild(bool use_optimized_build) {
+    param->use_optimized_build = use_optimized_build;
+    return *this;
+  }
 
   std::shared_ptr<VamanaIndexParam> Build() override {
     return param;
