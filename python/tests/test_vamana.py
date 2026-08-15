@@ -763,7 +763,7 @@ class TestVamanaEndToEnd:
 
             coll.ann_bench_prepare("dense")
             coll.ann_bench_set_query_params(refine_param)
-            ids = coll.ann_bench_search_doc_ids_only(query, TOPK)
+            ids = coll.ann_bench_search_doc_ids_only(query, topk=TOPK)
             assert ids.tolist() == exact.tolist()
             assert (
                 coll.schema.vectors[0].index_param.flat_data_type
@@ -781,7 +781,7 @@ class TestVamanaEndToEnd:
             )
             reopened.ann_bench_prepare("dense")
             reopened.ann_bench_set_query_params(refine_param)
-            ids = reopened.ann_bench_search_doc_ids_only(query, TOPK)
+            ids = reopened.ann_bench_search_doc_ids_only(query, topk=TOPK)
             assert ids.tolist() == exact.tolist()
         finally:
             reopened.destroy()
