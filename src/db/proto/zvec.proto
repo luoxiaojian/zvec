@@ -164,6 +164,10 @@ message VamanaIndexParams {
   // Physical data type stored by the Flat reference index. UNDEFINED means
   // inherit the vector field's data type.
   DataType flat_data_type = 13;
+  // Master switch for the optimized Vamana construction pipeline. When false,
+  // construction uses the historical incremental path without bulk build,
+  // fast build search, batched RobustPrune, or batched reverse pruning.
+  optional bool use_bulk_build = 14;
 }
 
 message FtsIndexParams {

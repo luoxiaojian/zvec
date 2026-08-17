@@ -22,9 +22,8 @@ namespace zvec::turbo::avx512_vnni {
 //   [ original_dim bytes: int8 values, stored as uint8(value) - 128 ]
 //   [ int32 sum_sq_u8 ]
 //
-// The index data type remains DT_INT8. All distance functions return true
-// squared L2. Batch queries use a raw uint8 body and query-correction tail,
-// produced once by uniform_squared_euclidean_uint8_query_preprocess.
+// The index data type remains DT_INT8. Stored-to-stored functions always
+// return true squared L2. Query functions include the query-only correction.
 void uniform_squared_euclidean_uint8_distance(const void *a, const void *b,
                                               size_t dim, float *distance);
 

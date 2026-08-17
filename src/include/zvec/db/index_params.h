@@ -191,11 +191,9 @@ class HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(metric_type_, m_, ef_construction_,
-                                             quantize_type_,
-                                             use_contiguous_memory_,
-                                             use_flat_contiguous_memory_,
-                                             flat_data_type_);
+    return std::make_shared<HnswIndexParams>(
+        metric_type_, m_, ef_construction_, quantize_type_,
+        use_contiguous_memory_, use_flat_contiguous_memory_, flat_data_type_);
   }
 
   std::string to_string() const override {
@@ -608,7 +606,8 @@ class VamanaIndexParams : public VectorIndexParams {
           core_interface::kDefaultVamanaBuildPrefetchOffset,
       int build_prefetch_lines =
           core_interface::kDefaultVamanaBuildPrefetchLines,
-      DataType flat_data_type = DataType::UNDEFINED)
+      DataType flat_data_type = DataType::UNDEFINED,
+      bool use_bulk_build = core_interface::kDefaultVamanaUseBulkBuild)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type),
         max_degree_(max_degree),
         search_list_size_(search_list_size),
@@ -621,7 +620,8 @@ class VamanaIndexParams : public VectorIndexParams {
         reverse_prune_batch_size_(reverse_prune_batch_size),
         build_prefetch_offset_(build_prefetch_offset),
         build_prefetch_lines_(build_prefetch_lines),
-        flat_data_type_(flat_data_type) {}
+        flat_data_type_(flat_data_type),
+        use_bulk_build_(use_bulk_build) {}
 
   VamanaIndexParams(MetricType metric_type, int max_degree,
                     int search_list_size, float alpha, bool saturate_graph,
@@ -639,7 +639,8 @@ class VamanaIndexParams : public VectorIndexParams {
         metric_type_, max_degree_, search_list_size_, alpha_, saturate_graph_,
         use_contiguous_memory_, use_id_map_, two_pass_build_, quantize_type_,
         use_flat_contiguous_memory_, reverse_prune_batch_size_,
-        build_prefetch_offset_, build_prefetch_lines_, flat_data_type_);
+        build_prefetch_offset_, build_prefetch_lines_, flat_data_type_,
+        use_bulk_build_);
   }
 
   std::string to_string() const override {
@@ -658,6 +659,7 @@ class VamanaIndexParams : public VectorIndexParams {
         << ",reverse_prune_batch_size:" << reverse_prune_batch_size_
         << ",build_prefetch_offset:" << build_prefetch_offset_
         << ",build_prefetch_lines:" << build_prefetch_lines_
+        << ",use_bulk_build:" << (use_bulk_build_ ? "true" : "false")
         << ",flat_data_type:" << static_cast<uint32_t>(flat_data_type_) << "}";
     return oss.str();
   }
@@ -679,7 +681,8 @@ class VamanaIndexParams : public VectorIndexParams {
            reverse_prune_batch_size_ == rhs.reverse_prune_batch_size_ &&
            build_prefetch_offset_ == rhs.build_prefetch_offset_ &&
            build_prefetch_lines_ == rhs.build_prefetch_lines_ &&
-           flat_data_type_ == rhs.flat_data_type_;
+           flat_data_type_ == rhs.flat_data_type_ &&
+           use_bulk_build_ == rhs.use_bulk_build_;
   }
 
   int max_degree() const {
@@ -753,6 +756,13 @@ class VamanaIndexParams : public VectorIndexParams {
     build_prefetch_lines_ = build_prefetch_lines;
   }
 
+  bool use_bulk_build() const {
+    return use_bulk_build_;
+  }
+  void set_use_bulk_build(bool use_bulk_build) {
+    use_bulk_build_ = use_bulk_build;
+  }
+
   bool use_flat_contiguous_memory() const override {
     return use_flat_contiguous_memory_;
   }
@@ -783,6 +793,7 @@ class VamanaIndexParams : public VectorIndexParams {
   int build_prefetch_offset_;
   int build_prefetch_lines_;
   DataType flat_data_type_{DataType::UNDEFINED};
+  bool use_bulk_build_{core_interface::kDefaultVamanaUseBulkBuild};
 };
 
 /*

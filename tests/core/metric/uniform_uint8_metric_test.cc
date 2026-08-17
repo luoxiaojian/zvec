@@ -95,8 +95,10 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
     ASSERT_NE(nullptr, metric);
     auto distance = metric->distance();
     auto batch_distance = metric->batch_distance();
+    auto stored_batch_distance = metric->stored_batch_distance();
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
+    ASSERT_TRUE(static_cast<bool>(stored_batch_distance));
 
     const size_t encoded_dimension = original_dimension + kTailBytes;
     std::vector<int8_t> lhs(encoded_dimension, 0);
@@ -126,8 +128,16 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
     const auto query = PrepareStoredQuery(metric, rhs);
     batch_distance(vectors, query.data(), 2, encoded_dimension, batch_results,
                    nullptr);
-    EXPECT_EQ(ScalarReference(lhs, rhs, original_dimension), batch_results[0]);
-    EXPECT_EQ(0.0f, batch_results[1]);
+    const float expected_lhs = ScalarReference(lhs, rhs, original_dimension);
+    const float expected_rhs = 0.0f;
+    EXPECT_EQ(expected_lhs, batch_results[0]);
+    EXPECT_EQ(expected_rhs, batch_results[1]);
+
+    float stored_batch_results[2] = {};
+    stored_batch_distance(vectors, rhs.data(), 2, encoded_dimension,
+                          stored_batch_results, nullptr);
+    EXPECT_EQ(expected_lhs, stored_batch_results[0]);
+    EXPECT_EQ(expected_rhs, stored_batch_results[1]);
   }
 }
 
@@ -238,7 +248,6 @@ TEST(UniformUint8Metric, ExactRawQueryBatchMatchesScalarDistance) {
       pointers[i] = records[i].data();
       expected[i] =
           ScalarRawQueryReference(records[i], query, original_dimension);
-
       float scalar_actual = 0.0f;
       distance(records[i].data(), query.data(), encoded_dimension,
                &scalar_actual);

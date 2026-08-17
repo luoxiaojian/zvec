@@ -74,6 +74,7 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
              &use_contiguous_memory_);
   params.get(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE,
              &two_pass_build_enabled_);
+  params.get(PARAM_VAMANA_STREAMER_USE_BULK_BUILD, &use_bulk_build_);
 
   size_t docs_soft_limit = 0;
   params.get(PARAM_VAMANA_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit);
@@ -121,19 +122,23 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       "maxOcclusionSize=%u ef=%u maxScanRatio=%.3f minScanLimit=%zu "
       "maxScanLimit=%zu bruteForceThreshold=%zu chunkSize=%zu "
       "getVectorEnabled=%u forcePadding=%u twoPassBuild=%u "
+      "useBulkBuild=%u "
       "reversePruneBatchSize=%u buildPrefetchOffset=%u "
       "buildPrefetchLines=%u",
       max_index_size_, docs_hard_limit_, docs_soft_limit_, max_degree_,
       search_list_size_, alpha_, max_occlusion_size_, ef_, max_scan_ratio_,
       min_scan_limit_, max_scan_limit_, bruteforce_threshold_, chunk_size_,
       get_vector_enabled_, force_padding_topk_enabled_, two_pass_build_enabled_,
-      reverse_prune_batch_size_, build_prefetch_offset_, build_prefetch_lines_);
+      use_bulk_build_, reverse_prune_batch_size_, build_prefetch_offset_,
+      build_prefetch_lines_);
 
   const float initial_build_alpha = two_pass_build_enabled_ ? 1.0f : alpha_;
   bulk_build_active_ = false;
   build_finalized_.store(false);
   stats_.mutable_attributes()->set("vamana_bulk_build_used", uint32_t{0});
   stats_.mutable_attributes()->set("vamana_bulk_fast_search_used", uint32_t{0});
+  stats_.mutable_attributes()->set("vamana_use_bulk_build",
+                                   static_cast<uint32_t>(use_bulk_build_));
   stats_.mutable_attributes()->set("vamana_build_prefetch_offset",
                                    build_prefetch_offset_);
   stats_.mutable_attributes()->set("vamana_build_prefetch_lines",
@@ -179,6 +184,7 @@ int VamanaStreamer::cleanup(void) {
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
   two_pass_build_enabled_ = false;
+  use_bulk_build_ = true;
   bulk_build_active_ = false;
   build_finalized_.store(false);
 
@@ -313,6 +319,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
   }
   add_distance_ = metric_->distance();
   add_batch_distance_ = metric_->batch_distance();
+  add_stored_batch_distance_ = metric_->stored_batch_distance();
   size_t extra_values_size = metric_->extra_values_size_per_vector();
   search_distance_ = add_distance_;
   search_batch_distance_ = add_batch_distance_;
@@ -445,8 +452,7 @@ void VamanaStreamer::update_entry_point_to_medoid() {
     }
     if (is_uniform_uint4) medoid_dim *= 2U;
     node_id_t medoid = entity_->calculate_medoid(
-        medoid_dim, static_cast<uint32_t>(meta_.data_type()),
-        is_uniform_uint4);
+        medoid_dim, static_cast<uint32_t>(meta_.data_type()), is_uniform_uint4);
     if (medoid != kInvalidNodeId && medoid != entity_->entry_point()) {
       LOG_INFO("Updating entry point from %u to medoid %u",
                entity_->entry_point(), medoid);
@@ -465,6 +471,13 @@ int VamanaStreamer::begin_bulk_build() {
   // target in normal streaming mode, including a second merge into an index
   // that previously used the bulk path.
   bulk_build_active_ = false;
+  if (!use_bulk_build_) {
+    LOG_INFO("Vamana bulk build and construction optimizations are disabled");
+    stats_.mutable_attributes()->set("vamana_bulk_build_used", uint32_t{0});
+    stats_.mutable_attributes()->set("vamana_bulk_fast_search_used",
+                                     uint32_t{0});
+    return 0;
+  }
   if (entity_->storage_mode() != VamanaStorageMode::kContiguous ||
       entity_->doc_cnt() != 0) {
     return 0;
@@ -511,6 +524,7 @@ int VamanaStreamer::build_bulk_graph_locked() {
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
   ctx->set_build_fast_search(true);
+  ctx->set_build_optimization_enabled(true);
   ctx->set_reverse_prune_batch_size(reverse_prune_batch_size_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
@@ -613,10 +627,10 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
   ctx->set_build_fast_search(bulk_build);
+  ctx->set_build_optimization_enabled(use_bulk_build_);
   // Construction-only overflow storage exists only in bulk contiguous mode.
   // Keep streaming and mmap construction on the immediate-prune path.
-  ctx->set_reverse_prune_batch_size(
-      bulk_build ? reverse_prune_batch_size_ : 1);
+  ctx->set_reverse_prune_batch_size(bulk_build ? reverse_prune_batch_size_ : 1);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);
@@ -631,7 +645,9 @@ int VamanaStreamer::finalize_build_locked(bool update_medoid) {
   }
 
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
-  ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+  ctx->update_dist_caculator_distance(
+      add_distance_,
+      use_bulk_build_ ? add_batch_distance_ : add_stored_batch_distance_);
 
   // The incremental add path above is the first pass (alpha=1.0). Reuse that
   // graph for exactly one full-graph second pass at the configured target
@@ -683,6 +699,9 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context(void) const {
   ctx->set_magic(magic_);
   ctx->set_force_padding_topk(force_padding_topk_enabled_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
+  ctx->set_build_optimization_enabled(use_bulk_build_);
+  ctx->set_build_fast_search(false);
+  ctx->set_reverse_prune_batch_size(1);
 
   if (ailego_unlikely(ctx->init(VamanaContext::kStreamerContext) != 0)) {
     LOG_ERROR("Init VamanaContext failed");
@@ -719,6 +738,9 @@ int VamanaStreamer::update_context(VamanaContext *ctx) const {
   ctx->set_po(build_prefetch_offset_);
   ctx->set_pl(build_prefetch_lines_);
   ctx->set_bruteforce_threshold(bruteforce_threshold_);
+  ctx->set_build_optimization_enabled(use_bulk_build_);
+  ctx->set_build_fast_search(false);
+  ctx->set_reverse_prune_batch_size(1);
   return ctx->update_context(VamanaContext::kStreamerContext, meta_, metric_,
                              entity, magic_);
 }
@@ -759,7 +781,9 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
 
   if (!bulk_build_active_) {
     ctx->clear();
-    ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+    ctx->update_dist_caculator_distance(
+        add_distance_,
+        use_bulk_build_ ? add_batch_distance_ : add_stored_batch_distance_);
     ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -840,7 +864,9 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
 
   if (!bulk_build_active_) {
     ctx->clear();
-    ctx->update_dist_caculator_distance(add_distance_, add_batch_distance_);
+    ctx->update_dist_caculator_distance(
+        add_distance_,
+        use_bulk_build_ ? add_batch_distance_ : add_stored_batch_distance_);
     ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   }
 
@@ -889,9 +915,10 @@ int VamanaStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   return search_impl(query, qmeta, 1, context);
 }
 
-int VamanaStreamer::search_keys_direct(
-    const void *query, const IndexQueryMeta &qmeta,
-    std::vector<uint64_t> *keys, Context::Pointer &context) const {
+int VamanaStreamer::search_keys_direct(const void *query,
+                                       const IndexQueryMeta &qmeta,
+                                       std::vector<uint64_t> *keys,
+                                       Context::Pointer &context) const {
   if (keys == nullptr) return IndexError_InvalidArgument;
 
   int ret = check_params(query, qmeta);

@@ -89,6 +89,25 @@ TEST(ConverterTest, VamanaFlatDataTypeConversion) {
   EXPECT_EQ(round_trip.flat_data_type(), proto::DT_VECTOR_FP16);
 }
 
+TEST(ConverterTest, VamanaUseBulkBuildConversion) {
+  proto::VamanaIndexParams legacy_pb;
+  legacy_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  auto legacy_params = ProtoConverter::FromPb(legacy_pb);
+  ASSERT_NE(legacy_params, nullptr);
+  EXPECT_TRUE(legacy_params->use_bulk_build());
+
+  proto::VamanaIndexParams disabled_pb;
+  disabled_pb.mutable_base()->set_metric_type(proto::MT_L2);
+  disabled_pb.set_use_bulk_build(false);
+  auto disabled_params = ProtoConverter::FromPb(disabled_pb);
+  ASSERT_NE(disabled_params, nullptr);
+  EXPECT_FALSE(disabled_params->use_bulk_build());
+
+  auto round_trip = ProtoConverter::ToPb(disabled_params.get());
+  EXPECT_TRUE(round_trip.has_use_bulk_build());
+  EXPECT_FALSE(round_trip.use_bulk_build());
+}
+
 TEST(ConverterTest, VamanaUint8FlatDataTypeConversion) {
   proto::VamanaIndexParams vamana_pb;
   vamana_pb.mutable_base()->set_metric_type(proto::MT_L2);

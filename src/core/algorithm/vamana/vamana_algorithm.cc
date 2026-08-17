@@ -74,7 +74,11 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
     LOG_ERROR("Failed to get vector for node %u", id);
     return IndexError_ReadData;
   }
-  ctx->reset_query(query_vec);
+  if (ctx->build_optimization_enabled()) {
+    ctx->reset_query(query_vec);
+  } else {
+    ctx->reset_stored_query(query_vec);
+  }
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild
@@ -174,7 +178,7 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // through the entity's storage-independent interfaces.
 template <typename EntityType>
 ailego_force_inline void prefetch_graph_row(const EntityType &entity,
-                                             node_id_t node) {
+                                            node_id_t node) {
   const auto neighbors = entity.get_neighbors_typed(node);
   const char *row = reinterpret_cast<const char *>(neighbors.data);
   const uint32_t lines = static_cast<uint32_t>(
@@ -186,7 +190,7 @@ ailego_force_inline void prefetch_graph_row(const EntityType &entity,
 
 template <typename EntityType, typename NeighborsType>
 ailego_force_inline void prefetch_graph_row(const EntityType &entity,
-                                             const NeighborsType &neighbors) {
+                                            const NeighborsType &neighbors) {
   const char *row = reinterpret_cast<const char *>(neighbors.data);
   const uint32_t lines = static_cast<uint32_t>(
       (entity.max_degree() * sizeof(node_id_t) + 63) / 64);
@@ -195,9 +199,8 @@ ailego_force_inline void prefetch_graph_row(const EntityType &entity,
   }
 }
 
-template <bool HasExtraValues, bool CachedGreedyEntry,
-          bool FullGraphPrefetch, typename EntityType, typename HeapType,
-          typename VisitImpl>
+template <bool HasExtraValues, bool CachedGreedyEntry, bool FullGraphPrefetch,
+          typename EntityType, typename HeapType, typename VisitImpl>
 void fast_greedy_search(const EntityType &entity, HeapType &pool,
                         VamanaDistCalculator &dc, uint32_t pool_capacity,
                         node_id_t entry_point, uint32_t prefetch_lines,
@@ -646,15 +649,13 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
     if (build_search) {
       if (has_extra_values) {
         VamanaFastGreedyRunner<true, false, false, false, EntityType>{
-            entity,         dc,           ctx,         pool_capacity,
-            entry_point,    prefetch_lines, build_search, avx2_ok,
-            topk_heap}
+            entity,         dc,           ctx,     pool_capacity, entry_point,
+            prefetch_lines, build_search, avx2_ok, topk_heap}
             .run(ctx->visit_filter());
       } else {
         VamanaFastGreedyRunner<false, false, false, false, EntityType>{
-            entity,         dc,           ctx,         pool_capacity,
-            entry_point,    prefetch_lines, build_search, avx2_ok,
-            topk_heap}
+            entity,         dc,           ctx,     pool_capacity, entry_point,
+            prefetch_lines, build_search, avx2_ok, topk_heap}
             .run(ctx->visit_filter());
       }
     } else {
@@ -664,15 +665,13 @@ void VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
       // enables cached greedy entry plus current/next full-row prefetch.
       if (has_extra_values) {
         VamanaFastGreedyRunner<true, false, true, true, EntityType>{
-            entity,         dc,           ctx,         pool_capacity,
-            entry_point,    prefetch_lines, build_search, avx2_ok,
-            topk_heap}
+            entity,         dc,           ctx,     pool_capacity, entry_point,
+            prefetch_lines, build_search, avx2_ok, topk_heap}
             .run(ctx->visit_filter());
       } else {
         VamanaFastGreedyRunner<false, false, true, true, EntityType>{
-            entity,         dc,           ctx,         pool_capacity,
-            entry_point,    prefetch_lines, build_search, avx2_ok,
-            topk_heap}
+            entity,         dc,           ctx,     pool_capacity, entry_point,
+            prefetch_lines, build_search, avx2_ok, topk_heap}
             .run(ctx->visit_filter());
       }
     }
@@ -716,7 +715,11 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   ctx->topk_heap().clear();
   ctx->topk_heap().limit(entity_.search_list_size());
   ctx->dist_calculator().clear_compare_cnt();
-  ctx->reset_query(query_vec);
+  if (ctx->build_optimization_enabled()) {
+    ctx->reset_query(query_vec);
+  } else {
+    ctx->reset_stored_query(query_vec);
+  }
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild
@@ -737,8 +740,8 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
     } else if (entity_.get_neighbor_dist(id, i, &dist)) {
       // Construction-only overflow distance.
     } else {
-      dist = ctx->dist_calculator().dist(query_vec,
-                                         entity_.get_vector(neighbor));
+      dist =
+          ctx->dist_calculator().dist(query_vec, entity_.get_vector(neighbor));
     }
     heap_emplace_unique(candidates, neighbor, dist);
   }
@@ -853,13 +856,18 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
       }
 
       if (batch_count > 0) {
-        // Compute exact data-to-data distances from the selected candidate to
-        // all remaining candidates. RobustPrune runs after GreedySearch, so
-        // the search query no longer needs to be preserved. Reuse the normal
-        // query setup and batch-distance path, including query preprocessing
-        // required by quantized metrics.
-        ctx->reset_query(selected_vec);
-        dc.batch_dist(batch_vecs.data(), batch_count, batch_dists.data());
+        if (ctx->build_optimization_enabled()) {
+          // Optimized path: preprocess the selected stored record as a query
+          // and compute all remaining distances in one batch.
+          ctx->reset_query(selected_vec);
+          dc.batch_dist(batch_vecs.data(), batch_count, batch_dists.data());
+        } else {
+          // Historical path: compare encoded records directly, without
+          // asymmetric query preprocessing or batched RobustPrune.
+          for (uint32_t k = 0; k < batch_count; ++k) {
+            batch_dists[k] = dc.dist(selected_vec, batch_vecs[k]);
+          }
+        }
 
         // DiskANN (L2/Cosine):
         //   occlude_factor[t] = max(occlude_factor[t], dist_to_query /

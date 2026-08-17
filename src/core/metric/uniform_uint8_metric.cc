@@ -54,6 +54,15 @@ IndexMetric::MatrixDistance UniformUint8StoredDistance() {
   return distance;
 }
 
+void UniformUint8StoredSquaredEuclideanBatch(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
+  const auto distance = UniformUint8StoredDistance();
+  for (size_t i = 0; i < n; ++i) {
+    distance(vectors[i], query, dim, distances + i);
+  }
+}
+
 void UniformUint8StoredQuerySquaredEuclidean(const void *stored,
                                              const void *query, size_t dim,
                                              float *distance) {
@@ -215,6 +224,10 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
       return UniformUint8StoredDistance();
     }
     return nullptr;
+  }
+
+  MatrixBatchDistance stored_batch_distance(void) const override {
+    return UniformUint8StoredSquaredEuclideanBatch;
   }
 
   // Extra values are a physical-storage optimization for online search.
