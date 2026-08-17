@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -500,6 +501,21 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return TypedNeighbors(std::move(block));
   }
 
+  //! Address range used by the query-side full graph-row prefetch.  Keep the
+  //! degree load out of this accessor: the prefetch is deliberately issued
+  //! before get_neighbors_typed() consumes the header.
+  ailego_force_inline const char *graph_prefetch_data(node_id_t id) const {
+    const uint32_t chunk_idx = id >> node_index_mask_bits_;
+    const uint32_t offset =
+        (id & node_index_mask_) * node_size() + vector_size() +
+        sizeof(key_t) + sizeof(uint32_t);
+    return get_node_chunk_base(chunk_idx) + offset;
+  }
+
+  ailego_force_inline size_t graph_prefetch_size() const {
+    return max_degree() * sizeof(node_id_t);
+  }
+
   ailego_force_inline int get_vector_typed(
       const node_id_t *ids, uint32_t count,
       std::vector<MmapMemoryBlock> &vec_blocks) const {
@@ -602,9 +618,9 @@ class VamanaBufferPoolStreamerEntity : public VamanaStreamerEntity {
 };
 
 // --- Typed entity subclass for contiguous memory mode ---
-// Organizes node data into vector, extra-values, and graph columns during
-// build. Metrics without extra values simply leave the extra-values column
-// empty.
+// Organizes node data into a vector column, an optional extra-values column,
+// and a packed per-node graph array during build. Metrics without extra values
+// simply leave the extra-values column empty.
 class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
  public:
   using VamanaMmapStreamerEntity::VamanaMmapStreamerEntity;
@@ -658,18 +674,15 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   int close() override;
 
   key_t get_key(node_id_t id) const override {
-    if (ailego_likely(key_base_ != nullptr && id < graph_capacity_)) {
-      return use_key_info_map_ ? key_base_[id] : id;
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? packed_key(id) : id;
     }
     return VamanaMmapStreamerEntity::get_key(id);
   }
 
   const Neighbors get_neighbors(node_id_t id) const override {
-    if (ailego_likely(degree_base_ != nullptr && adjacency_base_ != nullptr &&
-                      id < graph_capacity_)) {
-      return Neighbors(
-          degree_base_[id],
-          adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_);
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return Neighbors(*packed_degree(id), packed_adjacency(id));
     }
     return VamanaMmapStreamerEntity::get_neighbors(id);
   }
@@ -694,11 +707,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline TypedNeighbors get_neighbors_typed(node_id_t id) const {
-    if (ailego_likely(degree_base_ != nullptr && adjacency_base_ != nullptr &&
-                      id < graph_capacity_)) {
-      return TypedNeighbors(
-          degree_base_[id],
-          adjacency_base_ + static_cast<size_t>(id) * adjacency_stride_);
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return TypedNeighbors(*packed_degree(id), packed_adjacency(id));
     }
     return VamanaMmapStreamerEntity::get_neighbors_typed(id);
   }
@@ -719,10 +729,28 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (ailego_likely(key_base_ != nullptr && id < graph_capacity_)) {
-      return use_key_info_map_ ? key_base_[id] : id;
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return use_key_info_map_ ? packed_key(id) : id;
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
+  }
+
+  //! Prefetch the complete query-visible packed record, including key and
+  //! degree.  This lets the look-ahead prefetch make the degree available
+  //! before get_neighbors_typed() has to branch on it.
+  ailego_force_inline const char *graph_prefetch_data(node_id_t id) const {
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return packed_graph_row(id);
+    }
+    return VamanaMmapStreamerEntity::graph_prefetch_data(id);
+  }
+
+  ailego_force_inline size_t graph_prefetch_size() const {
+    if (ailego_likely(graph_base_ != nullptr)) {
+      return sizeof(key_t) + sizeof(uint32_t) +
+             max_degree() * sizeof(node_id_t);
+    }
+    return VamanaMmapStreamerEntity::graph_prefetch_size();
   }
 
   //! Direct vector pointer from flat vector array.
@@ -783,19 +811,17 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   //! Per-vector stride = AlignUp(vector_size(), kVectorAlignment).
   size_t vector_stride_{0};
 
-  //! Structure-of-arrays graph layout. Each column is independently allocated
-  //! with huge pages. During ordinary operation the adjacency matrix has
-  //! max_degree() entries per row. Reverse-prune batching reserves a small
-  //! construction-only suffix in each row.
-  std::shared_ptr<char> key_memory_{};
-  key_t *key_base_{nullptr};
-  std::shared_ptr<char> degree_memory_{};
-  uint32_t *degree_base_{nullptr};
-  std::shared_ptr<char> adjacency_memory_{};
-  node_id_t *adjacency_base_{nullptr};
+  //! Per-node packed graph layout:
+  //!   [key | degree | adjacency[max_degree + build overflow]]
+  //! Records have no cache-line padding, preserving graph density. The key is
+  //! read with memcpy because an odd record may not be naturally 8B-aligned;
+  //! degree and node IDs remain naturally 4B-aligned.
+  std::shared_ptr<char> graph_memory_{};
+  char *graph_base_{nullptr};
+  size_t graph_stride_{0};  // bytes per packed graph record
   size_t adjacency_stride_{0};  // node IDs per row, including build overflow
   uint32_t graph_capacity_{0};
-  bool graph_columns_dirty_{false};
+  bool graph_dirty_{false};
 
   //! Construction-only distances for visible adjacency slots beyond
   //! max_degree. Stable slots [0, max_degree) continue to use the persisted
@@ -820,9 +846,36 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
  private:
   static char *allocate_contiguous(size_t size);
+  ailego_force_inline const char *packed_graph_row(node_id_t id) const {
+    return graph_base_ + static_cast<size_t>(id) * graph_stride_;
+  }
+  ailego_force_inline char *mutable_packed_graph_row(node_id_t id) {
+    return graph_base_ + static_cast<size_t>(id) * graph_stride_;
+  }
+  ailego_force_inline key_t packed_key(node_id_t id) const {
+    key_t key;
+    std::memcpy(&key, packed_graph_row(id), sizeof(key));
+    return key;
+  }
+  ailego_force_inline const uint32_t *packed_degree(node_id_t id) const {
+    return reinterpret_cast<const uint32_t *>(packed_graph_row(id) +
+                                               sizeof(key_t));
+  }
+  ailego_force_inline uint32_t *mutable_packed_degree(node_id_t id) {
+    return reinterpret_cast<uint32_t *>(mutable_packed_graph_row(id) +
+                                        sizeof(key_t));
+  }
+  ailego_force_inline const node_id_t *packed_adjacency(node_id_t id) const {
+    return reinterpret_cast<const node_id_t *>(
+        packed_graph_row(id) + sizeof(key_t) + sizeof(uint32_t));
+  }
+  ailego_force_inline node_id_t *mutable_packed_adjacency(node_id_t id) {
+    return reinterpret_cast<node_id_t *>(
+        mutable_packed_graph_row(id) + sizeof(key_t) + sizeof(uint32_t));
+  }
   void reset_contiguous_memory();
-  int allocate_graph_columns(uint32_t capacity);
-  int sync_graph_columns_to_chunks();
+  int allocate_packed_graph(uint32_t capacity);
+  int sync_packed_graph_to_chunks();
 };
 
 }  // namespace core

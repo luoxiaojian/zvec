@@ -179,23 +179,13 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 template <typename EntityType>
 ailego_force_inline void prefetch_graph_row(const EntityType &entity,
                                             node_id_t node) {
-  const auto neighbors = entity.get_neighbors_typed(node);
-  const char *row = reinterpret_cast<const char *>(neighbors.data);
-  const uint32_t lines = static_cast<uint32_t>(
-      (entity.max_degree() * sizeof(node_id_t) + 63) / 64);
-  for (uint32_t line = 0; line < lines; ++line) {
-    ailego_prefetch(row + static_cast<size_t>(line) * 64);
-  }
-}
-
-template <typename EntityType, typename NeighborsType>
-ailego_force_inline void prefetch_graph_row(const EntityType &entity,
-                                            const NeighborsType &neighbors) {
-  const char *row = reinterpret_cast<const char *>(neighbors.data);
-  const uint32_t lines = static_cast<uint32_t>(
-      (entity.max_degree() * sizeof(node_id_t) + 63) / 64);
-  for (uint32_t line = 0; line < lines; ++line) {
-    ailego_prefetch(row + static_cast<size_t>(line) * 64);
+  constexpr uintptr_t kCacheLineMask = ~uintptr_t{63};
+  const char *data = entity.graph_prefetch_data(node);
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(data) & kCacheLineMask;
+  const uintptr_t end = reinterpret_cast<uintptr_t>(data) +
+                        entity.graph_prefetch_size();
+  for (uintptr_t line = begin; line < end; line += 64) {
+    ailego_prefetch(reinterpret_cast<const void *>(line));
   }
 }
 
@@ -288,10 +278,10 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
     for (uint32_t depth = 0; depth < 100; ++depth) {
       const node_id_t before = start;
       cached_row = before;
-      const auto neighbors = entity.get_neighbors_typed(before);
       if constexpr (FullGraphPrefetch) {
-        prefetch_graph_row(entity, neighbors);
+        prefetch_graph_row(entity, before);
       }
+      const auto neighbors = entity.get_neighbors_typed(before);
       compute_neighbor_row(neighbors);
       if (ailego_unlikely(dc.error())) {
         return;
