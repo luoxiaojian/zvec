@@ -85,6 +85,7 @@ def _build_schema(
     use_contiguous_memory: bool = False,
     use_flat_contiguous_memory: bool = False,
     flat_data_type: DataType = DataType.UNDEFINED,
+    two_pass_build: bool = False,
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
     build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
     build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
@@ -114,6 +115,7 @@ def _build_schema(
                     use_contiguous_memory=use_contiguous_memory,
                     use_flat_contiguous_memory=use_flat_contiguous_memory,
                     flat_data_type=flat_data_type,
+                    two_pass_build=two_pass_build,
                     quantize_type=quantize_type,
                     reverse_prune_batch_size=reverse_prune_batch_size,
                     build_prefetch_offset=build_prefetch_offset,
@@ -591,6 +593,81 @@ class TestVamanaEndToEnd:
                 f"post-optimize top-1 should still be probe id, got {ids_post}"
             )
             assert len(ids_post) == TOPK
+        finally:
+            coll.destroy()
+
+    def test_record_int8_non_bulk_graph_recall(
+        self, tmp_path_factory, collection_option
+    ):
+        """Stored record INT8 still needs normal query preprocessing.
+
+        Self top-1 checks do not detect a mostly disconnected graph. Use
+        held-out noisy queries and full top-10 recall to cover both the
+        incremental first pass and the non-bulk refinement pass.
+        """
+        dimension = 64
+        num_docs = 1500  # Exceed Vamana's brute-force threshold.
+        num_queries = 48
+        random = np.random.default_rng(20260818)
+        vectors = random.standard_normal((num_docs, dimension)).astype(np.float32)
+        anchors = random.integers(0, num_docs, size=num_queries)
+        queries = np.ascontiguousarray(
+            vectors[anchors]
+            + random.normal(scale=0.15, size=(num_queries, dimension)).astype(
+                np.float32
+            )
+        )
+        schema = _build_schema(
+            "vamana_record_int8_non_bulk_recall",
+            dimension=dimension,
+            metric_type=MetricType.L2,
+            quantize_type=QuantizeType.INT8,
+            max_degree=32,
+            search_list_size=100,
+            alpha=1.5,
+            use_contiguous_memory=True,
+            two_pass_build=True,
+            build_prefetch_offset=8,
+            build_prefetch_lines=0,
+            use_bulk_build=False,
+        )
+        path = (
+            tmp_path_factory.mktemp("zvec")
+            / "vamana_record_int8_non_bulk_recall"
+        )
+        coll = zvec.create_and_open(
+            path=str(path), schema=schema, option=collection_option
+        )
+        try:
+            for start in range(0, num_docs, 512):
+                docs = [
+                    Doc(
+                        id=str(i),
+                        fields={"id": i},
+                        vectors={"dense": vectors[i].tolist()},
+                    )
+                    for i in range(start, min(start + 512, num_docs))
+                ]
+                for result in coll.insert(docs=docs):
+                    assert result.ok()
+            coll.optimize()
+
+            recalls = []
+            for query in queries:
+                distances = np.sum((vectors - query) ** 2, axis=1)
+                exact = set(np.argpartition(distances, 10)[:10].tolist())
+                hits = coll.query(
+                    Query(
+                        field_name="dense",
+                        vector=query.tolist(),
+                        param=VamanaQueryParam(ef_search=100),
+                    ),
+                    topk=10,
+                )
+                actual = {int(hit.id) for hit in hits}
+                recalls.append(len(actual & exact) / 10.0)
+
+            assert np.mean(recalls) > 0.95
         finally:
             coll.destroy()
 

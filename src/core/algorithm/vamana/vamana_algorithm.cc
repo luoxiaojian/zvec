@@ -74,11 +74,7 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
     LOG_ERROR("Failed to get vector for node %u", id);
     return IndexError_ReadData;
   }
-  if (ctx->build_optimization_enabled()) {
-    ctx->reset_query(query_vec);
-  } else {
-    ctx->reset_stored_query(query_vec);
-  }
+  ctx->reset_build_query(query_vec);
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild
@@ -705,11 +701,7 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   ctx->topk_heap().clear();
   ctx->topk_heap().limit(entity_.search_list_size());
   ctx->dist_calculator().clear_compare_cnt();
-  if (ctx->build_optimization_enabled()) {
-    ctx->reset_query(query_vec);
-  } else {
-    ctx->reset_stored_query(query_vec);
-  }
+  ctx->reset_build_query(query_vec);
 
   greedy_search(entry_point, ctx,
                 ctx->build_fast_search() ? GreedySearchMode::kFastBuild

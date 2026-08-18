@@ -24,7 +24,9 @@ VamanaContext::VamanaContext(size_t dimension,
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric, dimension),
-      metric_(metric) {
+      metric_(metric),
+      stored_query_build_enabled_(metric &&
+                                  metric->use_stored_query_for_build()) {
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();
   }
@@ -35,7 +37,9 @@ VamanaContext::VamanaContext(const IndexMetric::Pointer &metric,
     : IndexContext(metric),
       entity_(entity),
       dc_(entity.get(), metric),
-      metric_(metric) {
+      metric_(metric),
+      stored_query_build_enabled_(metric &&
+                                  metric->use_stored_query_for_build()) {
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();
   }
@@ -110,6 +114,8 @@ int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
   type_ = type;
   entity_ = entity;
   metric_ = metric;
+  stored_query_build_enabled_ =
+      metric && metric->use_stored_query_for_build();
   magic_ = magic_num;
   if (metric) {
     build_distance_offset_ = metric->build_distance_offset();

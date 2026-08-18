@@ -119,6 +119,14 @@ class VamanaContext : public IndexContext {
     dc_.clear_compare_cnt();
   }
 
+  inline void reset_build_query(const void *query) {
+    if (!build_optimization_enabled_ && stored_query_build_enabled_) {
+      reset_stored_query(query);
+    } else {
+      reset_query(query);
+    }
+  }
+
   inline VamanaDistCalculator &dist_calculator() {
     return dc_;
   }
@@ -360,6 +368,7 @@ class VamanaContext : public IndexContext {
   VamanaEntity::Pointer entity_;
   VamanaDistCalculator dc_;
   IndexMetric::Pointer metric_;
+  bool stored_query_build_enabled_{false};
 
   bool debug_mode_{false};
   bool force_padding_topk_{false};

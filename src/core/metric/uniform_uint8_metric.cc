@@ -230,6 +230,10 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
     return UniformUint8StoredSquaredEuclideanBatch;
   }
 
+  bool use_stored_query_for_build(void) const override {
+    return true;
+  }
+
   // Extra values are a physical-storage optimization for online search.
   // The stored record remains self-contained before contiguous-memory
   // optimization, so the build metric itself does not require a side column.

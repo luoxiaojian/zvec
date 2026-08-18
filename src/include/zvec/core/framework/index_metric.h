@@ -95,6 +95,15 @@ struct IndexMetric : public IndexModule {
     return batch_distance();
   }
 
+  //! Whether incremental graph construction may use an encoded stored record
+  //! directly as the distance query. This is intentionally separate from
+  //! stored_batch_distance(): most metrics inherit the ordinary batch kernel,
+  //! but their stored records still need normal query preprocessing before
+  //! that kernel can consume them.
+  virtual bool use_stored_query_for_build(void) const {
+    return false;
+  }
+
   //! Number of trailing per-record bytes exposed through extra-values
   //! pointers by supporting storage backends.
   virtual size_t extra_values_size_per_vector(void) const {

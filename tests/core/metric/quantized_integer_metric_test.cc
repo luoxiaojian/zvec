@@ -180,6 +180,7 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
   auto metric = IndexFactory::CreateMetric(meta2.metric_name());
   ASSERT_TRUE(!!metric);
   ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
+  EXPECT_FALSE(metric->use_stored_query_for_build());
   auto compute = metric->distance();
   auto compute_batch = metric->batch_distance();
   ASSERT_TRUE(compute);

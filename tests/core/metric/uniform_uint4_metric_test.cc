@@ -47,6 +47,7 @@ TEST(UniformUint4Metric, PairAndBatchMatchScalarExactly) {
     auto batch_distance = metric->batch_distance();
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
+    EXPECT_FALSE(metric->use_stored_query_for_build());
 
     constexpr size_t count = 7;
     std::vector<uint8_t> query(encoded_dimension);

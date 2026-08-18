@@ -99,6 +99,7 @@ TEST(UniformUint8Metric, TurboBuildDistanceMatchesScalarExactly) {
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
     ASSERT_TRUE(static_cast<bool>(stored_batch_distance));
+    EXPECT_TRUE(metric->use_stored_query_for_build());
 
     const size_t encoded_dimension = original_dimension + kTailBytes;
     std::vector<int8_t> lhs(encoded_dimension, 0);
