@@ -466,8 +466,8 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::search_doc_ids_by_p_keys(
-    const void *query, const uint64_t *keys, size_t count,
-    int64_t *output_ids, size_t topk, const IndexQueryMeta &qmeta,
+    const void *query, const uint64_t *keys, size_t count, int64_t *output_ids,
+    size_t topk, const IndexQueryMeta &qmeta,
     Context::UPointer &context) const {
   if (!query || !output_ids || topk == 0 || !context ||
       !metric_->is_matched(meta_, qmeta)) {
@@ -513,12 +513,21 @@ int FlatStreamer<BATCH_SIZE>::search_doc_ids_by_p_keys(
     documents[i] = {keys[i], distances[i]};
   }
 
-  std::partial_sort(
-      documents.begin(), documents.begin() + topk, documents.end(),
-      [](const auto &lhs, const auto &rhs) {
-        return lhs.distance < rhs.distance ||
-               (lhs.distance == rhs.distance && lhs.key < rhs.key);
-      });
+  const auto better = [](const auto &lhs, const auto &rhs) {
+    return lhs.distance < rhs.distance ||
+           (lhs.distance == rhs.distance && lhs.key < rhs.key);
+  };
+  auto selected_end = documents.begin() + topk;
+  std::make_heap(documents.begin(), selected_end, better);
+  for (auto candidate = selected_end; candidate != documents.end();
+       ++candidate) {
+    if (better(*candidate, documents.front())) {
+      std::pop_heap(documents.begin(), selected_end, better);
+      *(selected_end - 1) = *candidate;
+      std::push_heap(documents.begin(), selected_end, better);
+    }
+  }
+  std::sort_heap(documents.begin(), selected_end, better);
   for (size_t i = 0; i < topk; ++i) {
     output_ids[i] = static_cast<int64_t>(documents[i].key);
   }

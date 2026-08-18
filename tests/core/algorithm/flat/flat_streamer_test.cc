@@ -237,6 +237,14 @@ TEST_F(FlatStreamerTest, TestContiguousFp16CandidateSearch) {
   ASSERT_EQ(2, context->result().size());
   EXPECT_EQ(2, context->result()[0].key());
   EXPECT_EQ(3, context->result()[1].key());
+
+  const uint64_t direct_keys[] = {5, 1, 3, 2};
+  int64_t direct_result[2] = {-1, -1};
+  ASSERT_EQ(0,
+            flat->search_doc_ids_by_p_keys(query.data(), direct_keys, 4,
+                                           direct_result, 2, qmeta, context));
+  EXPECT_EQ(2, direct_result[0]);
+  EXPECT_EQ(3, direct_result[1]);
 }
 
 // Concurrent readers over the contiguous snapshot while a writer inserts and

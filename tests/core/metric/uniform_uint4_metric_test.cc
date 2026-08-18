@@ -107,34 +107,35 @@ TEST(Fp16RefineTurbo, HomogeneousBatchMatchesScalarReference) {
 
   std::mt19937 generator(20260807);
   std::uniform_real_distribution<float> values(-20.0f, 20.0f);
-  for (const size_t dimension : {1UL, 17UL, 128UL, 131UL}) {
-    constexpr size_t count = 7;
-    std::vector<float> query_fp32(dimension);
-    std::vector<ailego::Float16> query(dimension);
-    std::vector<std::vector<ailego::Float16>> rows(
-        count, std::vector<ailego::Float16>(dimension));
-    std::vector<const void *> pointers(count);
-    std::vector<float> expected(count, 0.0f);
-    std::vector<float> actual(count, 0.0f);
-    for (float &value : query_fp32) value = values(generator);
-    ailego::FloatHelper::ToFP16(
-        query_fp32.data(), dimension,
-        reinterpret_cast<uint16_t *>(query.data()));
-    for (size_t i = 0; i < count; ++i) {
-      pointers[i] = rows[i].data();
-      for (size_t d = 0; d < dimension; ++d) {
-        rows[i][d] = values(generator);
-        const float delta =
-            static_cast<float>(query[d]) - static_cast<float>(rows[i][d]);
-        expected[i] += delta * delta;
+  for (const size_t dimension : {1UL, 17UL, 128UL, 131UL, 512UL, 960UL}) {
+    for (const size_t count : {1UL,  3UL,  4UL,  7UL,  10UL, 12UL, 13UL,
+                               16UL, 20UL, 23UL, 24UL, 32UL, 40UL}) {
+      std::vector<float> query_fp32(dimension);
+      std::vector<ailego::Float16> query(dimension);
+      std::vector<std::vector<ailego::Float16>> rows(
+          count, std::vector<ailego::Float16>(dimension));
+      std::vector<const void *> pointers(count);
+      std::vector<float> expected(count, 0.0f);
+      std::vector<float> actual(count, 0.0f);
+      for (float &value : query_fp32) value = values(generator);
+      ailego::FloatHelper::ToFP16(query_fp32.data(), dimension,
+                                  reinterpret_cast<uint16_t *>(query.data()));
+      for (size_t i = 0; i < count; ++i) {
+        pointers[i] = rows[i].data();
+        for (size_t d = 0; d < dimension; ++d) {
+          rows[i][d] = values(generator);
+          const float delta =
+              static_cast<float>(query[d]) - static_cast<float>(rows[i][d]);
+          expected[i] += delta * delta;
+        }
       }
-    }
-    batch(pointers.data(), query.data(), count, dimension, actual.data(),
-          nullptr);
-    for (size_t i = 0; i < count; ++i) {
-      EXPECT_NEAR(expected[i], actual[i],
-                  std::max(1e-3f, expected[i] * 2e-6f))
-          << "dimension=" << dimension << " row=" << i;
+      batch(pointers.data(), query.data(), count, dimension, actual.data(),
+            nullptr);
+      for (size_t i = 0; i < count; ++i) {
+        EXPECT_NEAR(expected[i], actual[i],
+                    std::max(1e-3f, expected[i] * 2e-6f))
+            << "dimension=" << dimension << " count=" << count << " row=" << i;
+      }
     }
   }
 }

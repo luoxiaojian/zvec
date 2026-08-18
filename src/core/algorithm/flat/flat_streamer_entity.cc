@@ -83,15 +83,37 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   // One-to-many SIMD kernel for row-major candidate searches. May be null for
   // metrics without a batch kernel; callers then use scalar distances.
   batch_distance_ = metric->batch_distance();
-  // Native FP16 queries and rows use the regular homogeneous turbo dispatch.
-  // Override the generic metric implementation when the optimized four-way
-  // kernel is available on this CPU.
+  // Native FP16 queries and rows use the homogeneous turbo dispatch. Long
+  // vectors retain the generic kernel only for its exact 12-row sweet spot.
   if (index_meta_.data_type() == IndexMeta::DataType::DT_FP16 &&
       index_meta_.metric_name() == "SquaredEuclidean") {
     auto turbo_batch = turbo::get_batch_distance_func(
         turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
         turbo::QuantizeType::kDefault);
-    if (turbo_batch) batch_distance_ = std::move(turbo_batch);
+    if (turbo_batch) {
+      const size_t dimension = index_meta_.dimension();
+      if (dimension < 512) {
+        batch_distance_ = std::move(turbo_batch);
+      } else {
+        auto generic_batch = batch_distance_;
+        batch_distance_ = [generic_batch = std::move(generic_batch),
+                           turbo_batch = std::move(turbo_batch)](
+                              const void **vectors, const void *query,
+                              size_t count, size_t query_dimension,
+                              float *distances, const void **extra_values) {
+          // The generic twelve-way AVX-512 kernel is still the fastest exact
+          // fit for a 12-row GIST rerank. The turbo path handles all other
+          // sizes, including remainder batches, substantially better.
+          if (count == 12 && generic_batch) {
+            generic_batch(vectors, query, count, query_dimension, distances,
+                          extra_values);
+          } else {
+            turbo_batch(vectors, query, count, query_dimension, distances,
+                        extra_values);
+          }
+        };
+      }
+    }
   }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),

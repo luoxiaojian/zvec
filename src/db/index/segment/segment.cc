@@ -4204,10 +4204,14 @@ Status SegmentImpl::init_memory_components() {
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
     } else {
-      // first create normal vector indexer
+      // Keep the transient ingestion Flat in the field's native type. During
+      // optimize(), the quantized graph must consume these full-precision
+      // rows, while the separately persisted refine Flat is converted to the
+      // requested flat_data_type. Creating the transient Flat directly as
+      // FP16 would also make INT8 graph construction consume rounded rows and
+      // measurably lower high-recall GIST quality.
       FieldSchema normal_field(*field);
-      normal_field.set_data_type(ResolveFlatDataType(
-          field->data_type(), index_params->flat_data_type()));
+      normal_field.set_data_type(field->data_type());
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
           index_params->use_flat_contiguous_memory()));
