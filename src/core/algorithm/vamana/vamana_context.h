@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <utility>
 #include <zvec/core/framework/index_context.h>
 #include "utility/block_heap.h"
 #include "utility/linear_pool.h"
@@ -78,6 +79,13 @@ class VamanaContext : public IndexContext {
   }
 
   int update(const ailego::Params &params) override;
+
+  // Resolve independently optional query prefetch controls against the stored
+  // graph schema.  Returned values are concrete and can be consumed by the hot
+  // search loop without auto/manual branches.
+  static std::pair<uint32_t, uint32_t> resolve_query_prefetch(
+      size_t vector_data_size, uint32_t max_degree, uint32_t requested_offset,
+      uint32_t requested_lines);
 
   int init(ContextType type);
   int init(ContextType type, uint32_t streamer_doc_cnt);

@@ -183,7 +183,7 @@ int VamanaStreamer::cleanup(void) {
   state_ = STATE_INIT;
   check_crc_enabled_ = false;
   get_vector_enabled_ = false;
-  two_pass_build_enabled_ = false;
+  two_pass_build_enabled_ = VamanaEntity::kDefaultTwoPassBuild;
   use_bulk_build_ = true;
   bulk_build_active_ = false;
   build_finalized_.store(false);

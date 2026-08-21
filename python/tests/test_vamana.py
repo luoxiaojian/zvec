@@ -62,6 +62,7 @@ DEFAULT_SEARCH_LIST_SIZE = 100
 DEFAULT_ALPHA = 1.2
 DEFAULT_EF_SEARCH = 200
 DEFAULT_SATURATE_GRAPH = False
+DEFAULT_TWO_PASS_BUILD = True
 DEFAULT_REVERSE_PRUNE_BATCH_SIZE = 1
 DEFAULT_BUILD_PREFETCH_OFFSET = 16
 DEFAULT_BUILD_PREFETCH_LINES = 4
@@ -85,7 +86,7 @@ def _build_schema(
     use_contiguous_memory: bool = False,
     use_flat_contiguous_memory: bool = False,
     flat_data_type: DataType = DataType.UNDEFINED,
-    two_pass_build: bool = False,
+    two_pass_build: bool = DEFAULT_TWO_PASS_BUILD,
     reverse_prune_batch_size: int = DEFAULT_REVERSE_PRUNE_BATCH_SIZE,
     build_prefetch_offset: int = DEFAULT_BUILD_PREFETCH_OFFSET,
     build_prefetch_lines: int = DEFAULT_BUILD_PREFETCH_LINES,
@@ -175,6 +176,7 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is DEFAULT_SATURATE_GRAPH
         assert param.use_contiguous_memory is False
         assert param.use_id_map is False
+        assert param.two_pass_build is DEFAULT_TWO_PASS_BUILD
         assert (
             param.reverse_prune_batch_size
             == DEFAULT_REVERSE_PRUNE_BATCH_SIZE
@@ -194,6 +196,7 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
+            two_pass_build=False,
             quantize_type=QuantizeType.INT8,
             reverse_prune_batch_size=8,
             build_prefetch_offset=32,
@@ -209,6 +212,7 @@ class TestVamanaIndexParamSurface:
         assert param.saturate_graph is True
         assert param.use_contiguous_memory is True
         assert param.use_id_map is False
+        assert param.two_pass_build is False
         assert param.reverse_prune_batch_size == 8
         assert param.build_prefetch_offset == 32
         assert param.build_prefetch_lines == 2
@@ -225,6 +229,7 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
+            two_pass_build=False,
             quantize_type=QuantizeType.FP16,
             reverse_prune_batch_size=4,
             build_prefetch_offset=0,
@@ -241,6 +246,7 @@ class TestVamanaIndexParamSurface:
         assert data["saturate_graph"] is True
         assert data["use_contiguous_memory"] is True
         assert data["use_id_map"] is False
+        assert data["two_pass_build"] is False
         assert data["reverse_prune_batch_size"] == 4
         assert data["build_prefetch_offset"] == 0
         assert data["build_prefetch_lines"] == 0
@@ -285,6 +291,7 @@ class TestVamanaIndexParamSurface:
             ("saturate_graph", dict(saturate_graph=True)),
             ("use_contiguous_memory", dict(use_contiguous_memory=True)),
             ("use_id_map", dict(use_id_map=True)),
+            ("two_pass_build", dict(two_pass_build=False)),
             ("reverse_prune_batch_size", dict(reverse_prune_batch_size=4)),
             ("build_prefetch_offset", dict(build_prefetch_offset=24)),
             ("build_prefetch_lines", dict(build_prefetch_lines=3)),
@@ -310,6 +317,7 @@ class TestVamanaIndexParamSurface:
             saturate_graph=True,
             use_contiguous_memory=True,
             use_id_map=False,
+            two_pass_build=False,
             quantize_type=QuantizeType.INT8,
             reverse_prune_batch_size=8,
             build_prefetch_offset=48,
@@ -326,6 +334,7 @@ class TestVamanaIndexParamSurface:
         assert restored.saturate_graph is True
         assert restored.use_contiguous_memory is True
         assert restored.use_id_map is False
+        assert restored.two_pass_build is False
         assert restored.reverse_prune_batch_size == 8
         assert restored.build_prefetch_offset == 48
         assert restored.build_prefetch_lines == 3
@@ -347,8 +356,8 @@ class TestVamanaQueryParamSurface:
         assert q.is_linear is False
         assert q.is_using_refiner is False
         assert q.scale_factor == pytest.approx(1.0)
-        assert q.prefetch_offset == 8
-        assert q.prefetch_lines == 0
+        assert q.prefetch_offset is None
+        assert q.prefetch_lines is None
 
     def test_custom_construction(self):
         q = VamanaQueryParam(
@@ -370,6 +379,22 @@ class TestVamanaQueryParamSurface:
         assert q.scale_factor == pytest.approx(6.4)
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
+
+    def test_explicit_zero_prefetch_overrides_are_preserved(self):
+        q = VamanaQueryParam(
+            extra_params={"prefetch_offset": 0, "prefetch_lines": 0}
+        )
+        assert q.prefetch_offset == 0
+        assert q.prefetch_lines == 0
+
+    def test_prefetch_fields_can_override_auto_independently(self):
+        offset_only = VamanaQueryParam(extra_params={"prefetch_offset": 96})
+        assert offset_only.prefetch_offset == 96
+        assert offset_only.prefetch_lines is None
+
+        lines_only = VamanaQueryParam(extra_params={"prefetch_lines": 1})
+        assert lines_only.prefetch_offset is None
+        assert lines_only.prefetch_lines == 1
 
     def test_repr_contains_key_fields(self):
         text = repr(
@@ -412,6 +437,12 @@ class TestVamanaQueryParamSurface:
         assert restored.scale_factor == pytest.approx(8.0)
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
+
+    def test_auto_prefetch_pickle_roundtrip(self):
+        restored = pickle.loads(pickle.dumps(VamanaQueryParam(ef_search=96)))
+        assert restored.ef_search == 96
+        assert restored.prefetch_offset is None
+        assert restored.prefetch_lines is None
 
 
 class TestVamanaPublicNamespace:

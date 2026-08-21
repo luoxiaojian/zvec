@@ -597,7 +597,7 @@ class VamanaIndexParams : public VectorIndexParams {
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
-      bool two_pass_build = false,
+      bool two_pass_build = core_interface::kDefaultVamanaTwoPassBuild,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       bool use_flat_contiguous_memory = false,
       int reverse_prune_batch_size =
@@ -629,7 +629,8 @@ class VamanaIndexParams : public VectorIndexParams {
                     QuantizeType quantize_type)
       : VamanaIndexParams(metric_type, max_degree, search_list_size, alpha,
                           saturate_graph, use_contiguous_memory, use_id_map,
-                          false, quantize_type) {}
+                          core_interface::kDefaultVamanaTwoPassBuild,
+                          quantize_type) {}
 
   using OPtr = std::shared_ptr<VamanaIndexParams>;
 

@@ -659,7 +659,7 @@ Attributes:
         db layer always supplies consecutive ids so this is currently
         ignored by the engine. Default is False.
     two_pass_build (bool): If True, run the full-graph two-pass Vamana refine
-        before dumping the index. Default is False.
+        before dumping the index. Default is True.
     reverse_prune_batch_size (int): Number of pending reverse edges accumulated
         before RobustPrune runs during bulk construction. ``1`` preserves the
         original immediate-prune behavior; values greater than one reduce
@@ -705,7 +705,9 @@ Examples:
            py::arg("saturate_graph") =
                core_interface::kDefaultVamanaSaturateGraph,
            py::arg("use_contiguous_memory") = false,
-           py::arg("use_id_map") = false, py::arg("two_pass_build") = false,
+           py::arg("use_id_map") = false,
+           py::arg("two_pass_build") =
+               core_interface::kDefaultVamanaTwoPassBuild,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("reverse_prune_batch_size") =
@@ -1548,11 +1550,15 @@ Args:
         refiner, relative to query top-k. Default is 1.0.
     extra_params (dict, optional): Additional search parameters. Supported keys:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
-          ``0`` disables prefetching. Default is ``8``.
+          If omitted, it is calculated from the stored vector size, graph
+          degree, effective prefetch lines, and a 6 KiB budget. ``0`` disables
+          graph-level vector prefetching.
           Values are clamped to ``256``.
         - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). ``0`` (default) uses the auto-derived
-          value ``ceil(dim/64)``. Values are clamped to ``256``.
+          per neighbour vector (PL). If omitted, at most two lines are used,
+          further clamped to the stored vector size. Explicit ``0`` retains the
+          full-vector behavior for compatibility. Values are clamped to ``256``
+          and to the stored vector size.
 )pbdoc")
       .def_property_readonly(
           "ef_search",
@@ -1566,16 +1572,24 @@ Args:
           "float: Coarse candidate count relative to query top-k.")
       .def_property_readonly(
           "prefetch_offset",
-          [](const VamanaQueryParams &self) -> uint32_t {
-            return self.prefetch_offset();
+          [](const VamanaQueryParams &self) -> py::object {
+            if (self.prefetch_offset() ==
+                core_interface::kVamanaQueryPrefetchAuto) {
+              return py::none();
+            }
+            return py::int_(self.prefetch_offset());
           },
-          "int: Graph prefetch offset used by the Vamana fast path.")
+          "Optional[int]: Manual graph prefetch offset, or None for auto.")
       .def_property_readonly(
           "prefetch_lines",
-          [](const VamanaQueryParams &self) -> uint32_t {
-            return self.prefetch_lines();
+          [](const VamanaQueryParams &self) -> py::object {
+            if (self.prefetch_lines() ==
+                core_interface::kVamanaQueryPrefetchAuto) {
+              return py::none();
+            }
+            return py::int_(self.prefetch_lines());
           },
-          "int: Override of prefetch cache lines per vector (0=auto).")
+          "Optional[int]: Manual cache-line count, or None for auto.")
       .def("__repr__",
            [](const VamanaQueryParams &self) -> std::string {
              return "{"
@@ -1587,9 +1601,15 @@ Args:
                     ", \"is_using_refiner\":" +
                     std::to_string(self.is_using_refiner()) +
                     ", \"prefetch_offset\":" +
-                    std::to_string(self.prefetch_offset()) +
+                    (self.prefetch_offset() ==
+                             core_interface::kVamanaQueryPrefetchAuto
+                         ? "null"
+                         : std::to_string(self.prefetch_offset())) +
                     ", \"prefetch_lines\":" +
-                    std::to_string(self.prefetch_lines()) +
+                    (self.prefetch_lines() ==
+                             core_interface::kVamanaQueryPrefetchAuto
+                         ? "null"
+                         : std::to_string(self.prefetch_lines())) +
                     ", \"scale_factor\":" +
                     std::to_string(self.scale_factor()) + "}";
            })
@@ -1607,10 +1627,10 @@ Args:
             obj->set_radius(t[1].cast<float>());
             obj->set_is_linear(t[2].cast<bool>());
             obj->set_is_using_refiner(t[3].cast<bool>());
-            if (t.size() >= 5) {
+            if (t.size() >= 5 && !t[4].is_none()) {
               obj->set_prefetch_offset(t[4].cast<uint32_t>());
             }
-            if (t.size() >= 6) {
+            if (t.size() >= 6 && !t[5].is_none()) {
               obj->set_prefetch_lines(t[5].cast<uint32_t>());
             }
             if (t.size() >= 7) {

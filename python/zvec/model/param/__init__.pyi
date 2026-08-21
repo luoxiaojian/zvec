@@ -601,7 +601,7 @@ class VamanaIndexParam(VectorIndexParam):
         flat_data_type (DataType): Physical data type of the refine Flat
             reference index. ``DataType.UNDEFINED`` inherits the vector field.
         use_id_map (bool): Reserved flag for id remapping. Default is False.
-        two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is False.
+        two_pass_build (bool): Run full-graph two-pass Vamana refine before dump. Default is True.
         use_bulk_build (bool): Enable the optimized Vamana construction pipeline. Default is True.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
 
@@ -618,7 +618,7 @@ class VamanaIndexParam(VectorIndexParam):
         saturate_graph: bool = False,
         use_contiguous_memory: bool = False,
         use_id_map: bool = False,
-        two_pass_build: bool = False,
+        two_pass_build: bool = True,
         quantize_type: _zvec.typing.QuantizeType = ...,
         use_flat_contiguous_memory: bool = False,
         reverse_prune_batch_size: typing.SupportsInt = 1,
@@ -673,8 +673,11 @@ class VamanaQueryParam(QueryParam):
         is_using_refiner (bool): Whether to use refiner. Default is False.
         scale_factor (float): Number of coarse candidates passed to the refiner,
             relative to query top-k. Default is 1.0.
-        prefetch_offset (int): Graph prefetch offset (PO). Default is 8.
-        prefetch_lines (int): Cache lines to prefetch per vector (PL). Default is 0 (auto).
+        prefetch_offset (int | None): Manual graph prefetch offset (PO), or
+            None when it will be calculated from the stored-vector schema,
+            graph degree, effective prefetch lines, and a 6 KiB budget.
+        prefetch_lines (int | None): Manual cache lines to prefetch per vector,
+            or None to use at most two lines, clamped to the stored vector.
 
     Examples:
         >>> params = VamanaQueryParam(ef_search=200)
@@ -703,9 +706,12 @@ class VamanaQueryParam(QueryParam):
                 the refiner, relative to query top-k. Default is 1.0.
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Graph prefetch offset (PO).
-                  ``0`` disables prefetching. Default is ``8``.
+                  If omitted, it is calculated after loading the index from the
+                  stored-vector schema, graph degree, effective line count, and
+                  a 6 KiB budget. ``0`` disables graph-level vector prefetching.
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
-                  ``0`` (default) means auto-derive from vector size.
+                  If omitted, at most two lines are used. Explicit ``0``
+                  prefetches the full stored vector for compatibility.
         """
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
@@ -716,11 +722,11 @@ class VamanaQueryParam(QueryParam):
     def scale_factor(self) -> float:
         """float: Coarse candidate count relative to query top-k."""
     @property
-    def prefetch_offset(self) -> int:
-        """int: Graph prefetch offset used by the Vamana fast path."""
+    def prefetch_offset(self) -> int | None:
+        """Manual graph prefetch offset, or None for schema-derived auto."""
     @property
-    def prefetch_lines(self) -> int:
-        """int: Override of prefetch cache lines per vector (0=auto)."""
+    def prefetch_lines(self) -> int | None:
+        """Manual cache-line count, or None for schema-derived auto."""
 
 class IndexOption:
     """

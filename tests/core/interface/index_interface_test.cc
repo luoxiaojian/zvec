@@ -607,8 +607,13 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
     ASSERT_EQ(0, source->Add(data, i));
   }
 
-  auto run_merge = [&](bool two_pass_build, bool use_contiguous_memory,
+  auto run_merge = [&](int two_pass_build_override,
+                       bool use_contiguous_memory,
                        QuantizerType quantizer_type) {
+    const bool two_pass_build =
+        two_pass_build_override < 0
+            ? kDefaultVamanaTwoPassBuild
+            : static_cast<bool>(two_pass_build_override);
     remove_files(target_name);
     VamanaIndexParamBuilder target_builder;
     target_builder.WithMetricType(MetricType::kL2sq)
@@ -618,8 +623,10 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
         .WithMaxDegree(16)
         .WithSearchListSize(32)
         .WithAlpha(1.5f)
-        .WithUseContiguousMemory(use_contiguous_memory)
-        .WithTwoPassBuild(two_pass_build);
+        .WithUseContiguousMemory(use_contiguous_memory);
+    if (two_pass_build_override >= 0) {
+      target_builder.WithTwoPassBuild(two_pass_build);
+    }
     if (quantizer_type != QuantizerType::kNone) {
       target_builder.WithQuantizerParam(QuantizerParam(quantizer_type));
     }
@@ -689,6 +696,7 @@ TEST(IndexInterface, VamanaAutomaticBulkBuildOnMerge) {
     ASSERT_EQ(0, reopened->Close());
   };
 
+  run_merge(-1, true, QuantizerType::kUniformUint8);
   run_merge(false, false, QuantizerType::kNone);
   run_merge(false, true, QuantizerType::kUniformUint8);
   run_merge(true, true, QuantizerType::kUniformUint8);
@@ -848,6 +856,24 @@ TEST(IndexInterface, Serialize) {
     ASSERT_EQ(32, vamana_param->build_prefetch_offset);
     ASSERT_EQ(2, vamana_param->build_prefetch_lines);
     ASSERT_FALSE(vamana_param->use_bulk_build);
+    ASSERT_TRUE(vamana_param->two_pass_build);
+
+    const auto default_omit_json = param->SerializeToJson(true);
+    ASSERT_EQ(std::string::npos,
+              default_omit_json.find("two_pass_build"));
+
+    auto one_pass_param = std::make_shared<VamanaIndexParam>(*param);
+    one_pass_param->two_pass_build = false;
+    const auto one_pass_omit_json = one_pass_param->SerializeToJson(true);
+    ASSERT_NE(std::string::npos,
+              one_pass_omit_json.find("two_pass_build"));
+    auto one_pass_deserialized =
+        IndexFactory::DeserializeIndexParamFromJson(one_pass_omit_json);
+    ASSERT_NE(nullptr, one_pass_deserialized.get());
+    auto one_pass_vamana =
+        std::dynamic_pointer_cast<VamanaIndexParam>(one_pass_deserialized);
+    ASSERT_NE(nullptr, one_pass_vamana.get());
+    ASSERT_FALSE(one_pass_vamana->two_pass_build);
   }
 
   {
@@ -928,6 +954,31 @@ TEST(IndexInterface, Serialize) {
 
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
+  }
+
+  {
+    auto automatic = VamanaQueryParamBuilder().with_topk(10).build();
+    const std::string automatic_json =
+        IndexFactory::QueryParamSerializeToJson(*automatic, true);
+    EXPECT_EQ(std::string::npos, automatic_json.find("prefetch_offset"));
+    EXPECT_EQ(std::string::npos, automatic_json.find("prefetch_lines"));
+
+    auto manual_zero = VamanaQueryParamBuilder()
+                           .with_topk(10)
+                           .with_prefetch_offset(0)
+                           .with_prefetch_lines(0)
+                           .build();
+    const std::string manual_zero_json =
+        IndexFactory::QueryParamSerializeToJson(*manual_zero, true);
+    EXPECT_NE(std::string::npos,
+              manual_zero_json.find("\"prefetch_offset\":0"));
+    EXPECT_NE(std::string::npos, manual_zero_json.find("\"prefetch_lines\":0"));
+    auto restored_zero =
+        IndexFactory::QueryParamDeserializeFromJson<VamanaQueryParam>(
+            manual_zero_json);
+    ASSERT_NE(nullptr, restored_zero);
+    EXPECT_EQ(0U, restored_zero->prefetch_offset);
+    EXPECT_EQ(0U, restored_zero->prefetch_lines);
   }
 }
 

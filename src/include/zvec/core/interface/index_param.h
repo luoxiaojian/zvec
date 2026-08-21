@@ -356,7 +356,7 @@ struct VamanaIndexParam : public BaseIndexParam {
   int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
-  bool two_pass_build = false;
+  bool two_pass_build = kDefaultVamanaTwoPassBuild;
   int reverse_prune_batch_size = kDefaultVamanaReversePruneBatchSize;
   int build_prefetch_offset = kDefaultVamanaBuildPrefetchOffset;
   int build_prefetch_lines = kDefaultVamanaBuildPrefetchLines;
@@ -387,8 +387,8 @@ struct VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
-  uint32_t prefetch_offset = kDefaultPrefetchOffset;
-  uint32_t prefetch_lines = kDefaultPrefetchLines;
+  uint32_t prefetch_offset = kDefaultVamanaPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultVamanaPrefetchLines;
 
   BaseIndexQueryParam::Pointer Clone() const override {
     return std::make_shared<VamanaQueryParam>(*this);

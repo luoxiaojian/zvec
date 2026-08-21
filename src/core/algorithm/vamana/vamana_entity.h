@@ -123,6 +123,7 @@ class VamanaEntity {
   static constexpr uint32_t kDefaultEf = 200;
   static constexpr uint32_t kDefaultBuildPrefetchOffset = 16;
   static constexpr uint32_t kDefaultBuildPrefetchLines = 4;
+  static constexpr bool kDefaultTwoPassBuild = true;
   static constexpr float kDefaultScanRatio = 0.1f;
   static constexpr uint32_t kDefaultBruteForceThreshold = 1000U;
   static constexpr uint32_t kDefaultDocsHardLimit = 1 << 30U;

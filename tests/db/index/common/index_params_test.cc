@@ -156,6 +156,17 @@ TEST(IndexParamsTest, FlatReferenceDataType) {
             DataType::VECTOR_UINT8);
 }
 
+TEST(IndexParamsTest, VamanaTwoPassBuildDefaultAndOverride) {
+  VamanaIndexParams params(MetricType::L2);
+  EXPECT_TRUE(params.two_pass_build());
+
+  params.set_two_pass_build(false);
+  EXPECT_FALSE(params.two_pass_build());
+  auto cloned = std::dynamic_pointer_cast<VamanaIndexParams>(params.clone());
+  ASSERT_NE(cloned, nullptr);
+  EXPECT_FALSE(cloned->two_pass_build());
+}
+
 TEST(IndexParamsTest, IVFIndexParams) {
   // Test constructor
   IVFIndexParams params(MetricType::L2, 128, 10, false, QuantizeType::INT8);

@@ -14,6 +14,7 @@
 #include "vamana_streamer.h"
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "vamana_context.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -23,6 +24,7 @@
 #include <memory>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/interface/constants.h>
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -50,6 +52,36 @@ class VamanaStreamerTest : public testing::Test {
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
+
+TEST(VamanaQueryPrefetchTest, ResolvesAutoFromStoredVectorSchema) {
+  const uint32_t auto_value = core_interface::kVamanaQueryPrefetchAuto;
+
+  // SIFT uniform_uint4: a 128-d vector occupies one 64-B graph body.
+  EXPECT_EQ(std::make_pair(52U, 1U), VamanaContext::resolve_query_prefetch(
+                                         64, 52, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(64U, 1U), VamanaContext::resolve_query_prefetch(
+                                         64, 64, auto_value, auto_value));
+
+  // SIFT uniform int8/uint8 and GIST's 980-B int8 record both seed two
+  // lines, giving offset 48. The separate GIST fp16 refine Flat is excluded.
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         128, 64, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         980, 80, auto_value, auto_value));
+}
+
+TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideAutoIndependently) {
+  const uint32_t auto_value = core_interface::kVamanaQueryPrefetchAuto;
+
+  EXPECT_EQ(std::make_pair(48U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, 48, auto_value));
+  EXPECT_EQ(std::make_pair(64U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, auto_value, 1));
+  EXPECT_EQ(std::make_pair(64U, 4U),
+            VamanaContext::resolve_query_prefetch(1920, 80, 64, 4));
+  EXPECT_EQ(std::make_pair(0U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, 0, 0));
+}
 
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
 shared_ptr<IndexMeta> VamanaStreamerTest::index_meta_ptr_;
