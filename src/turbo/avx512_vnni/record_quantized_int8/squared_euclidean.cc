@@ -36,6 +36,177 @@
 
 namespace zvec::turbo::avx512_vnni {
 
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
+
+namespace {
+
+// Reduce four zmm int32 accumulators to one xmm holding [s0, s1, s2, s3].
+static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0, __m512i a1,
+                                                         __m512i a2,
+                                                         __m512i a3) {
+  const __m256i b0 = _mm256_add_epi32(_mm512_castsi512_si256(a0),
+                                      _mm512_extracti64x4_epi64(a0, 1));
+  const __m256i b1 = _mm256_add_epi32(_mm512_castsi512_si256(a1),
+                                      _mm512_extracti64x4_epi64(a1, 1));
+  const __m256i b2 = _mm256_add_epi32(_mm512_castsi512_si256(a2),
+                                      _mm512_extracti64x4_epi64(a2, 1));
+  const __m256i b3 = _mm256_add_epi32(_mm512_castsi512_si256(a3),
+                                      _mm512_extracti64x4_epi64(a3, 1));
+  const __m256i c01 = _mm256_hadd_epi32(b0, b1);
+  const __m256i c23 = _mm256_hadd_epi32(b2, b3);
+  const __m256i d = _mm256_hadd_epi32(c01, c23);
+  return _mm_add_epi32(_mm256_castsi256_si128(d),
+                       _mm256_extracti128_si256(d, 1));
+}
+
+// Stored-pair inner product using the record's existing signed-byte sum. VNNI
+// accepts uint8 * int8, so shift lhs by 128 and subtract 128 * sum(rhs).
+// This avoids the sign/abs/maddubs/madd sequence without changing the record.
+static ailego_force_inline float stored_pair_inner_product(
+    const int8_t *lhs, const int8_t *rhs, size_t dimensionality, int rhs_sum) {
+  const __m512i sign_bit = _mm512_set1_epi8(static_cast<int8_t>(0x80));
+  __m512i acc0 = _mm512_setzero_si512();
+  __m512i acc1 = _mm512_setzero_si512();
+  size_t dim = 0;
+  for (; dim + 128 <= dimensionality; dim += 128) {
+    const __m512i lhs0 = _mm512_xor_si512(
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + dim)),
+        sign_bit);
+    const __m512i lhs1 = _mm512_xor_si512(
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + dim + 64)),
+        sign_bit);
+    const __m512i rhs0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + dim));
+    const __m512i rhs1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + dim + 64));
+    acc0 = _mm512_dpbusd_epi32(acc0, lhs0, rhs0);
+    acc1 = _mm512_dpbusd_epi32(acc1, lhs1, rhs1);
+  }
+  for (; dim + 64 <= dimensionality; dim += 64) {
+    const __m512i shifted_lhs = _mm512_xor_si512(
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(lhs + dim)),
+        sign_bit);
+    const __m512i rhs_values =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(rhs + dim));
+    acc0 = _mm512_dpbusd_epi32(acc0, shifted_lhs, rhs_values);
+  }
+
+  int result = _mm512_reduce_add_epi32(_mm512_add_epi32(acc0, acc1));
+  for (; dim < dimensionality; ++dim) {
+    const int shifted_lhs =
+        static_cast<int>(static_cast<uint8_t>(lhs[dim]) ^ uint8_t{0x80});
+    result += shifted_lhs * static_cast<int>(rhs[dim]);
+  }
+  result -= 128 * rhs_sum;
+  return static_cast<float>(result);
+}
+
+// GIST hot path: overlap four 960-byte candidate streams and jointly reduce
+// their VNNI accumulators. The four look-ahead candidates are prefetched one
+// cache line at a time while the current four are being consumed.
+static ailego_force_inline void inner_product_batch4_960(
+    const void *query, const void *const *vectors,
+    const void *const *prefetch_ptrs, float *distances) {
+  const auto *query_bytes = reinterpret_cast<const uint8_t *>(query);
+  const auto *v0 = reinterpret_cast<const int8_t *>(vectors[0]);
+  const auto *v1 = reinterpret_cast<const int8_t *>(vectors[1]);
+  const auto *v2 = reinterpret_cast<const int8_t *>(vectors[2]);
+  const auto *v3 = reinterpret_cast<const int8_t *>(vectors[3]);
+  __m512i a0 = _mm512_setzero_si512();
+  __m512i a1 = _mm512_setzero_si512();
+  __m512i a2 = _mm512_setzero_si512();
+  __m512i a3 = _mm512_setzero_si512();
+
+  for (size_t dim = 0; dim < 960; dim += 64) {
+    const __m512i q = _mm512_loadu_si512(
+        reinterpret_cast<const __m512i *>(query_bytes + dim));
+    const __m512i r0 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v0 + dim));
+    const __m512i r1 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v1 + dim));
+    const __m512i r2 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v2 + dim));
+    const __m512i r3 =
+        _mm512_loadu_si512(reinterpret_cast<const __m512i *>(v3 + dim));
+    for (size_t j = 0; j < 4; ++j) {
+      if (prefetch_ptrs[j] != nullptr) {
+        _mm_prefetch(reinterpret_cast<const char *>(prefetch_ptrs[j]) + dim,
+                     _MM_HINT_T0);
+      }
+    }
+    a0 = _mm512_dpbusd_epi32(a0, q, r0);
+    a1 = _mm512_dpbusd_epi32(a1, q, r1);
+    a2 = _mm512_dpbusd_epi32(a2, q, r2);
+    a3 = _mm512_dpbusd_epi32(a3, q, r3);
+  }
+  _mm_storeu_ps(distances,
+                _mm_cvtepi32_ps(reduce_add_4x16_epi32(a0, a1, a2, a3)));
+}
+
+static ailego_force_inline float finish_distance(const void *vector,
+                                                 size_t original_dim,
+                                                 float inner_product, float q_a,
+                                                 float q_b, float sum,
+                                                 float sum2) {
+  const float *tail = reinterpret_cast<const float *>(
+      reinterpret_cast<const int8_t *>(vector) + original_dim);
+  const float m_a = tail[0];
+  const float m_b = tail[1];
+  const float m_s = tail[2];
+  const float m_s2 = tail[3];
+  const int int8_sum = reinterpret_cast<const int *>(tail)[4];
+  float result = inner_product - 128.0f * static_cast<float>(int8_sum);
+  result = m_a * m_a * m_s2 + sum2 - 2 * m_a * q_a * result +
+           (m_b - q_b) * (m_b - q_b) * original_dim +
+           2 * (m_b - q_b) * (m_s * m_a - sum);
+  return result;
+}
+
+static ailego_force_inline void finish_distance_batch4(
+    const void *const *vectors, size_t original_dim,
+    const float *inner_products, float q_a, float q_b, float sum, float sum2,
+    float *distances) {
+  const float *t0 = reinterpret_cast<const float *>(
+      reinterpret_cast<const int8_t *>(vectors[0]) + original_dim);
+  const float *t1 = reinterpret_cast<const float *>(
+      reinterpret_cast<const int8_t *>(vectors[1]) + original_dim);
+  const float *t2 = reinterpret_cast<const float *>(
+      reinterpret_cast<const int8_t *>(vectors[2]) + original_dim);
+  const float *t3 = reinterpret_cast<const float *>(
+      reinterpret_cast<const int8_t *>(vectors[3]) + original_dim);
+
+  const __m128 m_a = _mm_set_ps(t3[0], t2[0], t1[0], t0[0]);
+  const __m128 m_b = _mm_set_ps(t3[1], t2[1], t1[1], t0[1]);
+  const __m128 m_s = _mm_set_ps(t3[2], t2[2], t1[2], t0[2]);
+  const __m128 m_s2 = _mm_set_ps(t3[3], t2[3], t1[3], t0[3]);
+  const __m128i code_sums = _mm_set_epi32(reinterpret_cast<const int *>(t3)[4],
+                                          reinterpret_cast<const int *>(t2)[4],
+                                          reinterpret_cast<const int *>(t1)[4],
+                                          reinterpret_cast<const int *>(t0)[4]);
+  const __m128 inner_product =
+      _mm_sub_ps(_mm_loadu_ps(inner_products),
+                 _mm_mul_ps(_mm_cvtepi32_ps(code_sums), _mm_set1_ps(128.0f)));
+  const __m128 bias_delta = _mm_sub_ps(m_b, _mm_set1_ps(q_b));
+
+  __m128 result =
+      _mm_add_ps(_mm_mul_ps(_mm_mul_ps(m_a, m_a), m_s2), _mm_set1_ps(sum2));
+  result = _mm_sub_ps(result,
+                      _mm_mul_ps(_mm_mul_ps(_mm_mul_ps(_mm_set1_ps(2.0f), m_a),
+                                            _mm_set1_ps(q_a)),
+                                 inner_product));
+  result = _mm_add_ps(
+      result, _mm_mul_ps(_mm_mul_ps(bias_delta, bias_delta),
+                         _mm_set1_ps(static_cast<float>(original_dim))));
+  result = _mm_add_ps(
+      result, _mm_mul_ps(_mm_mul_ps(_mm_set1_ps(2.0f), bias_delta),
+                         _mm_sub_ps(_mm_mul_ps(m_s, m_a), _mm_set1_ps(sum))));
+  _mm_storeu_ps(distances, result);
+}
+
+}  // namespace
+
+#endif
+
 void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
                                      float *distance) {
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
@@ -43,12 +214,14 @@ void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
   if (original_dim <= 0) {
     return;
   }
-  internal::ip_int8_avx512_vnni(a, b, original_dim, distance);
-
   const float *a_tail = reinterpret_cast<const float *>(
       reinterpret_cast<const int8_t *>(a) + original_dim);
   const float *b_tail = reinterpret_cast<const float *>(
       reinterpret_cast<const int8_t *>(b) + original_dim);
+  const int b_int8_sum = reinterpret_cast<const int *>(b_tail)[4];
+  *distance = stored_pair_inner_product(reinterpret_cast<const int8_t *>(a),
+                                        reinterpret_cast<const int8_t *>(b),
+                                        original_dim, b_int8_sum);
 
   float ma = a_tail[0];
   float mb = a_tail[1];
@@ -74,10 +247,9 @@ void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
 #endif
 }
 
-void squared_euclidean_int8_batch_distance(const void *const *vectors,
-                                           const void *query, size_t n,
-                                           size_t dim, float *distances,
-                                           const void *const * /*extra_values*/) {
+void squared_euclidean_int8_batch_distance(
+    const void *const *vectors, const void *query, size_t n, size_t dim,
+    float *distances, const void *const * /*extra_values*/) {
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
   const int original_dim = dim - 20;
   if (original_dim <= 0) {
@@ -97,6 +269,22 @@ void squared_euclidean_int8_batch_distance(const void *const *vectors,
   float qS2 = q_tail[3];
   const float sum = qA * qS;
   const float sum2 = qA * qA * qS2;
+
+  if (original_dim == 960) {
+    for (; i + 4 <= n; i += 4) {
+      const void *prefetch_ptrs[4];
+      for (size_t j = 0; j < 4; ++j) {
+        prefetch_ptrs[j] = i + j + 4 < n ? vectors[i + j + 4] : nullptr;
+      }
+      float inner_products[4];
+      inner_product_batch4_960(query, &vectors[i], prefetch_ptrs,
+                               inner_products);
+      finish_distance_batch4(&vectors[i], original_dim, inner_products, qA, qB,
+                             sum, sum2, distances + i);
+    }
+    data_ptrs_ptr += i;
+    dist_ptr += i;
+  }
 
   for (; i + batch_size <= n; i += batch_size) {
     std::array<const void *, batch_size> prefetch_ptrs;
