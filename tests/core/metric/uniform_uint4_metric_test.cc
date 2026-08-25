@@ -49,26 +49,30 @@ TEST(UniformUint4Metric, PairAndBatchMatchScalarExactly) {
     ASSERT_TRUE(static_cast<bool>(batch_distance));
     EXPECT_FALSE(metric->use_stored_query_for_build());
 
-    constexpr size_t count = 7;
-    std::vector<uint8_t> query(encoded_dimension);
-    std::vector<std::vector<uint8_t>> rows(
-        count, std::vector<uint8_t>(encoded_dimension));
-    std::vector<const void *> pointers(count);
-    std::vector<float> expected(count);
-    std::vector<float> actual(count);
-    for (auto &value : query) value = static_cast<uint8_t>(bytes(generator));
-    for (size_t i = 0; i < count; ++i) {
-      for (auto &value : rows[i]) value = static_cast<uint8_t>(bytes(generator));
-      pointers[i] = rows[i].data();
-      expected[i] = ScalarDistance(rows[i].data(), query.data(),
-                                   encoded_dimension);
-      float pair = 0.0f;
-      distance(rows[i].data(), query.data(), encoded_dimension, &pair);
-      EXPECT_EQ(expected[i], pair);
+    for (const size_t count :
+         {1UL, 2UL, 3UL, 4UL, 7UL, 8UL, 9UL, 31UL, 32UL}) {
+      std::vector<uint8_t> query(encoded_dimension);
+      std::vector<std::vector<uint8_t>> rows(
+          count, std::vector<uint8_t>(encoded_dimension));
+      std::vector<const void *> pointers(count);
+      std::vector<float> expected(count);
+      std::vector<float> actual(count);
+      for (auto &value : query) value = static_cast<uint8_t>(bytes(generator));
+      for (size_t i = 0; i < count; ++i) {
+        for (auto &value : rows[i])
+          value = static_cast<uint8_t>(bytes(generator));
+        pointers[i] = rows[i].data();
+        expected[i] =
+            ScalarDistance(rows[i].data(), query.data(), encoded_dimension);
+        float pair = 0.0f;
+        distance(rows[i].data(), query.data(), encoded_dimension, &pair);
+        EXPECT_EQ(expected[i], pair);
+      }
+      batch_distance(pointers.data(), query.data(), count, encoded_dimension,
+                     actual.data(), nullptr);
+      EXPECT_EQ(expected, actual)
+          << "logical_dimension=" << logical_dimension << " count=" << count;
     }
-    batch_distance(pointers.data(), query.data(), count, encoded_dimension,
-                   actual.data(), nullptr);
-    EXPECT_EQ(expected, actual) << "logical_dimension=" << logical_dimension;
   }
 }
 
