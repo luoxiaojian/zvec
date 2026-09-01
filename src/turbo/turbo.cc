@@ -135,7 +135,7 @@ namespace {
 // public typedefs on return).
 using RawDistanceFn = void (*)(const void *, const void *, size_t, float *);
 using RawBatchDistanceFn = void (*)(const void *const *, const void *, size_t,
-                                    size_t, float *);
+                                    size_t, float *, const void *const *);
 
 using CpuFeatureMask = uint32_t;
 constexpr CpuFeatureMask kCpuFeatureNone = 0;
@@ -298,7 +298,8 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kSquaredEuclidean,
      avx512_vnni::uniform_squared_euclidean_uint8_distance,
      avx512_vnni::uniform_squared_euclidean_uint8_batch_distance,
-     avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess},
+     avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess,
+     kCpuFeatureNone},
 
     // --- fp16 (AVX512-FP16, AVX512, AVX2, NEON, scalar) ---
     {QuantizeType::kFp16, DataType::kFp16, CpuArchType::kAVX512FP16,

@@ -1242,7 +1242,11 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
     for (uint32_t d = 0; d < kDimension; ++d) {
       const float base = 0.25F + static_cast<float>(d) * 0.017F;
       const int32_t offset = static_cast<int32_t>((i * 37 + d * 19) % 97) - 48;
-      vectors[i][d] = base + static_cast<float>(offset) * 0.00011F;
+      // Keep the top-k boundary well outside FP16 SIMD accumulation noise.
+      // The refine path evaluates candidates in coarse-result order, so a
+      // nearly collinear data set can otherwise select a different member of
+      // a numerical tie without indicating a pipeline error.
+      vectors[i][d] = base + static_cast<float>(offset) * 0.01F;
     }
     ASSERT_EQ(0, source->add(VectorData{DenseVector{vectors[i].data()}}, i));
   }
@@ -1254,6 +1258,16 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
   std::vector<uint16_t> native_query(kDimension);
   zvec::ailego::FloatHelper::ToFP16(query.data(), query.size(),
                                     native_query.data());
+
+  auto indices_sorted_by_key = [](const SearchResult &result) {
+    std::vector<size_t> indices(result.doc_list_.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(
+        indices.begin(), indices.end(), [&result](size_t lhs, size_t rhs) {
+          return result.doc_list_[lhs].key() < result.doc_list_[rhs].key();
+        });
+    return indices;
+  };
 
   for (const bool use_contiguous : {false, true}) {
     const std::string target_name = use_contiguous
@@ -1341,31 +1355,42 @@ TEST(IndexInterface, Fp16CosineRefineMatchesNativeFlatPipeline) {
               direct_result.reverted_vector_list_.size());
     ASSERT_EQ(direct_result.reverted_vector_list_.size(),
               refined_result.reverted_vector_list_.size());
+
+    // Equal FP16 cosine scores have no key tie-break, and the refiner evaluates
+    // candidates in coarse-result order rather than native Flat scan order.
+    // Match documents by key so platform-specific tie ordering does not make
+    // the score and fetched-vector comparisons positional.
+    const auto native_indices = indices_sorted_by_key(native_result);
+    const auto direct_indices = indices_sorted_by_key(direct_result);
+    const auto refined_indices = indices_sorted_by_key(refined_result);
     for (size_t i = 0; i < native_result.doc_list_.size(); ++i) {
-      EXPECT_EQ(native_result.doc_list_[i].key(),
-                direct_result.doc_list_[i].key());
-      EXPECT_EQ(direct_result.doc_list_[i].key(),
-                refined_result.doc_list_[i].key());
-      EXPECT_NEAR(native_result.doc_list_[i].score(),
-                  direct_result.doc_list_[i].score(), 1e-7F);
-      EXPECT_NEAR(direct_result.doc_list_[i].score(),
-                  refined_result.doc_list_[i].score(), 1e-7F);
+      const size_t native_index = native_indices[i];
+      const size_t direct_index = direct_indices[i];
+      const size_t refined_index = refined_indices[i];
+      EXPECT_EQ(native_result.doc_list_[native_index].key(),
+                direct_result.doc_list_[direct_index].key());
+      EXPECT_EQ(direct_result.doc_list_[direct_index].key(),
+                refined_result.doc_list_[refined_index].key());
+      EXPECT_NEAR(native_result.doc_list_[native_index].score(),
+                  direct_result.doc_list_[direct_index].score(), 1e-7F);
+      EXPECT_NEAR(direct_result.doc_list_[direct_index].score(),
+                  refined_result.doc_list_[refined_index].score(), 1e-7F);
 
       ASSERT_EQ(kDimension * sizeof(uint16_t),
-                native_result.reverted_vector_list_[i].size());
+                native_result.reverted_vector_list_[native_index].size());
       ASSERT_EQ(kDimension * sizeof(float),
-                refined_result.reverted_vector_list_[i].size());
+                refined_result.reverted_vector_list_[refined_index].size());
       ASSERT_EQ(kDimension * sizeof(float),
-                direct_result.reverted_vector_list_[i].size());
+                direct_result.reverted_vector_list_[direct_index].size());
       std::vector<float> expected(kDimension);
       zvec::ailego::FloatHelper::ToFP32(
           reinterpret_cast<const uint16_t *>(
-              native_result.reverted_vector_list_[i].data()),
+              native_result.reverted_vector_list_[native_index].data()),
           kDimension, expected.data());
       const auto *restored = reinterpret_cast<const float *>(
-          refined_result.reverted_vector_list_[i].data());
+          refined_result.reverted_vector_list_[refined_index].data());
       const auto *direct_restored = reinterpret_cast<const float *>(
-          direct_result.reverted_vector_list_[i].data());
+          direct_result.reverted_vector_list_[direct_index].data());
       for (uint32_t d = 0; d < kDimension; ++d) {
         EXPECT_FLOAT_EQ(expected[d], restored[d]);
         EXPECT_FLOAT_EQ(expected[d], direct_restored[d]);
