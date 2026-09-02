@@ -49,11 +49,14 @@ void BlockHeap::reset(int32_t capacity, int32_t block_size) {
   cur_ = 0;
 }
 
-uint32_t BlockHeap::pop() {
+uint32_t BlockHeap::pop(uint32_t *next_id) {
   size_t ret_idx = cur_;
   set_checked(data_[cur_].first);
   while (cur_ < data_.size() && is_checked(data_[cur_].first)) {
     ++cur_;
+  }
+  if (next_id != nullptr) {
+    *next_id = cur_ < data_.size() ? get_id(data_[cur_].first) : UINT32_MAX;
   }
   return get_id(data_[ret_idx].first);
 }

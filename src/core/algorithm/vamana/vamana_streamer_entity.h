@@ -500,6 +500,21 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     return TypedNeighbors(std::move(block));
   }
 
+  //! Address range used by query-side graph-row prefetch. Avoid reading the
+  //! degree here: the prefetch is issued before get_neighbors_typed() consumes
+  //! the neighbor header.
+  ailego_force_inline const char *graph_prefetch_data(node_id_t id) const {
+    const uint32_t chunk_idx = id >> node_index_mask_bits_;
+    const uint32_t offset =
+        (id & node_index_mask_) * node_size() + vector_size() +
+        sizeof(key_t) + sizeof(uint32_t);
+    return get_node_chunk_base(chunk_idx) + offset;
+  }
+
+  ailego_force_inline size_t graph_prefetch_size() const {
+    return max_degree() * sizeof(node_id_t);
+  }
+
   ailego_force_inline int get_vector_typed(
       const node_id_t *ids, uint32_t count,
       std::vector<MmapMemoryBlock> &vec_blocks) const {
@@ -708,6 +723,23 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
       return use_key_info_map_ ? packed_key(id) : id;
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
+  }
+
+  //! Prefetch the complete packed graph record, including key and degree, so
+  //! the degree is resident before get_neighbors_typed() consumes it.
+  ailego_force_inline const char *graph_prefetch_data(node_id_t id) const {
+    if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
+      return packed_graph_row(id);
+    }
+    return VamanaMmapStreamerEntity::graph_prefetch_data(id);
+  }
+
+  ailego_force_inline size_t graph_prefetch_size() const {
+    if (ailego_likely(graph_base_ != nullptr)) {
+      return sizeof(key_t) + sizeof(uint32_t) +
+             max_degree() * sizeof(node_id_t);
+    }
+    return VamanaMmapStreamerEntity::graph_prefetch_size();
   }
 
   //! Direct vector pointer from flat vector array.

@@ -164,6 +164,22 @@ class VamanaContext : public IndexContext {
     return batch_indices_buf_;
   }
 
+  // Reusable scratch for the mmap/contiguous query fast path. Keeping these
+  // buffers in the context avoids allocating three (or four for metrics with
+  // extra values) max-degree arrays for every query.
+  inline std::vector<node_id_t> &search_neighbor_ids_buf() {
+    return search_neighbor_ids_buf_;
+  }
+  inline std::vector<float> &search_dists_buf() {
+    return search_dists_buf_;
+  }
+  inline std::vector<const void *> &search_vecs_buf() {
+    return search_vecs_buf_;
+  }
+  inline std::vector<const void *> &search_extra_values_buf() {
+    return search_extra_values_buf_;
+  }
+
   //! Build-time distance offset cached from the metric. Used by RobustPrune
   //! to shift the internal distance to a non-negative range before computing
   //! the ratio-based occlude_factor. Zero for metrics whose internal distance
@@ -340,6 +356,10 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+  std::vector<node_id_t> search_neighbor_ids_buf_;
+  std::vector<float> search_dists_buf_;
+  std::vector<const void *> search_vecs_buf_;
+  std::vector<const void *> search_extra_values_buf_;
 
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};
