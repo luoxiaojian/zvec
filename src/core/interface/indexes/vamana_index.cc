@@ -123,10 +123,16 @@ int VamanaIndex::_prepare_for_search(
       std::max(1u, std::min(2048u, vamana_search_param->ef_search));
   params.set(core::PARAM_VAMANA_STREAMER_EF, real_search_ef);
   const uint32_t real_search_po =
-      std::min(256u, vamana_search_param->prefetch_offset);
+      vamana_search_param->prefetch_offset == kVamanaQueryPrefetchAuto
+          ? kVamanaQueryPrefetchAuto
+          : std::min(kVamanaQueryPrefetchMaxValue,
+                     vamana_search_param->prefetch_offset);
   params.set(core::PARAM_VAMANA_STREAMER_PO, real_search_po);
   const uint32_t real_search_pl =
-      std::min(256u, vamana_search_param->prefetch_lines);
+      vamana_search_param->prefetch_lines == kVamanaQueryPrefetchAuto
+          ? kVamanaQueryPrefetchAuto
+          : std::min(kVamanaQueryPrefetchMaxValue,
+                     vamana_search_param->prefetch_lines);
   params.set(core::PARAM_VAMANA_STREAMER_PL, real_search_pl);
   context->update(params);
   return 0;

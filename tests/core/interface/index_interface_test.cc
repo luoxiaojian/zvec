@@ -1741,6 +1741,28 @@ TEST(IndexInterface, Serialize) {
 
     ASSERT_TRUE(IndexFactory::QueryParamSerializeToJson(*deserialized_param) ==
                 IndexFactory::QueryParamSerializeToJson(*param));
+
+    const std::string automatic_json =
+        IndexFactory::QueryParamSerializeToJson(*param, true);
+    EXPECT_EQ(std::string::npos, automatic_json.find("prefetch_offset"));
+    EXPECT_EQ(std::string::npos, automatic_json.find("prefetch_lines"));
+
+    auto manual_zero = VamanaQueryParamBuilder()
+                           .with_topk(10)
+                           .with_prefetch_offset(0)
+                           .with_prefetch_lines(0)
+                           .build();
+    const std::string manual_zero_json =
+        IndexFactory::QueryParamSerializeToJson(*manual_zero, true);
+    EXPECT_NE(std::string::npos,
+              manual_zero_json.find("\"prefetch_offset\":0"));
+    EXPECT_NE(std::string::npos, manual_zero_json.find("\"prefetch_lines\":0"));
+    auto restored_zero =
+        IndexFactory::QueryParamDeserializeFromJson<VamanaQueryParam>(
+            manual_zero_json);
+    ASSERT_NE(nullptr, restored_zero);
+    EXPECT_EQ(0U, restored_zero->prefetch_offset);
+    EXPECT_EQ(0U, restored_zero->prefetch_lines);
   }
 }
 

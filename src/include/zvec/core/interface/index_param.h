@@ -465,8 +465,8 @@ struct ZVEC_CORE_API VamanaQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<VamanaQueryParam>;
 
   uint32_t ef_search = kDefaultVamanaEfSearch;
-  uint32_t prefetch_offset = kDefaultPrefetchOffset;
-  uint32_t prefetch_lines = kDefaultPrefetchLines;
+  uint32_t prefetch_offset = kDefaultVamanaPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultVamanaPrefetchLines;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };

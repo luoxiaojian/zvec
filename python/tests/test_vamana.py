@@ -313,8 +313,8 @@ class TestVamanaQueryParamSurface:
         assert q.radius == pytest.approx(0.0)
         assert q.is_linear is False
         assert q.is_using_refiner is False
-        assert q.prefetch_offset == 8
-        assert q.prefetch_lines == 0
+        assert q.prefetch_offset is None
+        assert q.prefetch_lines is None
 
     def test_custom_construction(self):
         q = VamanaQueryParam(
@@ -334,6 +334,22 @@ class TestVamanaQueryParamSurface:
         assert q.is_using_refiner is True
         assert q.prefetch_offset == 8
         assert q.prefetch_lines == 2
+
+    def test_explicit_zero_prefetch_overrides_are_preserved(self):
+        q = VamanaQueryParam(
+            extra_params={"prefetch_offset": 0, "prefetch_lines": 0}
+        )
+        assert q.prefetch_offset == 0
+        assert q.prefetch_lines == 0
+
+    def test_prefetch_fields_can_override_auto_independently(self):
+        offset_only = VamanaQueryParam(extra_params={"prefetch_offset": 96})
+        assert offset_only.prefetch_offset == 96
+        assert offset_only.prefetch_lines is None
+
+        lines_only = VamanaQueryParam(extra_params={"prefetch_lines": 1})
+        assert lines_only.prefetch_offset is None
+        assert lines_only.prefetch_lines == 1
 
     def test_repr_contains_key_fields(self):
         text = repr(VamanaQueryParam(ef_search=128, radius=0.25))
@@ -369,6 +385,12 @@ class TestVamanaQueryParamSurface:
         assert restored.is_using_refiner is True
         assert restored.prefetch_offset == 4
         assert restored.prefetch_lines == 3
+
+    def test_auto_prefetch_pickle_roundtrip(self):
+        restored = pickle.loads(pickle.dumps(VamanaQueryParam(ef_search=96)))
+        assert restored.ef_search == 96
+        assert restored.prefetch_offset is None
+        assert restored.prefetch_lines is None
 
 
 class TestVamanaPublicNamespace:

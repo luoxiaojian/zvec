@@ -255,8 +255,8 @@ class ZVEC_API VamanaQueryParams : public QueryParams {
       int ef_search = core_interface::kDefaultVamanaEfSearch,
       float radius = 0.0f, bool is_linear = false,
       bool is_using_refiner = false,
-      uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
-      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines)
+      uint32_t prefetch_offset = core_interface::kDefaultVamanaPrefetchOffset,
+      uint32_t prefetch_lines = core_interface::kDefaultVamanaPrefetchLines)
       : QueryParams(IndexType::VAMANA),
         ef_search_(ef_search),
         prefetch_offset_(prefetch_offset),
@@ -294,8 +294,8 @@ class ZVEC_API VamanaQueryParams : public QueryParams {
 
  private:
   int ef_search_;
-  uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
-  uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+  uint32_t prefetch_offset_{core_interface::kDefaultVamanaPrefetchOffset};
+  uint32_t prefetch_lines_{core_interface::kDefaultVamanaPrefetchLines};
 };
 
 class ZVEC_API FtsQueryParams : public QueryParams {

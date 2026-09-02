@@ -215,10 +215,12 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
-    if (!omit_empty_value || param.prefetch_offset != 0) {
+    // Auto is represented by omission. Explicit zero must survive a roundtrip
+    // because it has established Vamana prefetch semantics.
+    if (param.prefetch_offset != kVamanaQueryPrefetchAuto) {
       json_obj.set("prefetch_offset", ailego::JsonValue(param.prefetch_offset));
     }
-    if (!omit_empty_value || param.prefetch_lines != 0) {
+    if (param.prefetch_lines != kVamanaQueryPrefetchAuto) {
       json_obj.set("prefetch_lines", ailego::JsonValue(param.prefetch_lines));
     }
     index_type = IndexType::kVamana;

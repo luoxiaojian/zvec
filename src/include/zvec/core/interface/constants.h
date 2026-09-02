@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace zvec::core_interface {
 
@@ -31,6 +32,23 @@ constexpr static float kDefaultVamanaAlpha = 1.2f;
 constexpr static uint32_t kDefaultVamanaEfSearch = 200;
 constexpr static uint32_t kDefaultVamanaMaxOcclusionSize = 750;
 constexpr static bool kDefaultVamanaSaturateGraph = false;
+
+// Vamana's beam-search traversal uses a bounded vector-prefetch budget.
+// Values left at kVamanaQueryPrefetchAuto are resolved after loading the
+// index, when the stored (possibly quantized) vector size and graph degree are
+// known. The automatic policy seeds at most two cache lines per neighbor and
+// limits one expansion's vector-prefetch footprint to roughly 6 KiB.
+// Explicit query values, including zero, override the automatic value.
+constexpr static uint32_t kVamanaQueryPrefetchCacheLineBytes = 64;
+constexpr static uint32_t kVamanaQueryPrefetchBudgetBytes = 6 * 1024;
+constexpr static uint32_t kVamanaQueryPrefetchTargetLines = 2;
+constexpr static uint32_t kVamanaQueryPrefetchMaxValue = 256;
+constexpr static uint32_t kVamanaQueryPrefetchAuto =
+    std::numeric_limits<uint32_t>::max();
+constexpr static uint32_t kDefaultVamanaPrefetchLines =
+    kVamanaQueryPrefetchAuto;
+constexpr static uint32_t kDefaultVamanaPrefetchOffset =
+    kVamanaQueryPrefetchAuto;
 
 constexpr const uint32_t kDefaultRabitqTotalBits = 7;
 constexpr const uint32_t kDefaultRabitqNumClusters = 16;

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vamana_context.h"
+#include <algorithm>
 #include <random>
+#include <zvec/core/interface/constants.h>
 #include "vamana_params.h"
 
 namespace zvec {
@@ -122,11 +124,56 @@ int VamanaContext::update(const ailego::Params &params) {
   topk_heap_.limit(std::max(topk_, ef_));
   uint32_t po = po_;
   params.get(PARAM_VAMANA_STREAMER_PO, &po);
-  po_ = po;
   uint32_t pl = pl_;
   params.get(PARAM_VAMANA_STREAMER_PL, &pl);
-  pl_ = pl;
+  const auto resolved = resolve_query_prefetch(
+      entity_->vector_data_size(), static_cast<uint32_t>(entity_->max_degree()),
+      po, pl);
+  po_ = resolved.first;
+  pl_ = resolved.second;
   return 0;
+}
+
+std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
+    size_t vector_data_size, uint32_t max_degree, uint32_t requested_offset,
+    uint32_t requested_lines) {
+  using namespace core_interface;
+
+  if (vector_data_size == 0 || max_degree == 0) {
+    return {0U, 0U};
+  }
+
+  const uint32_t body_lines = static_cast<uint32_t>(
+      (vector_data_size + kVamanaQueryPrefetchCacheLineBytes - 1) /
+      kVamanaQueryPrefetchCacheLineBytes);
+
+  uint32_t resolved_lines;
+  if (requested_lines == kVamanaQueryPrefetchAuto) {
+    resolved_lines = std::min(kVamanaQueryPrefetchTargetLines, body_lines);
+  } else if (requested_lines == 0) {
+    // Preserve the established explicit-zero behavior: prefetch the complete
+    // stored graph vector. Refine payloads are not part of vector_data_size.
+    resolved_lines = body_lines;
+  } else {
+    resolved_lines =
+        std::min({requested_lines, body_lines, kVamanaQueryPrefetchMaxValue});
+  }
+
+  uint32_t resolved_offset;
+  if (requested_offset == kVamanaQueryPrefetchAuto) {
+    const uint64_t bytes_per_neighbor =
+        static_cast<uint64_t>(kVamanaQueryPrefetchCacheLineBytes) *
+        resolved_lines;
+    const uint32_t budget_offset = static_cast<uint32_t>(std::max<uint64_t>(
+        1, kVamanaQueryPrefetchBudgetBytes / bytes_per_neighbor));
+    resolved_offset =
+        std::min({budget_offset, max_degree, kVamanaQueryPrefetchMaxValue});
+  } else {
+    resolved_offset =
+        std::min({requested_offset, max_degree, kVamanaQueryPrefetchMaxValue});
+  }
+
+  return {resolved_offset, resolved_lines};
 }
 
 void VamanaContext::topk_to_result(uint32_t idx) {

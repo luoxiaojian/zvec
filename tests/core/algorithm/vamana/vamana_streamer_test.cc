@@ -14,6 +14,7 @@
 #include "vamana_streamer.h"
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "vamana_context.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/interface/constants.h>
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -69,6 +71,43 @@ class VamanaStreamerTest : public testing::Test {
   static std::string dir_;
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
+
+TEST(VamanaQueryPrefetchTest, ResolvesAutoFromStoredVectorSchema) {
+  const uint32_t auto_value = core_interface::kVamanaQueryPrefetchAuto;
+
+  // SIFT: uniform_uint4 stores 64 B; uniform_uint7/uint8 store 128 B;
+  // int8_record stores 128 B plus its 20-B record metadata.
+  EXPECT_EQ(std::make_pair(64U, 1U), VamanaContext::resolve_query_prefetch(
+                                         64, 64, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         128, 64, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         148, 64, auto_value, auto_value));
+
+  // GIST: the corresponding stored graph bodies are 480 B, 960 B, and
+  // 980 B. A separate fp16 refine payload is intentionally excluded.
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         480, 64, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         960, 64, auto_value, auto_value));
+  EXPECT_EQ(std::make_pair(48U, 2U), VamanaContext::resolve_query_prefetch(
+                                         980, 80, auto_value, auto_value));
+}
+
+TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideAutoIndependently) {
+  const uint32_t auto_value = core_interface::kVamanaQueryPrefetchAuto;
+
+  EXPECT_EQ(std::make_pair(48U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, 48, auto_value));
+  EXPECT_EQ(std::make_pair(64U, 1U),
+            VamanaContext::resolve_query_prefetch(64, 64, auto_value, 1));
+  EXPECT_EQ(std::make_pair(64U, 4U),
+            VamanaContext::resolve_query_prefetch(1920, 80, 64, 4));
+  EXPECT_EQ(std::make_pair(0U, 16U),
+            VamanaContext::resolve_query_prefetch(980, 64, 0, 0));
+  EXPECT_EQ(std::make_pair(0U, 0U), VamanaContext::resolve_query_prefetch(
+                                         0, 64, auto_value, auto_value));
+}
 
 std::string VamanaStreamerTest::dir_("vamana_streamer_test_dir/");
 shared_ptr<IndexMeta> VamanaStreamerTest::index_meta_ptr_;

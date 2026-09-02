@@ -893,8 +893,11 @@ class VamanaQueryParam(QueryParam):
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
         is_using_refiner (bool): Whether to use refiner. Default is False.
-        prefetch_offset (int): Graph prefetch offset (PO). Default is 8.
-        prefetch_lines (int): Cache lines to prefetch per vector (PL). Default is 0 (auto).
+        prefetch_offset (int | None): Manual graph prefetch offset (PO), or
+            None when it is calculated from the stored-vector schema, graph
+            degree, effective prefetch lines, and a 6 KiB budget.
+        prefetch_lines (int | None): Manual cache lines to prefetch per vector,
+            or None to use at most two lines, clamped to the stored vector.
 
     Examples:
         >>> params = VamanaQueryParam(ef_search=200)
@@ -921,9 +924,12 @@ class VamanaQueryParam(QueryParam):
             is_using_refiner (bool, optional): Whether to use refiner. Default is False.
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Graph prefetch offset (PO).
-                  ``0`` disables prefetching. Default is ``8``.
+                  If omitted, it is calculated after loading the index from the
+                  stored-vector schema, graph degree, effective line count, and
+                  a 6 KiB budget. ``0`` disables graph-level vector prefetching.
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
-                  ``0`` (default) means auto-derive from vector size.
+                  If omitted, at most two lines are used. Explicit ``0``
+                  prefetches the full stored vector for compatibility.
         """
 
     def __repr__(self) -> str: ...
@@ -933,12 +939,12 @@ class VamanaQueryParam(QueryParam):
         """int: Size of the dynamic candidate list during Vamana search."""
 
     @property
-    def prefetch_offset(self) -> int:
-        """int: Graph prefetch offset used by the Vamana fast path."""
+    def prefetch_offset(self) -> int | None:
+        """Manual graph prefetch offset, or None for schema-derived auto."""
 
     @property
-    def prefetch_lines(self) -> int:
-        """int: Override of prefetch cache lines per vector (0=auto)."""
+    def prefetch_lines(self) -> int | None:
+        """Manual cache-line count, or None for schema-derived auto."""
 
 class FtsIndexParam(IndexParam):
     """
