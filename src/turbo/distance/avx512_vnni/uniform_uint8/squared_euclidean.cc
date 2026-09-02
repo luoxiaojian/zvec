@@ -242,6 +242,54 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i accumulator0,
                        _mm256_extracti128_si256(totals, 1));
 }
 
+// SIFT hot path for split contiguous storage. The query's two cache lines stay
+// resident across the whole batch call, while four candidate streams are
+// loaded independently. Vamana already prefetched both candidate cache lines.
+static ailego_force_inline void uniform_sq_l2_uint8_batch4_128(
+    const void *const *vectors, __m512i query0, __m512i query1,
+    int32_t correction, const void *const *extra_values, float *distances) {
+  const auto *vector0 = reinterpret_cast<const __m512i *>(vectors[0]);
+  const auto *vector1 = reinterpret_cast<const __m512i *>(vectors[1]);
+  const auto *vector2 = reinterpret_cast<const __m512i *>(vectors[2]);
+  const auto *vector3 = reinterpret_cast<const __m512i *>(vectors[3]);
+
+  const __m512i record00 = _mm512_loadu_si512(vector0);
+  const __m512i record10 = _mm512_loadu_si512(vector1);
+  const __m512i record20 = _mm512_loadu_si512(vector2);
+  const __m512i record30 = _mm512_loadu_si512(vector3);
+
+  __m512i accumulator0 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record00);
+  __m512i accumulator1 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record10);
+  __m512i accumulator2 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record20);
+  __m512i accumulator3 =
+      _mm512_dpbusd_epi32(_mm512_setzero_si512(), query0, record30);
+
+  const __m512i record01 = _mm512_loadu_si512(vector0 + 1);
+  const __m512i record11 = _mm512_loadu_si512(vector1 + 1);
+  const __m512i record21 = _mm512_loadu_si512(vector2 + 1);
+  const __m512i record31 = _mm512_loadu_si512(vector3 + 1);
+
+  accumulator0 = _mm512_dpbusd_epi32(accumulator0, query1, record01);
+  accumulator1 = _mm512_dpbusd_epi32(accumulator1, query1, record11);
+  accumulator2 = _mm512_dpbusd_epi32(accumulator2, query1, record21);
+  accumulator3 = _mm512_dpbusd_epi32(accumulator3, query1, record31);
+
+  const __m128i dot_products = reduce_add_4x16_epi32(
+      accumulator0, accumulator1, accumulator2, accumulator3);
+  alignas(16) const uint32_t tails[4] = {
+      load_extra_value(extra_values[0]), load_extra_value(extra_values[1]),
+      load_extra_value(extra_values[2]), load_extra_value(extra_values[3])};
+  const __m128i sum_squared =
+      _mm_load_si128(reinterpret_cast<const __m128i *>(tails));
+  const __m128i squared_distances =
+      _mm_add_epi32(_mm_sub_epi32(sum_squared, _mm_slli_epi32(dot_products, 1)),
+                    _mm_set1_epi32(correction));
+  _mm_storeu_ps(distances, uint32_to_float(squared_distances));
+}
+
 static ailego_force_inline void uniform_sq_l2_uint8_batch4(
     const void *const *vectors, const uint8_t *raw_query, size_t orig_dim,
     int32_t correction, const void *const *extra_values,
@@ -378,8 +426,25 @@ static void uniform_squared_euclidean_uint8_batch_distance_impl(
   const int32_t correction = query_correction(query, orig_dim);
 
   constexpr size_t kBatchSize = 4;
-  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
   size_t i = 0;
+
+  if (orig_dim == 128) {
+    const auto *query_vectors = reinterpret_cast<const __m512i *>(raw_query);
+    const __m512i query0 = _mm512_loadu_si512(query_vectors);
+    const __m512i query1 = _mm512_loadu_si512(query_vectors + 1);
+    for (; i + kBatchSize <= n; i += kBatchSize) {
+      uniform_sq_l2_uint8_batch4_128(
+          vectors + i, query0, query1, correction, extra_values + i,
+          distances + i);
+    }
+    for (; i < n; ++i) {
+      uniform_sq_l2_uint8_single(vectors[i], raw_query, orig_dim, correction,
+                                 extra_values[i], distances + i);
+    }
+    return;
+  }
+
+  const size_t prefetch_step = orig_dim > 256 ? 1 : 2;
   const void *prefetch_vectors[kBatchSize];
   for (; i + kBatchSize <= n; i += kBatchSize) {
     for (size_t j = 0; j < kBatchSize; ++j) {
