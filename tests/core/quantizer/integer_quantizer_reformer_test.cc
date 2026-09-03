@@ -13,17 +13,57 @@
 // limitations under the License.
 
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <random>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "quantizer/rotator/rotator.h"
 #include "tests/test_util.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_holder.h"
 
 using namespace zvec::core;
+
+TEST(IntegerReformer, Int8StreamingConvertAcceptsFp16Records) {
+  constexpr size_t kCount = 3;
+  constexpr size_t kDimension = 8;
+  const std::vector<float> fp32 = {
+      -3.0F, -2.5F, -2.0F, -1.5F, -1.0F, -0.5F, 0.0F, 0.5F,
+      1.0F,  1.5F,  2.0F,  2.5F,  3.0F,  3.5F,  4.0F, 4.5F,
+      5.0F,  5.5F,  6.0F,  6.5F,  7.0F,  7.5F,  8.0F, 8.5F,
+  };
+  std::vector<uint16_t> fp16(fp32.size());
+  zvec::ailego::FloatHelper::ToFP16(fp32.data(), fp32.size(), fp16.data());
+
+  auto reformer = IndexFactory::CreateReformer("Int8StreamingReformer");
+  ASSERT_TRUE(reformer);
+  zvec::ailego::Params params;
+  params.set("integer_streaming.reformer.enable_normalize", false);
+  params.set("integer_streaming.reformer.is_euclidean", true);
+  ASSERT_EQ(0, reformer->init(params));
+
+  const IndexQueryMeta fp32_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  const IndexQueryMeta fp16_meta(IndexMeta::DataType::DT_FP16, kDimension);
+  IndexQueryMeta output_meta;
+  std::string expected;
+  std::string actual;
+  ASSERT_EQ(0, reformer->convert(fp32.data(), fp32_meta, kCount, &expected,
+                                 &output_meta));
+  ASSERT_EQ(0, reformer->convert(fp16.data(), fp16_meta, kCount, &actual,
+                                 &output_meta));
+  EXPECT_EQ(expected, actual);
+
+  for (size_t i = 0; i < kCount; ++i) {
+    ASSERT_EQ(0, reformer->convert(fp32.data() + i * kDimension, fp32_meta,
+                                   &expected, &output_meta));
+    ASSERT_EQ(0, reformer->convert(fp16.data() + i * kDimension, fp16_meta,
+                                   &actual, &output_meta));
+    EXPECT_EQ(expected, actual);
+  }
+}
 
 TEST(IntegerReformer, Int8General) {
   std::random_device rd;

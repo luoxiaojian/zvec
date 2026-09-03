@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <vector>
 #include <ailego/algorithm/integer_quantizer.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include "rotator/rotator.h"
 #include "record_quantizer.h"
@@ -349,7 +351,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> normalized;
     if (enable_normalize_) {
       normalized.reset(new float[qmeta.dimension()]);
-      vec = normalize(vec, qmeta, normalized.get());
+      vec = normalize(vec, qmeta.dimension(), normalized.get());
     }
 
     RecordQuantizer::quantize_record(vec, qmeta.dimension(), data_type_,
@@ -387,7 +389,7 @@ class IntegerStreamingReformer : public IndexReformer {
         vec = rotate_buffer.get();
       }
       if (enable_normalize_) {
-        vec = normalize(vec, qmeta, normalized.get());
+        vec = normalize(vec, qmeta.dimension(), normalized.get());
       }
 
       RecordQuantizer::quantize_record(vec, qmeta.dimension(), data_type_,
@@ -403,16 +405,17 @@ class IntegerStreamingReformer : public IndexReformer {
               IndexQueryMeta *ometa) const override {
     IndexMeta::DataType ft = rmeta.data_type();
 
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        rmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
+    if ((ft != IndexMeta::DataType::DT_FP32 &&
+         ft != IndexMeta::DataType::DT_FP16) ||
+        rmeta.unit_size() != IndexMeta::UnitSizeof(ft)) {
       return IndexError_Unsupported;
     }
 
     *ometa = rmeta;
     ometa->set_meta(data_type_, rmeta.dimension() + extra_dimension_);
     out->resize(ometa->element_size());
-    const float *vec = reinterpret_cast<const float *>(record);
+    std::vector<float> decoded;
+    const float *vec = decode_record(record, rmeta, &decoded);
     std::unique_ptr<float[]> rotate_buffer;
     if (enable_rotate_ && rotator_) {
       rotate_buffer.reset(new float[rotator_->dimension()]);
@@ -422,7 +425,7 @@ class IntegerStreamingReformer : public IndexReformer {
     std::unique_ptr<float[]> normalized;
     if (enable_normalize_) {
       normalized.reset(new float[rmeta.dimension()]);
-      vec = normalize(vec, rmeta, normalized.get());
+      vec = normalize(vec, rmeta.dimension(), normalized.get());
     }
 
     RecordQuantizer::quantize_record(vec, rmeta.dimension(), data_type_,
@@ -436,9 +439,9 @@ class IntegerStreamingReformer : public IndexReformer {
               std::string *out, IndexQueryMeta *ometa) const override {
     IndexMeta::DataType ft = rmeta.data_type();
 
-    if (ft != IndexMeta::DataType::DT_FP32 ||
-        rmeta.unit_size() !=
-            IndexMeta::UnitSizeof(IndexMeta::DataType::DT_FP32)) {
+    if ((ft != IndexMeta::DataType::DT_FP32 &&
+         ft != IndexMeta::DataType::DT_FP16) ||
+        rmeta.unit_size() != IndexMeta::UnitSizeof(ft)) {
       return IndexError_Unsupported;
     }
 
@@ -453,15 +456,17 @@ class IntegerStreamingReformer : public IndexReformer {
     if (enable_normalize_) {
       normalized.reset(new float[rmeta.dimension()]);
     }
+    std::vector<float> decoded;
+    const auto *input = static_cast<const uint8_t *>(records);
     for (size_t i = 0; i < count; ++i) {
-      const float *vec =
-          reinterpret_cast<const float *>(records) + i * rmeta.dimension();
+      const float *vec = decode_record(input + i * rmeta.element_size(), rmeta,
+                                       &decoded);
       if (enable_rotate_ && rotator_) {
         rotator_->rotate(vec, rotate_buffer.get());
         vec = rotate_buffer.get();
       }
       if (enable_normalize_) {
-        vec = normalize(vec, rmeta, normalized.get());
+        vec = normalize(vec, rmeta.dimension(), normalized.get());
       }
 
       RecordQuantizer::quantize_record(vec, rmeta.dimension(), data_type_,
@@ -479,12 +484,23 @@ class IntegerStreamingReformer : public IndexReformer {
   }
 
  private:
+  const float *decode_record(const void *record, const IndexQueryMeta &rmeta,
+                             std::vector<float> *decoded) const {
+    if (rmeta.data_type() == IndexMeta::DataType::DT_FP32) {
+      return static_cast<const float *>(record);
+    }
+    decoded->resize(rmeta.dimension());
+    ailego::FloatHelper::ToFP32(static_cast<const uint16_t *>(record),
+                                rmeta.dimension(), decoded->data());
+    return decoded->data();
+  }
+
   //! Normalize a query to `normalized`
-  float *normalize(const void *query, const IndexQueryMeta &qmeta,
+  float *normalize(const float *query, size_t dimension,
                    float *normalized) const {
-    memcpy(normalized, query, qmeta.element_size());
+    memcpy(normalized, query, dimension * sizeof(float));
     float norm = 0.0;
-    ailego::Normalizer<float>::L2(normalized, qmeta.dimension(), &norm);
+    ailego::Normalizer<float>::L2(normalized, dimension, &norm);
     return normalized;
   }
 

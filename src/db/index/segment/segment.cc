@@ -4114,13 +4114,16 @@ Status SegmentImpl::init_memory_components() {
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
     } else {
-      // first create normal vector indexer
+      // Keep the transient ingestion Flat in the field's native type. The
+      // quantized graph consumes these rows during optimize(), while the
+      // separately persisted refine Flat is converted to flat_data_type.
+      // Applying FP16/UINT8 refinement storage here would make graph building
+      // consume rounded values and reduce high-recall quality.
       FieldSchema normal_field(*field);
+      normal_field.set_data_type(field->data_type());
       normal_field.set_index_params(MakeDefaultVectorIndexParams(
           index_params->metric_type(),
-          index_params->use_flat_contiguous_memory(),
-          segment_detail::FlatStorageDataTypeForField(
-              field->data_type(), index_params->flat_data_type())));
+          index_params->use_flat_contiguous_memory()));
       auto block_id = allocate_block_id();
       auto vector_indexer =
           create_vector_indexer(field->name(), normal_field, block_id);

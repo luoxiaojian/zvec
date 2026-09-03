@@ -14,7 +14,10 @@
 
 #include "flat_streamer_entity.h"
 #include <cstdint>
+#include <ailego/math/euclidean_distance_matrix.h>
+#include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/turbo/turbo.h>
 #include "flat_utility.h"
 
 namespace zvec {
@@ -186,6 +189,33 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   column_distance_ =
       metric->distance_matrix(meta_.header.block_vector_count, 1);
   batch_distance_ = metric->batch_distance();
+  // On Ice Lake, the long-vector FP16 turbo kernel wins for arbitrary rerank
+  // sizes, while the established twelve-way Ailego kernel remains fastest
+  // for its exact 12-row fit. Keep SIFT and non-AVX512 dispatch untouched.
+  if (index_meta_.data_type() == IndexMeta::DataType::DT_FP16 &&
+      index_meta_.metric_name() == "SquaredEuclidean" &&
+      index_meta_.dimension() >= 512 &&
+      turbo::get_batch_distance_func(turbo::MetricType::kSquaredEuclidean,
+                                     turbo::DataType::kFp16,
+                                     turbo::QuantizeType::kRaw,
+                                     turbo::CpuArchType::kAVX512)) {
+    auto turbo_batch = batch_distance_;
+    auto generic_batch = reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
+        ailego::BaseDistance<ailego::SquaredEuclideanDistanceMatrix,
+                             ailego::Float16, 12, 2>::ComputeBatch);
+    batch_distance_ =
+        [turbo_batch = std::move(turbo_batch), generic_batch](
+            const void **vectors, const void *query, size_t count,
+            size_t dimension, float *distances, const void **extra_values) {
+          if (count == 12) {
+            generic_batch(vectors, query, count, dimension, distances,
+                          extra_values);
+          } else {
+            turbo_batch(vectors, query, count, dimension, distances,
+                        extra_values);
+          }
+        };
+  }
   batch_query_preprocess_ = metric->get_query_preprocess_func();
   extra_values_size_ = metric->extra_values_size_per_vector();
   if (extra_values_size_ != 0 &&

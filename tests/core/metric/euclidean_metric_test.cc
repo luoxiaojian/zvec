@@ -18,6 +18,7 @@
 #include <vector>
 #include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/float_helper.h>
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/turbo/turbo.h"
 
@@ -138,6 +139,66 @@ TEST(SquaredEuclideanMetric, RawFp16) {
   metric->batch_distance()(rows, query.data(), 2, kDimension, batch, nullptr);
   EXPECT_FLOAT_EQ(4.0F, batch[0]);
   EXPECT_FLOAT_EQ(0.0F, batch[1]);
+}
+
+TEST(SquaredEuclideanMetric, RawFp16BatchHandlesRerankSizes) {
+  constexpr size_t kRowCount = 32;
+  constexpr std::array<size_t, 19> kCounts = {
+      0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 16, 19, 20, 21, 28, 31, 32};
+
+  auto kernels = turbo::get_distance_kernels(
+      turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+      turbo::QuantizeType::kRaw, turbo::CpuArchType::kAVX512);
+  if (!kernels.batch) {
+    kernels = turbo::get_distance_kernels(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kFp16,
+        turbo::QuantizeType::kRaw);
+  }
+  ASSERT_TRUE(kernels.batch);
+
+  for (const size_t dimension : {size_t{128}, size_t{960}}) {
+    std::vector<float> query_fp32(dimension);
+    std::vector<uint16_t> query(dimension);
+    for (size_t d = 0; d < dimension; ++d) {
+      query_fp32[d] =
+          static_cast<float>(static_cast<int>((d * 7) % 61) - 30) * 0.25F;
+    }
+    ailego::FloatHelper::ToFP16(query_fp32.data(), dimension, query.data());
+
+    std::vector<std::vector<float>> rows_fp32(
+        kRowCount, std::vector<float>(dimension));
+    std::vector<std::vector<uint16_t>> rows(
+        kRowCount, std::vector<uint16_t>(dimension));
+    std::vector<const void *> row_ptrs(kRowCount);
+    std::vector<float> expected(kRowCount, 0.0F);
+    for (size_t row = 0; row < kRowCount; ++row) {
+      for (size_t d = 0; d < dimension; ++d) {
+        rows_fp32[row][d] = static_cast<float>(
+                                static_cast<int>((row * 13 + d * 11) % 79) -
+                                39) *
+                            0.25F;
+        const float delta = rows_fp32[row][d] - query_fp32[d];
+        expected[row] += delta * delta;
+      }
+      ailego::FloatHelper::ToFP16(rows_fp32[row].data(), dimension,
+                                  rows[row].data());
+      row_ptrs[row] = rows[row].data();
+    }
+
+    for (const size_t count : kCounts) {
+      std::vector<float> actual(kRowCount, -1.0F);
+      kernels.batch(row_ptrs.data(), query.data(), count, dimension,
+                    actual.data(), nullptr);
+      for (size_t row = 0; row < count; ++row) {
+        EXPECT_FLOAT_EQ(expected[row], actual[row])
+            << "dimension=" << dimension << " count=" << count
+            << " row=" << row;
+      }
+      for (size_t row = count; row < kRowCount; ++row) {
+        EXPECT_FLOAT_EQ(-1.0F, actual[row]);
+      }
+    }
+  }
 }
 
 TEST(SquaredEuclideanMetric, RawUint8ConversionSaturates) {
