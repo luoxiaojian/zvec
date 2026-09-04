@@ -58,6 +58,18 @@ uint32_t BlockHeap::pop() {
   return get_id(data_[ret_idx].first);
 }
 
+uint32_t BlockHeap::pop_with_next(uint32_t *next_id) {
+  size_t ret_idx = cur_;
+  set_checked(data_[cur_].first);
+  while (cur_ < data_.size() && is_checked(data_[cur_].first)) {
+    ++cur_;
+  }
+  if (next_id != nullptr) {
+    *next_id = cur_ < data_.size() ? get_id(data_[cur_].first) : UINT32_MAX;
+  }
+  return get_id(data_[ret_idx].first);
+}
+
 void BlockHeap::to_sorted(uint32_t *ids, float *scores, int32_t length) const {
   const int32_t n = std::min(length, static_cast<int32_t>(data_.size()));
   for (int32_t i = 0; i < n; ++i) {

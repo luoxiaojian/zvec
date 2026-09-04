@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <utility>
 #include <zvec/core/framework/index_context.h>
 #include "utility/block_heap.h"
 #include "utility/linear_pool.h"
@@ -78,6 +79,13 @@ class VamanaContext : public IndexContext {
   }
 
   int update(const ailego::Params &params) override;
+
+  // Resolve the shared query defaults and explicit prefetch overrides against
+  // the stored graph schema. Returned values are concrete, so the hot search
+  // loop does not need default/manual branches.
+  static std::pair<uint32_t, uint32_t> resolve_query_prefetch(
+      size_t vector_data_size, uint32_t max_degree, uint32_t requested_offset,
+      uint32_t requested_lines);
 
   int init(ContextType type);
 
@@ -162,6 +170,22 @@ class VamanaContext : public IndexContext {
   }
   inline std::vector<uint32_t> &batch_indices_buf() {
     return batch_indices_buf_;
+  }
+
+  // Reusable scratch for the mmap/contiguous query fast path. Keeping these
+  // buffers in the context avoids allocating three (or four for metrics with
+  // extra values) max-degree arrays for every query.
+  inline std::vector<node_id_t> &search_neighbor_ids_buf() {
+    return search_neighbor_ids_buf_;
+  }
+  inline std::vector<float> &search_dists_buf() {
+    return search_dists_buf_;
+  }
+  inline std::vector<const void *> &search_vecs_buf() {
+    return search_vecs_buf_;
+  }
+  inline std::vector<const void *> &search_extra_values_buf() {
+    return search_extra_values_buf_;
   }
 
   //! Build-time distance offset cached from the metric. Used by RobustPrune
@@ -340,6 +364,10 @@ class VamanaContext : public IndexContext {
   std::vector<const void *> batch_vecs_buf_;
   std::vector<float> batch_dists_buf_;
   std::vector<uint32_t> batch_indices_buf_;
+  std::vector<node_id_t> search_neighbor_ids_buf_;
+  std::vector<float> search_dists_buf_;
+  std::vector<const void *> search_vecs_buf_;
+  std::vector<const void *> search_extra_values_buf_;
 
   //! Cached build-time distance offset (see build_distance_offset()).
   float build_distance_offset_{0.0f};
