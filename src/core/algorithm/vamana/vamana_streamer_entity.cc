@@ -925,9 +925,8 @@ node_id_t VamanaStreamerEntity::calculate_medoid(uint32_t dimension,
     return entry_point();
   }
 
-  if (packed_uint4 &&
-      (data_type != DT_INT8 ||
-       dimension / 2U + dimension % 2U > vector_size())) {
+  if (packed_uint4 && (data_type != DT_INT8 ||
+                       dimension / 2U + dimension % 2U > vector_size())) {
     LOG_ERROR("Invalid packed uint4 medoid layout: dim=%u type=%u bytes=%zu",
               dimension, data_type, vector_size());
     return kInvalidNodeId;

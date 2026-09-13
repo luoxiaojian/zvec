@@ -760,8 +760,8 @@ TEST_F(VamanaStreamerTest, UniformUint4MedoidUsesUnpackedCoordinates) {
   // Both inputs have node 1 as their nearest point to the nibble centroid.
   // Treating bytes as signed or unsigned coordinates instead selects node 0
   // in the first input. The second additionally exercises a set sign bit.
-  const std::array<std::array<uint8_t, 3>, 2> inputs{{
-      {{0x0f, 0x00, 0x10}}, {{0x00, 0x44, 0x88}}}};
+  const std::array<std::array<uint8_t, 3>, 2> inputs{
+      {{{0x0f, 0x00, 0x10}}, {{0x00, 0x44, 0x88}}}};
   for (size_t input = 0; input < inputs.size(); ++input) {
     for (bool two_pass : {false, true}) {
       SCOPED_TRACE(input);
