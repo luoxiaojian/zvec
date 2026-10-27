@@ -53,6 +53,15 @@ machine-dependent.
   streaming SVE through SME, not ordinary SVE instructions in a function prologue.
 - `-DZVEC_TURBO_ENABLE_SME2=OFF` builds the fallback without SME2 objects.
 
+NEON availability is checked against the actual compiler target and baseline
+flags, including cross builds and `AUTO_DETECT_ARCH=OFF`. Unsupported NEON
+translation units and declarations are omitted; the dispatch registry uses the
+same build capability before checking runtime features. Scalar fallback belongs
+to that upper dispatch layer. FP16 widening additionally requires GNU-like
+AArch64 support (`AILEGO_ARM64_GNU_LIKE`); MSVC ARM64 NEON support alone does not
+provide those FP16 kernels. Native FP16 has its own compiler feature probe, and
+both native FP16 and SME2 require the baseline NEON implementation to be built.
+
 ## Mac coverage
 
 | Machines | Distance backend |

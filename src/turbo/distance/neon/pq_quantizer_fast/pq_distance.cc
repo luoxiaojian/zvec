@@ -17,20 +17,17 @@
 // sub-quantizer's 32 look-ups are two TBL instructions (lo / hi nibble).
 
 #include "neon/pq_quantizer_fast/pq_distance.h"
-#include <zvec/ailego/internal/platform.h>
+
 #if defined(AILEGO_ARM64_NEON)
-#include <arm_neon.h>
-#endif
 #include <cstddef>
 #include <cstdint>
+#include <arm_neon.h>
 #include "common/fast_scan_common.h"
-#include "scalar/pq_quantizer_fast/pq_distance.h"
 
 namespace zvec::turbo::neon {
 
 void pq_adc_fast_scan_neon(const void *packed_codes_v, const void *packed_lut_v,
                            size_t num_chunk, int32_t *accu32) {
-#if defined(AILEGO_ARM64_NEON)
   constexpr size_t kSpillPeriod = 128;  // sub-quantizers per int32 spill
   const auto *packed_codes = reinterpret_cast<const uint8_t *>(packed_codes_v);
   const auto *packed_lut = reinterpret_cast<const uint8_t *>(packed_lut_v);
@@ -111,11 +108,8 @@ void pq_adc_fast_scan_neon(const void *packed_codes_v, const void *packed_lut_v,
   vst1q_u32(accu + 20, acc_b1);
   vst1q_u32(accu + 24, acc_d0);
   vst1q_u32(accu + 28, acc_d1);
-#else
-  // Unlike the float-returning PQ kernels, a no-op stub here would leave
-  // accu32 untouched and silently yield zero distances, so forward instead.
-  scalar::pq_adc_fast_scan(packed_codes_v, packed_lut_v, num_chunk, accu32);
-#endif
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

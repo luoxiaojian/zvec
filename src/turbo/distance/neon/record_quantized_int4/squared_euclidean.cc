@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "neon/record_quantized_int4/squared_euclidean.h"
+
+#if defined(AILEGO_ARM64_NEON)
 #include <cstdint>
 #include "neon/record_quantized_int4/common.h"
 
@@ -56,3 +58,5 @@ void squared_euclidean_int4_batch_distance(
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

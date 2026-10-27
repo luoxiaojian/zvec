@@ -374,7 +374,7 @@ TEST(Sme2Batch, RuntimeDisabledUsesExistingBackend) {
         metric, DataType::kFp32, QuantizeType::kFp32, CpuArchType::kAuto);
     ASSERT_TRUE(automatic.batch);
     ASSERT_TRUE(automatic.dist);
-    if (flags.NEON) {
+    if (ZVEC_TURBO_BUILD_NEON && flags.NEON) {
       const auto neon = get_distance_kernels(
           metric, DataType::kFp32, QuantizeType::kFp32, CpuArchType::kNEON);
       ASSERT_TRUE(neon.batch);

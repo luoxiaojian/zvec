@@ -13,20 +13,15 @@
 // limitations under the License.
 
 #include "neon/fp32/inner_product.h"
-#include <zvec/ailego/internal/platform.h>
-#include "neon/one_to_many.h"
 
 #if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
-#else
-#include "scalar/fp32/inner_product.h"
-#endif
+#include "neon/one_to_many.h"
 
 namespace zvec::turbo::neon {
 
 void inner_product_fp32_distance(const void *a, const void *b, size_t dim,
                                  float *distance) {
-#if defined(AILEGO_ARM64_NEON)
   const float *lhs = reinterpret_cast<const float *>(a);
   const float *rhs = reinterpret_cast<const float *>(b);
   const float *last = lhs + dim;
@@ -50,9 +45,6 @@ void inner_product_fp32_distance(const void *a, const void *b, size_t dim,
     result += *lhs * *rhs;
   }
   *distance = -result;
-#else
-  scalar::inner_product_fp32_distance(a, b, dim, distance);
-#endif
 }
 
 void inner_product_fp32_batch_distance(const void *const *vectors,
@@ -65,13 +57,13 @@ void inner_product_fp32_batch_distance(const void *const *vectors,
     }
     return;
   }
-  size_t i = 0;
-#if defined(AILEGO_ARM64_NEON)
-  i = detail::batch_groups<float, false>(vectors, query, n, dim, distances);
-#endif
+  size_t i =
+      detail::batch_groups<float, false>(vectors, query, n, dim, distances);
   for (; i < n; ++i) {
     inner_product_fp32_distance(vectors[i], query, dim, &distances[i]);
   }
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

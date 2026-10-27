@@ -75,6 +75,66 @@ TEST(TurboKernelDispatch, CompiledAndRuntimeCapabilitiesAreBothRequired) {
             *expected.batch.target<RawBatchFn>());
 }
 
+TEST(TurboKernelDispatch, NeonRequiresCompiledAndRuntimeSupport) {
+  const RestoreFeatures restore;
+  auto &flags = CpuFeatures::static_flags_;
+  flags.SSE2 = flags.AVX = flags.AVX_STATE = flags.AVX512_STATE = false;
+  flags.SME2 = false;
+
+  // Lookup only: pretending NEON exists must never expose a missing symbol
+  // in a non-ARM build (or a build whose target probe rejected NEON).
+  flags.NEON = true;
+  const auto neon = fp32(CpuArchType::kNEON);
+  EXPECT_EQ(bool(neon.dist), bool(ZVEC_TURBO_BUILD_NEON));
+  EXPECT_EQ(bool(neon.batch), bool(ZVEC_TURBO_BUILD_NEON));
+
+  const auto scalar = fp32(CpuArchType::kScalar);
+  ASSERT_TRUE(scalar.batch);
+  const auto automatic = fp32(CpuArchType::kAuto);
+  const auto &expected = ZVEC_TURBO_BUILD_NEON ? neon : scalar;
+  ASSERT_NE(automatic.batch.target<RawBatchFn>(), nullptr);
+  ASSERT_NE(expected.batch.target<RawBatchFn>(), nullptr);
+  EXPECT_EQ(*automatic.batch.target<RawBatchFn>(),
+            *expected.batch.target<RawBatchFn>());
+
+  flags.NEON = false;
+  EXPECT_FALSE(fp32(CpuArchType::kNEON).dist);
+  EXPECT_FALSE(fp32(CpuArchType::kNEON).batch);
+  const auto fallback = fp32(CpuArchType::kAuto);
+  ASSERT_NE(fallback.batch.target<RawBatchFn>(), nullptr);
+  ASSERT_NE(scalar.batch.target<RawBatchFn>(), nullptr);
+  EXPECT_EQ(*fallback.batch.target<RawBatchFn>(),
+            *scalar.batch.target<RawBatchFn>());
+  const float query[] = {1.f, 2.f};
+  const void *rows[] = {query};
+  float result = 12345.f;
+  fallback.batch(rows, query, 1, 2, &result, nullptr);
+  EXPECT_FLOAT_EQ(result, -5.f);
+
+  // PQ and rotators retain their established scalar fallback even for an
+  // unavailable explicit architecture; distance lookup above remains empty.
+  for (auto type : {DataType::kInt4, DataType::kInt8}) {
+    const auto pq = get_pq_kernels(type, QuantizeType::kPQ, CpuArchType::kNEON);
+    const auto ref =
+        get_pq_kernels(type, QuantizeType::kPQ, CpuArchType::kScalar);
+    EXPECT_EQ(pq.asymmetric_distance, ref.asymmetric_distance);
+    EXPECT_EQ(pq.symmetric_distance, ref.symmetric_distance);
+    EXPECT_EQ(pq.batch_asymmetric_distance, ref.batch_asymmetric_distance);
+  }
+  EXPECT_EQ(
+      get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast, CpuArchType::kNEON)
+          .fast_scan,
+      get_pq_kernels(DataType::kInt4, QuantizeType::kPQFast,
+                     CpuArchType::kScalar)
+          .fast_scan);
+  for (auto type : {RotateType::kFht, RotateType::kOpq}) {
+    const auto rotator = get_rotator_kernels(type, CpuArchType::kNEON);
+    const auto ref = get_rotator_kernels(type, CpuArchType::kScalar);
+    EXPECT_EQ(rotator.rotate, ref.rotate);
+    EXPECT_EQ(rotator.unrotate, ref.unrotate);
+  }
+}
+
 TEST(TurboKernelDispatch, MissingOsStateRejectsAvxAndUniformQuantization) {
   const RestoreFeatures restore;
   enable_x86();

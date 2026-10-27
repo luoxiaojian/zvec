@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "neon/fp32/cosine.h"
+
+#if defined(AILEGO_ARM64_NEON)
 #include "neon/fp32/inner_product.h"
 
 namespace zvec::turbo::neon {
@@ -34,3 +36,5 @@ void cosine_fp32_batch_distance(const void *const *vectors, const void *query,
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

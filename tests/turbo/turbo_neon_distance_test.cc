@@ -53,7 +53,7 @@ using RawDistanceFn = void (*)(const void *, const void *, size_t, float *);
 }
 
 TEST(NeonDistance, Fp32MatchesScalarForRemainders) {
-#if !defined(AILEGO_ARM64_NEON)
+#if !ZVEC_TURBO_BUILD_NEON || !defined(AILEGO_ARM64_NEON)
   GTEST_SKIP() << "NEON distance kernels require AArch64";
 #else
   std::vector<float> a(33);
@@ -77,7 +77,7 @@ TEST(NeonDistance, Fp32MatchesScalarForRemainders) {
 }
 
 TEST(NeonDistance, Fp16MatchesScalarForRemainders) {
-#if !defined(AILEGO_ARM64_GNU_LIKE)
+#if !ZVEC_TURBO_BUILD_NEON || !defined(AILEGO_ARM64_GNU_LIKE)
   GTEST_SKIP() << "FP16 NEON distance kernels require GNU-like AArch64";
 #else
   std::vector<float> a_fp32(33);
@@ -105,7 +105,7 @@ TEST(NeonDistance, Fp16MatchesScalarForRemainders) {
 }
 
 TEST(NeonDistance, Fp16AccumulatesInFp32) {
-#if !defined(AILEGO_ARM64_GNU_LIKE)
+#if !ZVEC_TURBO_BUILD_NEON || !defined(AILEGO_ARM64_GNU_LIKE)
   GTEST_SKIP() << "FP16 NEON distance kernels require GNU-like AArch64";
 #else
   constexpr size_t dim = 8;
@@ -129,7 +129,7 @@ TEST(NeonDistance, Fp16AccumulatesInFp32) {
 }
 
 TEST(NeonDistance, RecordIntegerProductsMatchScalarForRemainders) {
-#if !defined(AILEGO_ARM64_NEON)
+#if !ZVEC_TURBO_BUILD_NEON || !defined(AILEGO_ARM64_NEON)
   GTEST_SKIP() << "NEON distance kernels require AArch64";
 #else
   std::vector<int8_t> int8_a(97);
@@ -159,7 +159,7 @@ TEST(NeonDistance, RecordIntegerProductsMatchScalarForRemainders) {
 }
 
 TEST(NeonDistance, DispatchProvidesAllKernels) {
-#if !defined(AILEGO_ARM64_NEON)
+#if !ZVEC_TURBO_BUILD_NEON || !defined(AILEGO_ARM64_NEON)
   GTEST_SKIP() << "NEON distance kernels require AArch64";
 #else
   constexpr std::array<MetricType, 3> metrics = {MetricType::kSquaredEuclidean,
@@ -173,8 +173,13 @@ TEST(NeonDistance, DispatchProvidesAllKernels) {
 
     const auto fp16 = get_distance_kernels(
         metric, DataType::kFp16, QuantizeType::kFp16, CpuArchType::kNEON);
+#if defined(AILEGO_ARM64_GNU_LIKE) || ZVEC_TURBO_BUILD_ARM_FP16
     EXPECT_TRUE(fp16.dist);
     EXPECT_TRUE(fp16.batch);
+#else
+    EXPECT_FALSE(fp16.dist);
+    EXPECT_FALSE(fp16.batch);
+#endif
 
     const auto int8 = get_distance_kernels(
         metric, DataType::kInt8, QuantizeType::kRecord, CpuArchType::kNEON);

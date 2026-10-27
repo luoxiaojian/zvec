@@ -24,6 +24,7 @@
 #include <type_traits>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "distance/neon/fp16/cosine.h"
 #include "distance/neon/fp16/inner_product.h"
@@ -36,6 +37,7 @@
 #include <unistd.h>
 #endif
 
+#if ZVEC_TURBO_BUILD_NEON
 namespace {
 using Batch = void (*)(const void *const *, const void *, size_t, size_t,
                        float *, const void *const *);
@@ -67,11 +69,13 @@ Batch kernel(Metric metric) {
       return inner_product_fp32_batch_distance;
     if (metric == Metric::Cosine) return cosine_fp32_batch_distance;
     return squared_euclidean_fp32_batch_distance;
+#if defined(AILEGO_ARM64_GNU_LIKE)
   } else {
     if (metric == Metric::InnerProduct)
       return inner_product_fp16_batch_distance;
     if (metric == Metric::Cosine) return cosine_fp16_batch_distance;
     return squared_euclidean_fp16_batch_distance;
+#endif
   }
 }
 
@@ -249,7 +253,11 @@ TEST(NeonBatch, Fp32PaddedAndDisjointRows) {
 }
 
 TEST(NeonBatch, Fp16PaddedAndDisjointRows) {
+#if defined(AILEGO_ARM64_GNU_LIKE)
   EXPECT_NO_THROW(test_padded_and_disjoint<uint16_t>());
+#else
+  GTEST_SKIP() << "FP16 widening kernels require GNU-like AArch64";
+#endif
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -258,7 +266,11 @@ TEST(NeonBatch, Fp32GuardPages) {
 }
 
 TEST(NeonBatch, Fp16GuardPages) {
+#if defined(AILEGO_ARM64_GNU_LIKE)
   EXPECT_NO_THROW(test_guard_pages<uint16_t>());
+#else
+  GTEST_SKIP() << "FP16 widening kernels require GNU-like AArch64";
+#endif
 }
 #endif
 
@@ -272,6 +284,7 @@ TEST(NeonBatch, EmptyInputs) {
       EXPECT_EQ(value, test.metric == Metric::Cosine ? 1.f : 0.f);
     }
   }
+#if defined(AILEGO_ARM64_GNU_LIKE)
   for (const auto &test : kernel_cases<uint16_t>()) {
     test.run(nullptr, nullptr, 0, 257, nullptr, nullptr);
     std::vector<const void *> rows(33, nullptr);
@@ -281,4 +294,10 @@ TEST(NeonBatch, EmptyInputs) {
       EXPECT_EQ(value, test.metric == Metric::Cosine ? 1.f : 0.f);
     }
   }
+#endif
 }
+#else
+TEST(NeonBatch, NotCompiledForTarget) {
+  GTEST_SKIP() << "NEON kernels are not compiled for this target";
+}
+#endif

@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+
 #include <cstddef>
 #include <cstdint>
 
@@ -29,3 +33,5 @@ void pq_adc_fast_scan_neon(const void *packed_codes, const void *packed_lut,
                            size_t num_chunk, int32_t *accu32);
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

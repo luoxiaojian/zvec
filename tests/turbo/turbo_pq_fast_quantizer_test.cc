@@ -404,10 +404,14 @@ TEST(PqFastScanKernel, Avx512MatchesScalar) {
 }
 
 TEST(PqFastScanKernel, NeonMatchesScalar) {
+#if !ZVEC_TURBO_BUILD_NEON
+  GTEST_SKIP() << "NEON kernels are not compiled for this target";
+#else
   if (!zvec::ailego::internal::CpuFeatures::static_flags_.NEON) {
     GTEST_SKIP() << "host CPU lacks NEON";
   }
   check_kernel_all_sizes(zvec::turbo::neon::pq_adc_fast_scan_neon, 300);
+#endif
 }
 
 TEST(PqFastScanKernel, DispatchTableIsFamilyExclusive) {

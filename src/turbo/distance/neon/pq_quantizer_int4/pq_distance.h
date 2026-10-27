@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+
 #include <cstddef>
 #include <cstdint>
 
@@ -40,3 +44,5 @@ void pq_adc_int4_batch_distance_neon(const void **candidates, const void *lut,
                                      const void **extra_values);
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

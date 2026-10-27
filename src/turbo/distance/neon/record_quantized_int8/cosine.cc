@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "neon/record_quantized_int8/cosine.h"
+
+#if defined(AILEGO_ARM64_NEON)
 #include <cstdint>
 #include "neon/record_quantized_int8/common.h"
 
@@ -50,3 +52,5 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

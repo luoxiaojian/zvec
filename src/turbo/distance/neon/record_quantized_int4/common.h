@@ -14,18 +14,17 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+
 #include <cstddef>
 #include <cstdint>
-#include <zvec/ailego/internal/platform.h>
 #include "../record_quantized_int8/common.h"
-#if !defined(AILEGO_ARM64_NEON)
-#include "../../scalar/record_quantized_int4/common.h"
-#endif
 
 namespace zvec::turbo::neon::internal {
 
 inline float ip_int4_neon(const void *a, const void *b, size_t size) {
-#if defined(AILEGO_ARM64_NEON)
   const uint8_t *lhs = reinterpret_cast<const uint8_t *>(a);
   const uint8_t *rhs = reinterpret_cast<const uint8_t *>(b);
   const size_t byte_size = size >> 1;
@@ -53,9 +52,8 @@ inline float ip_int4_neon(const void *a, const void *b, size_t size) {
     result += lhs_low * rhs_low + lhs_high * rhs_high;
   }
   return static_cast<float>(result);
-#else
-  return scalar::internal::ip_int4_scalar(a, b, size);
-#endif
 }
 
 }  // namespace zvec::turbo::neon::internal
+
+#endif  // AILEGO_ARM64_NEON

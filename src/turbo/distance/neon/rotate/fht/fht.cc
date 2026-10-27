@@ -13,21 +13,19 @@
 // limitations under the License.
 
 #include "fht.h"
-#include <zvec/ailego/internal/platform.h>
+
 #if defined(AILEGO_ARM64_NEON)
-#include <arm_neon.h>
-#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <arm_neon.h>
 #include "common/fht_common.h"
 #include "scalar/rotate/fht/fht.h"
 
 namespace zvec::turbo::neon {
 
 void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
-#if defined(AILEGO_ARM64_NEON)
   const uint32x4_t sign_bit = vdupq_n_u32(0x80000000u);
   size_t simd_end = dim & ~3u;
   size_t flip_bytes = (dim + 7) / 8;
@@ -59,13 +57,9 @@ void fht_flip_sign_neon(const uint8_t *flip, float *data, size_t dim) {
       data[i] = -data[i];
     }
   }
-#else
-  scalar::fht_flip_sign(flip, data, dim);
-#endif
 }
 
 void fht_kacs_walk_neon(float *data, size_t len) {
-#if defined(AILEGO_ARM64_NEON)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -86,13 +80,9 @@ void fht_kacs_walk_neon(float *data, size_t len) {
   if (base != 0) {
     data[half] *= std::sqrt(2.0f);
   }
-#else
-  scalar::fht_kacs_walk(data, len);
-#endif
 }
 
 void fht_inv_kacs_walk_neon(float *data, size_t len) {
-#if defined(AILEGO_ARM64_NEON)
   size_t half = len / 2;
   size_t base = len % 2;
   size_t offset = base + half;
@@ -114,13 +104,9 @@ void fht_inv_kacs_walk_neon(float *data, size_t len) {
     data[i] = (a + b) * 0.5f;
     data[i + offset] = (a - b) * 0.5f;
   }
-#else
-  scalar::fht_inv_kacs_walk(data, len);
-#endif
 }
 
 void fht_vec_rescale_neon(float *data, size_t n, float factor) {
-#if defined(AILEGO_ARM64_NEON)
   const float32x4_t fac = vdupq_n_f32(factor);
   size_t simd_end = n & ~3u;
   for (size_t i = 0; i < simd_end; i += 4) {
@@ -131,39 +117,26 @@ void fht_vec_rescale_neon(float *data, size_t n, float factor) {
   for (size_t i = simd_end; i < n; ++i) {
     data[i] *= factor;
   }
-#else
-  scalar::fht_vec_rescale(data, n, factor);
-#endif
 }
 
 void fht_rotate_neon(const float *in, float *out, size_t in_dim, size_t out_dim,
                      void *ctx) {
-#if defined(AILEGO_ARM64_NEON)
   (void)out_dim;
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
       fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
   fht_rotate_impl(in, out, in_dim, ctx, kPrim);
-#else
-  // Without NEON this translation unit still compiles, so delegate to the
-  // scalar rotator. Never leave `out` unwritten: the runtime dispatcher in
-  // turbo.cc selects these entry points from CpuFeatures flags, and a no-op
-  // here would silently emit uninitialized vectors instead of rotated ones.
-  scalar::fht_rotate(in, out, in_dim, out_dim, ctx);
-#endif
 }
 
 void fht_unrotate_neon(const float *in, float *out, size_t in_dim,
                        size_t out_dim, void *ctx) {
-#if defined(AILEGO_ARM64_NEON)
   (void)out_dim;
   static constexpr FhtPrimitives kPrim = {
       fht_flip_sign_neon, scalar::fht_inplace, fht_kacs_walk_neon,
       fht_inv_kacs_walk_neon, fht_vec_rescale_neon};
   fht_unrotate_impl(in, out, in_dim, ctx, kPrim);
-#else
-  scalar::fht_unrotate(in, out, in_dim, out_dim, ctx);
-#endif
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

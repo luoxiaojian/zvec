@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+
 #include <cstddef>
 #include <cstdint>
 
@@ -40,3 +44,5 @@ void fht_unrotate_neon(const float *in, float *out, size_t in_dim,
                        size_t out_dim, void *ctx);
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

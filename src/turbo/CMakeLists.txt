@@ -84,9 +84,31 @@ turbo_probe_x86(AVX512 "defined(__AVX2__) && defined(__AVX512F__) && (defined(_M
 turbo_probe_x86(VNNI "(defined(__AVX512VNNI__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VL__) && defined(__FMA__) && defined(__F16C__)) || (defined(_MSC_VER) && defined(__AVX512F__))")
 turbo_probe_x86(FP16 "defined(__AVX512FP16__)")
 
+# Plain NEON translation units contain only AArch64 implementations. Probe the
+# actual compiler target with its baseline flags, including AUTO_DETECT_ARCH=OFF
+# and cross builds; HOST_ARCH alone cannot establish that these symbols exist.
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_INCLUDES "${PROJECT_ROOT_DIR}/src/include")
+unset(ZVEC_TURBO_COMPILER_SUPPORTS_NEON CACHE)
+check_cxx_source_compiles([=[
+  #include <zvec/ailego/internal/platform.h>
+  #if !defined(AILEGO_ARM64_NEON)
+  #error AArch64 NEON target required
+  #endif
+  int main() {
+    const float32x4_t value = vdupq_n_f32(1.0f);
+    return vaddvq_f32(vfmaq_f32(value, value, value)) == 0.0f;
+  }
+]=] ZVEC_TURBO_COMPILER_SUPPORTS_NEON)
+cmake_pop_check_state()
+set(ZVEC_TURBO_HAVE_NEON ${ZVEC_TURBO_COMPILER_SUPPORTS_NEON}
+    CACHE INTERNAL "Turbo baseline NEON kernels built" FORCE)
+message(STATUS "turbo: baseline NEON kernels: ${ZVEC_TURBO_HAVE_NEON}")
+
 set(ZVEC_TURBO_ARM_FP16_SUPPORTED OFF)
 set(TURBO_MARCH_FLAG_NEON_FP16 "")
-if(NOT IOS AND NOT MSVC AND
+unset(ZVEC_TURBO_COMPILER_SUPPORTS_ARM_FP16 CACHE)
+if(ZVEC_TURBO_HAVE_NEON AND NOT IOS AND NOT MSVC AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
@@ -135,7 +157,7 @@ set(ZVEC_TURBO_HAVE_SME2 OFF CACHE INTERNAL "Turbo SME2 kernels built" FORCE)
 unset(ZVEC_TURBO_COMPILER_SUPPORTS_SME2 CACHE)
 # Test the target toolchain, not the host CPU. Older SDKs and non-Apple targets
 # retain the NEON/scalar dispatch without a dependency on SME support routines.
-if(ZVEC_TURBO_ENABLE_SME2 AND APPLE AND NOT IOS AND
+if(ZVEC_TURBO_HAVE_NEON AND ZVEC_TURBO_ENABLE_SME2 AND APPLE AND NOT IOS AND
    CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND
    _TURBO_TARGET_ARCH STREQUAL "arm64" AND
    CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -170,6 +192,15 @@ endif()
 message(STATUS "turbo: SME2 FP32 batch kernels: ${ZVEC_TURBO_HAVE_SME2}")
 
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
+if(NOT ZVEC_TURBO_HAVE_NEON)
+  file(GLOB_RECURSE NEON_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon/*.cc)
+  list(REMOVE_ITEM ALL_SRCS ${NEON_SRCS})
+endif()
+if(NOT ZVEC_TURBO_ARM_FP16_SUPPORTED)
+  file(GLOB_RECURSE NEON_FP16_SRCS
+      ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
+  list(REMOVE_ITEM ALL_SRCS ${NEON_FP16_SRCS})
+endif()
 file(GLOB_RECURSE SME2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sme2/*.cc)
 if(ZVEC_TURBO_HAVE_SME2)
   # Only the kernel TU gets SME2 instructions. The public dispatcher, callers
@@ -233,7 +264,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_VNNI}")
 endif()
 
-if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
+if(ZVEC_TURBO_HAVE_NEON AND NOT IOS AND NOT MSVC AND
+   (AUTO_DETECT_ARCH OR ANDROID) AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
     file(GLOB_RECURSE NEON_FP16_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/distance/neon_fp16/*.cc)
@@ -245,6 +277,9 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
 endif()
 
 set(ZVEC_TURBO_DEFS)
+if(ZVEC_TURBO_HAVE_NEON)
+  list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_NEON_KERNEL=1)
+endif()
 foreach(_isa AVX2 AVX512 VNNI FP16)
   if(ZVEC_TURBO_COMPILER_${_isa})
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_${_isa}_KERNEL=1)

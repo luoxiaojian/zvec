@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "neon/record_quantized_int8/inner_product.h"
+
+#if defined(AILEGO_ARM64_NEON)
 #include <cstdint>
 #include "neon/record_quantized_int8/common.h"
 
@@ -59,3 +61,5 @@ void inner_product_int8_batch_distance(const void *const *vectors,
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

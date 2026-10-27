@@ -13,21 +13,15 @@
 // limitations under the License.
 
 #include "neon/fp16/inner_product.h"
-#include <zvec/ailego/internal/platform.h>
-#include "neon/one_to_many.h"
 
-// MSVC may lack of fp16 support, fallback to scalar for now
 #if defined(AILEGO_ARM64_GNU_LIKE)
 #include <arm_neon.h>
-#else
-#include "scalar/fp16/inner_product.h"
-#endif
+#include "neon/one_to_many.h"
 
 namespace zvec::turbo::neon {
 
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
                                  float *distance) {
-#if defined(AILEGO_ARM64_GNU_LIKE)
   const float16_t *lhs = reinterpret_cast<const float16_t *>(a);
   const float16_t *rhs = reinterpret_cast<const float16_t *>(b);
   const float16_t *last = lhs + dim;
@@ -54,9 +48,6 @@ void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
     result += static_cast<float>(*lhs) * static_cast<float>(*rhs);
   }
   *distance = -result;
-#else
-  scalar::inner_product_fp16_distance(a, b, dim, distance);
-#endif
 }
 
 void inner_product_fp16_batch_distance(const void *const *vectors,
@@ -69,13 +60,13 @@ void inner_product_fp16_batch_distance(const void *const *vectors,
     }
     return;
   }
-  size_t i = 0;
-#if defined(AILEGO_ARM64_GNU_LIKE)
-  i = detail::batch_groups<float16_t, false>(vectors, query, n, dim, distances);
-#endif
+  size_t i =
+      detail::batch_groups<float16_t, false>(vectors, query, n, dim, distances);
   for (; i < n; ++i) {
     inner_product_fp16_distance(vectors[i], query, dim, &distances[i]);
   }
 }
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_GNU_LIKE

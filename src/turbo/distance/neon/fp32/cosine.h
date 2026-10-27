@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
+
+#if defined(AILEGO_ARM64_NEON)
+
 #include <cstddef>
 
 namespace zvec::turbo::neon {
@@ -28,3 +32,5 @@ void cosine_fp32_batch_distance(const void *const *vectors, const void *query,
                                 const void *const *extra_values);
 
 }  // namespace zvec::turbo::neon
+
+#endif  // AILEGO_ARM64_NEON

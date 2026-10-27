@@ -372,9 +372,9 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
     distances[2][id] = quantizer->calc_distance_dp_query_unquantized(
         candidates[id], input.data());
   }
-  quantizer->calc_distance_dp_query_batch(
-      candidates.data(), static_cast<int>(kCandidateCount), encoded.data(),
-      distances[1].data());
+  quantizer->calc_distance_dp_query_batch(candidates.data(),
+                                          static_cast<int>(kCandidateCount),
+                                          encoded.data(), distances[1].data());
   quantizer->calc_distance_dp_query_batch_unquantized(
       candidates.data(), static_cast<int>(kCandidateCount), input.data(),
       distances[3].data());
@@ -871,6 +871,9 @@ TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
 }
 
 TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
+#if !ZVEC_TURBO_BUILD_ARM_FP16
+  GTEST_SKIP() << "Native NEON FP16 kernels are not compiled for this target";
+#else
   using RawDistance = void (*)(const void *, const void *, size_t, float *);
   const auto automatic = turbo::get_distance_kernels(
       turbo::MetricType::kCosine, turbo::DataType::kFp16,
@@ -907,6 +910,7 @@ TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
          0.0f, 2.0f / static_cast<float>(dim), 0.0f,
          2.0f / static_cast<float>(dim)});
   }
+#endif
 }
 
 TEST(Fp16Quantizer, AutoDispatchSelectsNeonFp16) {

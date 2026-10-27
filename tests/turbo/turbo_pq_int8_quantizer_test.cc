@@ -21,11 +21,9 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
-// Every ISA header unconditionally: the kernels live in the library, which
-// compiles each one with its own march flags. This TU is built for the
-// baseline arch, so guarding the includes with __AVX2__ / __ARM_NEON would
-// compile the SIMD tests away everywhere instead of selecting them at run
-// time from CpuFeatures.
+// The x86 kernels are built with per-source ISA flags. NEON availability
+// follows the actual target compiler probe; direct NEON calls below require
+// both compiled kernels and runtime CPU support.
 #include "distance/avx2/pq_quantizer_int8/pq_distance.h"
 #include "distance/avx512/pq_quantizer_int8/pq_distance.h"
 #include "distance/neon/pq_quantizer_int8/pq_distance.h"
@@ -630,6 +628,9 @@ TEST(PqInt8SimdConsistency, Avx512MatchesScalar) {
 }
 
 TEST(PqInt8SimdConsistency, NeonMatchesScalar) {
+#if !ZVEC_TURBO_BUILD_NEON
+  GTEST_SKIP() << "NEON kernels are not compiled for this target";
+#else
   if (!zvec::ailego::internal::CpuFeatures::static_flags_.NEON) {
     GTEST_SKIP() << "host CPU lacks NEON";
   }
@@ -639,6 +640,7 @@ TEST(PqInt8SimdConsistency, NeonMatchesScalar) {
   // NEON accumulates via float32x4_t, a different rounding order than the
   // scalar sequential sum, so allow slightly more slack than x86.
   check_kernel_set(k, 1e-4f, 2300);
+#endif
 }
 
 // Whatever dispatch picked must also be correct: this is the set the quantizer
