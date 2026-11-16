@@ -27,6 +27,17 @@
 
 namespace zvec::turbo::avx2::internal {
 
+// Widen before adding lanes so the final sum can exceed the int32 range.
+inline int64_t reduce_int32_lanes(__m256i value) {
+  const __m256i wide = _mm256_add_epi64(
+      _mm256_cvtepi32_epi64(_mm256_castsi256_si128(value)),
+      _mm256_cvtepi32_epi64(_mm256_extracti128_si256(value, 1)));
+  __m128i sum = _mm_add_epi64(_mm256_castsi256_si128(wide),
+                            _mm256_extracti128_si256(wide, 1));
+  sum = _mm_add_epi64(sum, _mm_unpackhi_epi64(sum, sum));
+  return _mm_cvtsi128_si64(sum);
+}
+
 // Raw integer inner product of two int8 code arrays of length `dim`.
 inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
   // Avoid partial-load, widening, and reduction setup for tiny vectors.
@@ -37,7 +48,6 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
     }
     return static_cast<float>(sum);
   }
-  const __m256i ones = _mm256_set1_epi16(1);
   __m256i accumulator = _mm256_setzero_si256();
   size_t i = 0;
   for (; i + 16 <= dim; i += 16) {
@@ -47,9 +57,9 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         _mm_loadu_si128(reinterpret_cast<const __m128i *>(b + i));
     const __m256i lhs = _mm256_cvtepi8_epi16(lhs_bytes);
     const __m256i rhs = _mm256_cvtepi8_epi16(rhs_bytes);
-    const __m256i products = _mm256_mullo_epi16(lhs, rhs);
+    // Widened INT8 inputs allow a direct pairwise multiply-add into int32.
     accumulator =
-        _mm256_add_epi32(accumulator, _mm256_madd_epi16(products, ones));
+        _mm256_add_epi32(accumulator, _mm256_madd_epi16(lhs, rhs));
   }
 
   if (i < dim) {
@@ -62,29 +72,17 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
       if (dim - i == 3) {
         tail += static_cast<int32_t>(a[i + 2]) * b[i + 2];
       }
-      alignas(32) int32_t lanes[8];
-      _mm256_store_si256(reinterpret_cast<__m256i *>(lanes), accumulator);
-      int64_t sum = tail;
-      for (int32_t lane : lanes) {
-        sum += lane;
-      }
-      return static_cast<float>(sum);
+      return static_cast<float>(tail + reduce_int32_lanes(accumulator));
     }
     const __m256i lhs =
         _mm256_cvtepi8_epi16(sse2::internal::load_partial_int8(a + i, dim - i));
     const __m256i rhs =
         _mm256_cvtepi8_epi16(sse2::internal::load_partial_int8(b + i, dim - i));
-    accumulator = _mm256_add_epi32(
-        accumulator, _mm256_madd_epi16(_mm256_mullo_epi16(lhs, rhs), ones));
+    accumulator =
+        _mm256_add_epi32(accumulator, _mm256_madd_epi16(lhs, rhs));
   }
 
-  alignas(32) int32_t lanes[8];
-  _mm256_store_si256(reinterpret_cast<__m256i *>(lanes), accumulator);
-  int64_t sum = 0;
-  for (int32_t lane : lanes) {
-    sum += lane;
-  }
-  return static_cast<float>(sum);
+  return static_cast<float>(reduce_int32_lanes(accumulator));
 }
 
 // One-to-many raw inner product kernel: the query block is loaded and
@@ -95,7 +93,6 @@ inline void raw_inner_product_batch_impl(
     const int8_t *query, const void *const *records,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dim,
     float *results) {
-  const __m256i ones = _mm256_set1_epi16(1);
   __m256i accs[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm256_setzero_si256();
@@ -116,8 +113,7 @@ inline void raw_inner_product_batch_impl(
       const __m256i lhs = _mm256_cvtepi8_epi16(
           _mm_loadu_si128(reinterpret_cast<const __m128i *>(
               static_cast<const int8_t *>(records[i]) + d)));
-      const __m256i products = _mm256_mullo_epi16(lhs, rhs);
-      accs[i] = _mm256_add_epi32(accs[i], _mm256_madd_epi16(products, ones));
+      accs[i] = _mm256_add_epi32(accs[i], _mm256_madd_epi16(lhs, rhs));
     }
   }
 
@@ -129,19 +125,12 @@ inline void raw_inner_product_batch_impl(
       const __m256i lhs =
           _mm256_cvtepi8_epi16(sse2::internal::load_partial_int8(
               static_cast<const int8_t *>(records[i]) + d, dim - d));
-      accs[i] = _mm256_add_epi32(
-          accs[i], _mm256_madd_epi16(_mm256_mullo_epi16(lhs, rhs), ones));
+      accs[i] = _mm256_add_epi32(accs[i], _mm256_madd_epi16(lhs, rhs));
     }
   }
 
   for (size_t i = 0; i < dp_batch; ++i) {
-    alignas(32) int32_t lanes[8];
-    _mm256_store_si256(reinterpret_cast<__m256i *>(lanes), accs[i]);
-    int64_t sum = 0;
-    for (int32_t lane : lanes) {
-      sum += lane;
-    }
-    results[i] = static_cast<float>(sum);
+    results[i] = static_cast<float>(reduce_int32_lanes(accs[i]));
   }
 }
 

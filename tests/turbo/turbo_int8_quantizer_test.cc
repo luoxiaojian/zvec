@@ -155,6 +155,79 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
   }
 }
 
+// Unit scale and zero bias make cosine's raw result an exact signed dot
+// product. Exercise all signed-byte extrema independently of the quantizer.
+static void check_signed_int8_dot_products(
+    turbo::CpuArchType arch, const std::vector<size_t> &dimensions) {
+  const auto kernels = turbo::get_distance_kernels(
+      turbo::MetricType::kCosine, turbo::DataType::kInt8,
+      turbo::QuantizeType::kRecord, arch);
+  if (!kernels.dist || !kernels.batch) {
+    GTEST_SKIP() << "SIMD kernels unavailable on this CPU";
+  }
+  const int8_t values[] = {-128, 127, -1, 1, 0};
+  for (size_t dim : dimensions) {
+    SCOPED_TRACE(testing::Message() << "dim=" << dim);
+    std::vector<std::vector<int8_t>> records(
+        7, std::vector<int8_t>(dim + 24, 0));
+    std::vector<const void *> pointers;
+    for (size_t row = 0; row < records.size(); ++row) {
+      int32_t sum = 0;
+      for (size_t d = 0; d < dim; ++d) {
+        records[row][d] = row < 5 ? values[row] : values[(d + row) % 5];
+        sum += records[row][d];
+      }
+      const float tail[] = {1.0f, 0.0f, static_cast<float>(sum), 0.0f};
+      std::memcpy(records[row].data() + dim, tail, sizeof(tail));
+      std::memcpy(records[row].data() + dim + sizeof(tail), &sum, sizeof(sum));
+      pointers.push_back(records[row].data());
+    }
+    const auto original = records;
+    for (size_t query : {size_t{0}, size_t{1}, size_t{5}}) {
+      std::vector<float> expected(records.size());
+      for (size_t row = 0; row < records.size(); ++row) {
+        int64_t dot = 0;
+        for (size_t d = 0; d < dim; ++d) {
+          dot += static_cast<int64_t>(records[row][d]) * records[query][d];
+        }
+        expected[row] = -static_cast<float>(dot);
+        float actual = 0.0f;
+        kernels.dist(pointers[row], pointers[query], dim + 24, &actual);
+        EXPECT_FLOAT_EQ(actual, expected[row]);
+      }
+      for (size_t count : {size_t{1}, size_t{2}, size_t{3}, size_t{6}, size_t{7}}) {
+        std::vector<float> actual(records.size() + 1, 12345.0f);
+        kernels.batch(pointers.data(), pointers[query], count, dim + 24,
+                      actual.data(), nullptr);
+        for (size_t row = 0; row < count; ++row) {
+          EXPECT_FLOAT_EQ(actual[row], expected[row]);
+        }
+        EXPECT_EQ(actual[count], 12345.0f);
+        EXPECT_EQ(records, original);
+      }
+    }
+  }
+}
+
+TEST(Int8Quantizer, Avx2SignedInt8Extremes) {
+  check_signed_int8_dot_products(
+      turbo::CpuArchType::kAVX2,
+      {1, 3, 7, 8, 15, 16, 17, 18, 19, 31, 32, 62, 63, 64, 65, 127, 129});
+}
+
+TEST(Int8Quantizer, Avx512SignedInt8Extremes) {
+  check_signed_int8_dot_products(
+      turbo::CpuArchType::kAVX512,
+      {1, 3, 4, 15, 16, 31, 32, 33, 62, 63, 64, 65, 127, 129});
+}
+
+TEST(Int8Quantizer, Avx2ReductionExceedsInt32) {
+  // At 262144 dimensions, (-128) dot (-128) is 2^32. Each accumulator
+  // lane fits int32, but their final sum needs int64, including tail paths.
+  check_signed_int8_dot_products(turbo::CpuArchType::kAVX2,
+                                 {262144, 262145, 262146, 262147, 262158});
+}
+
 TEST(Int8Quantizer, General) {
   std::mt19937 gen(15583);
   std::uniform_real_distribution<float> dist(0.0, 1.0);

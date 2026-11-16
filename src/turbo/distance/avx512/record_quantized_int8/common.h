@@ -39,7 +39,6 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
     }
     return static_cast<float>(sum);
   }
-  const __m512i ones = _mm512_set1_epi16(1);
   __m512i accumulator = _mm512_setzero_si512();
   size_t i = 0;
   for (; i + 32 <= dim; i += 32) {
@@ -49,9 +48,9 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         _mm256_loadu_si256(reinterpret_cast<const __m256i *>(b + i));
     const __m512i lhs = _mm512_cvtepi8_epi16(lhs_bytes);
     const __m512i rhs = _mm512_cvtepi8_epi16(rhs_bytes);
-    const __m512i products = _mm512_mullo_epi16(lhs, rhs);
+    // Widened INT8 inputs allow a direct pairwise multiply-add into int32.
     accumulator =
-        _mm512_add_epi32(accumulator, _mm512_madd_epi16(products, ones));
+        _mm512_add_epi32(accumulator, _mm512_madd_epi16(lhs, rhs));
   }
 
   if (i < dim) {
@@ -60,8 +59,8 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         _mm512_castsi512_si256(_mm512_maskz_loadu_epi8(mask, a + i)));
     const __m512i rhs = _mm512_cvtepi8_epi16(
         _mm512_castsi512_si256(_mm512_maskz_loadu_epi8(mask, b + i)));
-    accumulator = _mm512_add_epi32(
-        accumulator, _mm512_madd_epi16(_mm512_mullo_epi16(lhs, rhs), ones));
+    accumulator =
+        _mm512_add_epi32(accumulator, _mm512_madd_epi16(lhs, rhs));
   }
   return static_cast<float>(_mm512_reduce_add_epi32(accumulator));
 }
@@ -74,7 +73,6 @@ inline void raw_inner_product_batch_impl(
     const int8_t *query, const void *const *records,
     std::array<const int8_t *, dp_batch> &prefetch_ptrs, size_t dim,
     float *results) {
-  const __m512i ones = _mm512_set1_epi16(1);
   __m512i accs[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
     accs[i] = _mm512_setzero_si512();
@@ -95,8 +93,7 @@ inline void raw_inner_product_batch_impl(
       const __m512i lhs = _mm512_cvtepi8_epi16(
           _mm256_loadu_si256(reinterpret_cast<const __m256i *>(
               static_cast<const int8_t *>(records[i]) + d)));
-      const __m512i products = _mm512_mullo_epi16(lhs, rhs);
-      accs[i] = _mm512_add_epi32(accs[i], _mm512_madd_epi16(products, ones));
+      accs[i] = _mm512_add_epi32(accs[i], _mm512_madd_epi16(lhs, rhs));
     }
   }
 
@@ -109,8 +106,7 @@ inline void raw_inner_product_batch_impl(
       const __m512i lhs =
           _mm512_cvtepi8_epi16(_mm512_castsi512_si256(_mm512_maskz_loadu_epi8(
               mask, static_cast<const int8_t *>(records[i]) + d)));
-      accs[i] = _mm512_add_epi32(
-          accs[i], _mm512_madd_epi16(_mm512_mullo_epi16(lhs, rhs), ones));
+      accs[i] = _mm512_add_epi32(accs[i], _mm512_madd_epi16(lhs, rhs));
     }
   }
 
