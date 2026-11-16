@@ -236,6 +236,23 @@ float Int8Quantizer::calc_distance_dp_dp(const void *dp1,
   return calc_distance_dp_query(dp1, dp2);
 }
 
+void Int8Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
+                                              int dp_num, const void *dp,
+                                              float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  if (dp_num == 1) {
+    // Avoid copying and preprocessing a query for a single comparison.
+    dist_list[0] = calc_distance_dp_dp(dp_list[0], dp);
+    return;
+  }
+  // Data and query codes use the same record layout. The query-batch path
+  // preprocesses a private copy when required by VNNI, keeping stored data
+  // unchanged for later graph searches and pairwise pruning comparisons.
+  calc_distance_dp_query_batch(dp_list, dp_num, dp, dist_list);
+}
+
 INDEX_FACTORY_REGISTER_QUANTIZER(Int8Quantizer);
 
 }  // namespace turbo

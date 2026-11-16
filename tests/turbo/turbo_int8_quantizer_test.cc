@@ -70,7 +70,8 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
   // Cover scalar/SIMD cutoffs and 1..3-byte tails after full SIMD blocks.
   const size_t dimensions[] = {
       1,  2,  3,  4,  7,  8,  15, 16, 17, 18, 19, 20, 31, 32, 33,
-      34, 35, 36, 62, 63, 64, 65, 66, 67, 68, 126, 129, 130, 131, 132};
+      34, 35, 36, 62, 63, 64, 65, 66, 67, 68, 126, 127, 128, 129, 130,
+      131, 132, 190, 191, 192, 193};
 
   for (const auto &metric : metrics) {
     // Record INT8 inner product has no VNNI backend.
@@ -326,6 +327,57 @@ TEST(Int8Quantizer, Score) {
   }
 }
 
+TEST(Int8Quantizer, DataBatchMatchesPairsWithoutMutatingRecords) {
+  for (const char *metric : {"Cosine", "SquaredEuclidean", "InnerProduct"}) {
+    for (uint32_t dim : {1u, 3u, 4u, 16u, 31u, 32u, 62u, 63u, 64u, 65u,
+                         126u, 129u, 191u}) {
+      SCOPED_TRACE(testing::Message() << "metric=" << metric << ", dim=" << dim);
+      IndexMeta meta;
+      meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+      meta.set_metric(metric, 0, Params());
+      auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+      ASSERT_TRUE(quantizer);
+      ASSERT_EQ(0, quantizer->init(meta, Params()));
+
+      constexpr size_t kCount = 7;
+      std::mt19937 gen(868 + dim);
+      std::uniform_real_distribution<float> random(-4.0f, 5.0f);
+      std::vector<float> raw(dim);
+      std::vector<std::string> records(
+          kCount,
+          std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+      std::vector<const void *> candidates;
+      for (auto &record : records) {
+        for (float &value : raw) value = random(gen);
+        quantizer->quantize_data(raw.data(), record.data());
+        candidates.push_back(record.data());
+      }
+      const auto original_records = records;
+      std::vector<float> expected(kCount);
+      for (size_t i = 0; i < kCount; ++i) {
+        expected[i] = quantizer->calc_distance_dp_dp(candidates[i],
+                                                     records[0].data());
+      }
+
+      // An empty batch must not require valid input or output buffers.
+      quantizer->calc_distance_dp_dp_batch(nullptr, 0, nullptr, nullptr);
+      for (int count : {1, 2, 3, 6, 7}) {
+        for (int repetition = 0; repetition < 2; ++repetition) {
+          std::vector<float> actual(kCount + 1, 12345.0f);
+          // Include the query record itself among candidates to exercise aliasing.
+          quantizer->calc_distance_dp_dp_batch(
+              candidates.data(), count, records[0].data(), actual.data());
+          for (int i = 0; i < count; ++i) {
+            expect_simd_near(actual[i], expected[i]);
+          }
+          EXPECT_EQ(actual[count], 12345.0f);
+          EXPECT_EQ(records, original_records);
+        }
+      }
+    }
+  }
+}
+
 TEST(Int8Quantizer, ScoreSquaredEuclidean) {
   std::mt19937 gen(7);
   std::uniform_real_distribution<float> dist(0.0, 1.0);
@@ -440,7 +492,8 @@ TEST_P(Int8RecordTail, ExactBuffersAtPageBoundary) {
     const auto scalar = turbo::get_distance_kernels(
         metric, turbo::DataType::kInt8, turbo::QuantizeType::kRecord,
         turbo::CpuArchType::kScalar);
-    for (size_t dim = 1; dim <= 129; ++dim) {
+    // Exercise every tail length both alone and after multiple full blocks.
+    for (size_t dim = 1; dim <= 193; ++dim) {
       SCOPED_TRACE(testing::Message()
                    << "metric=" << static_cast<int>(metric) << ", dim=" << dim);
       const size_t bytes =

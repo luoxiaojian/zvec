@@ -47,7 +47,6 @@ static ailego_force_inline void ip_int8_avx512_vnni(const void *a,
                                                     const void *b, size_t size,
                                                     float *distance) {
   const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
-  const __m128i ONES_INT16_SSE = _mm_set1_epi32(0x00010001);
 
   const int8_t *lhs = reinterpret_cast<const int8_t *>(a);
   const int8_t *rhs = reinterpret_cast<const int8_t *>(b);
@@ -81,33 +80,6 @@ static ailego_force_inline void ip_int8_avx512_vnni(const void *a,
                             ONES_INT16_AVX),
           ymm_sum_1);
     }
-
-    if (last >= last_aligned + 32) {
-      __m256i ymm_lhs = _mm256_load_si256((const __m256i *)lhs);
-      __m256i ymm_rhs = _mm256_load_si256((const __m256i *)rhs);
-      ymm_lhs = _mm256_sign_epi8(ymm_lhs, ymm_rhs);
-      ymm_rhs = _mm256_abs_epi8(ymm_rhs);
-      ymm_sum_0 = _mm256_add_epi32(
-          _mm256_madd_epi16(_mm256_maddubs_epi16(ymm_rhs, ymm_lhs),
-                            ONES_INT16_AVX),
-          ymm_sum_0);
-      lhs += 32;
-      rhs += 32;
-    }
-
-    if (last >= lhs + 16) {
-      __m128i xmm_lhs = _mm_load_si128((const __m128i *)lhs);
-      __m128i xmm_rhs = _mm_load_si128((const __m128i *)rhs);
-      xmm_lhs = _mm_sign_epi8(xmm_lhs, xmm_rhs);
-      xmm_rhs = _mm_abs_epi8(xmm_rhs);
-      ymm_sum_0 = _mm256_add_epi32(
-          _mm256_set_m128i(_mm_setzero_si128(),
-                           _mm_madd_epi16(_mm_maddubs_epi16(xmm_rhs, xmm_lhs),
-                                          ONES_INT16_SSE)),
-          ymm_sum_0);
-      lhs += 16;
-      rhs += 16;
-    }
   } else {
     for (; lhs != last_aligned; lhs += 64, rhs += 64) {
       __m256i ymm_lhs_0 = _mm256_loadu_si256((const __m256i *)(lhs + 0));
@@ -129,74 +101,33 @@ static ailego_force_inline void ip_int8_avx512_vnni(const void *a,
                             ONES_INT16_AVX),
           ymm_sum_1);
     }
-
-    if (last >= last_aligned + 32) {
-      __m256i ymm_lhs = _mm256_loadu_si256((const __m256i *)lhs);
-      __m256i ymm_rhs = _mm256_loadu_si256((const __m256i *)rhs);
-      ymm_lhs = _mm256_sign_epi8(ymm_lhs, ymm_rhs);
-      ymm_rhs = _mm256_abs_epi8(ymm_rhs);
-      ymm_sum_0 = _mm256_add_epi32(
-          _mm256_madd_epi16(_mm256_maddubs_epi16(ymm_rhs, ymm_lhs),
-                            ONES_INT16_AVX),
-          ymm_sum_0);
-      lhs += 32;
-      rhs += 32;
-    }
-
-    if (last >= lhs + 16) {
-      __m128i xmm_lhs = _mm_loadu_si128((const __m128i *)lhs);
-      __m128i xmm_rhs = _mm_loadu_si128((const __m128i *)rhs);
-      xmm_lhs = _mm_sign_epi8(xmm_lhs, xmm_rhs);
-      xmm_rhs = _mm_abs_epi8(xmm_rhs);
-      ymm_sum_0 = _mm256_add_epi32(
-          _mm256_set_m128i(_mm_setzero_si128(),
-                           _mm_madd_epi16(_mm_maddubs_epi16(xmm_rhs, xmm_lhs),
-                                          ONES_INT16_SSE)),
-          ymm_sum_0);
-      lhs += 16;
-      rhs += 16;
-    }
   }
   result = static_cast<float>(
       horizontal_add_int32_v256(_mm256_add_epi32(ymm_sum_0, ymm_sum_1)));
 
-  switch (last - lhs) {
-    case 15:
-      FMA_INT8_GENERAL(lhs[14], rhs[14], result)
-      /* FALLTHRU */
-    case 14:
-      FMA_INT8_GENERAL(lhs[13], rhs[13], result)
-      /* FALLTHRU */
-    case 13:
-      FMA_INT8_GENERAL(lhs[12], rhs[12], result)
-      /* FALLTHRU */
-    case 12:
-      FMA_INT8_GENERAL(lhs[11], rhs[11], result)
-      /* FALLTHRU */
-    case 11:
-      FMA_INT8_GENERAL(lhs[10], rhs[10], result)
-      /* FALLTHRU */
-    case 10:
-      FMA_INT8_GENERAL(lhs[9], rhs[9], result)
-      /* FALLTHRU */
-    case 9:
-      FMA_INT8_GENERAL(lhs[8], rhs[8], result)
-      /* FALLTHRU */
-    case 8:
-      FMA_INT8_GENERAL(lhs[7], rhs[7], result)
-      /* FALLTHRU */
-    case 7:
-      FMA_INT8_GENERAL(lhs[6], rhs[6], result)
-      /* FALLTHRU */
-    case 6:
-      FMA_INT8_GENERAL(lhs[5], rhs[5], result)
-      /* FALLTHRU */
-    case 5:
-      FMA_INT8_GENERAL(lhs[4], rhs[4], result)
-      /* FALLTHRU */
-    case 4:
-      FMA_INT8_GENERAL(lhs[3], rhs[3], result)
-      /* FALLTHRU */
+  const size_t tail = last - lhs;
+  if (tail >= 4) {
+    // Read only vector codes: record metadata starts immediately after them.
+    // Shift signed lhs to uint8 in registers, then remove the +128 bias from
+    // dpbusd's uint8 * int8 products. Masked-out rhs lanes are zero, so they
+    // contribute nothing even though xor changes inactive lhs lanes to 128.
+    const __mmask64 mask = (uint64_t{1} << tail) - 1;
+    const __m512i lhs_codes = _mm512_maskz_loadu_epi8(mask, lhs);
+    const __m512i rhs_codes = _mm512_maskz_loadu_epi8(mask, rhs);
+    const __m512i offset = _mm512_set1_epi8(static_cast<int8_t>(-128));
+    const __m512i shifted_lhs = _mm512_xor_si512(lhs_codes, offset);
+    const __m512i shifted_ip =
+        _mm512_dpbusd_epi32(_mm512_setzero_si512(), shifted_lhs, rhs_codes);
+    const __m512i correction =
+        _mm512_dpbusd_epi32(_mm512_setzero_si512(), offset, rhs_codes);
+    result += static_cast<float>(_mm512_reduce_add_epi32(
+        _mm512_sub_epi32(shifted_ip, correction)));
+    *distance = result;
+    return;
+  }
+
+  // A few scalar products cost less than setting up masked loads and VNNI.
+  switch (tail) {
     case 3:
       FMA_INT8_GENERAL(lhs[2], rhs[2], result)
       /* FALLTHRU */
