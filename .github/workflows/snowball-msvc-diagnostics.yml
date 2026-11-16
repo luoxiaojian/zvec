@@ -1,0 +1,27 @@
+name: Snowball MSVC diagnostics
+
+on:
+  push:
+    branches: [codex/snowball-msvc-1952-diagnostics]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: git submodule update --init thirdparty/snowball/snowball-3.1.1
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: arm64
+      - name: Compare Snowball compiler optimization modes
+        shell: pwsh
+        run: python .github/snowball-probe/probe.py
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: snowball-msvc-diagnostics
+          path: snowball-probe-results
