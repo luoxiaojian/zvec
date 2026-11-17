@@ -174,6 +174,17 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
         segment_, info, nullptr, std::make_unique<cp::Expression>(expression));
   }
 
+  std::unique_ptr<sqlengine::DocFilter> bitmap_filter(
+      const std::vector<std::string> &columns, cp::Expression expression) {
+    auto info = std::make_shared<sqlengine::QueryInfo>();
+    for (const auto &column : columns) {
+      info->add_forward_filter_schema_ptr(column, schema_->get_field(column));
+    }
+    return std::make_unique<sqlengine::DocFilter>(
+        segment_, info, std::make_unique<cp::Expression>(std::move(expression)),
+        nullptr);
+  }
+
   static ForwardReadView::Ptr make_owned_view(TablePtr table) {
     return ForwardReadView::Make(std::move(table));
   }
@@ -1184,7 +1195,9 @@ TEST_P(ForwardFilterReadTest, LiteralPredicatesAreEvaluatedOnBothPaths) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   for (bool sealed : {false, true}) {
     SCOPED_TRACE(sealed ? "sealed" : "writing");
-    if (sealed) ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+    if (sealed) {
+      ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+    }
     auto never = filter({}, cp::literal(false));
     auto always = filter({}, cp::literal(true));
     ASSERT_TRUE(never->compute_filter().ok());
@@ -1252,6 +1265,79 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
   }
 }
 
+TEST_P(ForwardFilterReadTest, BitmapMatchesCandidatesAcrossStorageModes) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(segment_->Delete(uint64_t{10024}).ok());
+  const auto expression =
+      cp::greater(cp::field_ref("i32"), cp::literal(int32_t{10}));
+  for (int stage = 0; stage < 3; ++stage) {
+    if (stage == 1) {
+      ASSERT_TRUE(segment_->flush().ok());
+    }
+    if (stage == 2) {
+      ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+    }
+    auto bitmap = bitmap_filter({"i32"}, expression);
+    auto candidate = filter({"i32"}, expression);
+    EXPECT_TRUE(bitmap->is_filtered(12));
+    ASSERT_TRUE(bitmap->compute_filter().ok());
+    ASSERT_TRUE(candidate->compute_filter().ok());
+    for (uint64_t i = 0; i < 2053; ++i) {
+      EXPECT_EQ(bitmap->is_filtered(i), candidate->is_filtered(i)) << i;
+      const bool matches = i % 11 != 0 && i % 2 == 0 && i > 10 && i != 24;
+      EXPECT_EQ(bitmap->is_filtered(i), !matches) << i;
+    }
+    EXPECT_TRUE(bitmap->is_filtered(2053));
+    EXPECT_TRUE(bitmap->is_filtered(UINT64_MAX));
+  }
+}
+
+TEST_P(ForwardFilterReadTest, BitmapKeepsCapturedBoundaryAndLiveDeletes) {
+  ASSERT_NO_FATAL_FAILURE(create(48));
+  ASSERT_TRUE(segment_->Delete(uint64_t{10024}).ok());
+  auto bitmap = bitmap_filter(
+      {"i32"}, cp::greater(cp::field_ref("i32"), cp::literal(int32_t{0})));
+  ASSERT_TRUE(bitmap->compute_filter().ok());
+  EXPECT_FALSE(bitmap->is_filtered(2));
+  deletes_->mark_deleted(uint64_t{10002});
+  EXPECT_TRUE(bitmap->is_filtered(2));
+  auto next = TestHelper::CreateDoc(48, *schema_);
+  next.set<int32_t>("i32", 48);
+  ASSERT_TRUE(segment_->insert(next).ok());
+  EXPECT_TRUE(bitmap->is_filtered(48));
+  ASSERT_TRUE(bitmap->compute_filter().ok());
+  EXPECT_FALSE(bitmap->is_filtered(48));
+}
+
+TEST_P(ForwardFilterReadTest, BitmapConstantsEmptySegmentsAndBindFailures) {
+  ASSERT_NO_FATAL_FAILURE(create(0));
+  auto empty = bitmap_filter(
+      {"i32"}, cp::greater(cp::field_ref("i32"), cp::literal(int32_t{0})));
+  ASSERT_TRUE(empty->compute_filter().ok());
+  EXPECT_TRUE(empty->is_filtered(0));
+  auto first = TestHelper::CreateDoc(0, *schema_);
+  ASSERT_TRUE(segment_->insert(first).ok());
+  for (int stage = 0; stage < 2; ++stage) {
+    if (stage == 1) {
+      ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+    }
+    auto yes = bitmap_filter({}, cp::literal(true));
+    auto no = bitmap_filter({}, cp::literal(false));
+    auto null =
+        bitmap_filter({}, cp::literal(arrow::MakeNullScalar(arrow::boolean())));
+    ASSERT_TRUE(yes->compute_filter().ok());
+    ASSERT_TRUE(no->compute_filter().ok());
+    ASSERT_TRUE(null->compute_filter().ok());
+    EXPECT_FALSE(yes->is_filtered(0));
+    EXPECT_TRUE(no->is_filtered(0));
+    EXPECT_TRUE(null->is_filtered(0));
+    EXPECT_TRUE(yes->is_filtered(1));
+  }
+  auto invalid = bitmap_filter({"i32"}, cp::field_ref("missing"));
+  EXPECT_FALSE(invalid->compute_filter().ok());
+  EXPECT_TRUE(invalid->is_filtered(0));
+}
+
 TEST_P(ForwardFilterReadTest, BindFailureAndUnfilteredDeletionRemainUnchanged) {
   create(24);
   ASSERT_TRUE(segment_->Delete(uint64_t{10007}).ok());
@@ -1276,6 +1362,53 @@ TEST_P(ForwardFilterReadTest, BindFailureAndUnfilteredDeletionRemainUnchanged) {
   ASSERT_TRUE(unfiltered.compute_filter().ok());
   EXPECT_FALSE(unfiltered.is_filtered(1));
   EXPECT_TRUE(unfiltered.is_filtered(7));
+}
+
+TEST_P(IpcForwardFilterReadTest, BitmapKeepsOwnedDeletionAfterStoreRetirement) {
+  ASSERT_NO_FATAL_FAILURE(create(48));
+  ASSERT_TRUE(segment_->Delete(uint64_t{10024}).ok());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  auto bitmap = bitmap_filter(
+      {"i32"}, cp::greater(cp::field_ref("i32"), cp::literal(int32_t{0})));
+  ASSERT_TRUE(bitmap->compute_filter().ok());
+  EXPECT_TRUE(uses_sealed_deletion(*bitmap));
+  EXPECT_FALSE(bitmap->is_filtered(2));
+  EXPECT_TRUE(bitmap->is_filtered(24));
+  ASSERT_TRUE(segment_->destroy().ok());
+  // Both the predicate bits and PR905's global-doc-ID column own their buffers.
+  EXPECT_FALSE(bitmap->is_filtered(2));
+  deletes_->mark_deleted(uint64_t{10002});
+  EXPECT_TRUE(bitmap->is_filtered(2));
+  EXPECT_FALSE(bitmap->is_filtered(4));
+  EXPECT_TRUE(bitmap->is_filtered(48));
+  EXPECT_FALSE(bitmap->compute_filter().ok());
+  EXPECT_TRUE(bitmap->is_filtered(4));
+}
+
+TEST_P(ForwardFilterReadTest, BitmapVirtualRowIdUsesNativeReader) {
+  ASSERT_NO_FATAL_FAILURE(create(48));
+  ASSERT_TRUE(segment_->Delete(uint64_t{10024}).ok());
+  for (bool sealed : {false, true}) {
+    if (sealed) {
+      ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+    }
+    auto info = std::make_shared<sqlengine::QueryInfo>();
+    info->add_forward_filter_schema_ptr(LOCAL_ROW_ID,
+                                        schema_->get_field("u64"));
+    auto expression =
+        cp::greater(cp::field_ref(LOCAL_ROW_ID), cp::literal(uint64_t{10}));
+    sqlengine::DocFilter bitmap(
+        segment_, info, std::make_unique<cp::Expression>(expression), nullptr);
+    ASSERT_TRUE(bitmap.compute_filter().ok());
+    for (uint64_t row = 0; row < 48; ++row) {
+      EXPECT_EQ(bitmap.is_filtered(row),
+                row <= 10 || row == 24 || (sealed && row == 26))
+          << row;
+    }
+    EXPECT_EQ(uses_sealed_deletion(bitmap), sealed && GetParam());
+    deletes_->mark_deleted(uint64_t{10026});
+    EXPECT_TRUE(bitmap.is_filtered(26));
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterReadTest,

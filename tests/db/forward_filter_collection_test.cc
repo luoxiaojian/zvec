@@ -44,6 +44,10 @@ class ForwardAccessProbe final : public ailego::Logger {
     char text[4096];
     vsnprintf(text, sizeof(text), format, args);
     const std::string message(text);
+    if (message.find("Forward bitmap kernel[") != std::string::npos) {
+      ++bitmaps;
+      return;
+    }
     if (message.find("Forward filter view:") != std::string::npos) {
       ++views;
     } else if (message.find("Forward filter locked fetch:") !=
@@ -69,7 +73,7 @@ class ForwardAccessProbe final : public ailego::Logger {
   int prepared() const {
     return locked.load() + views.load();
   }
-  std::atomic<int> locked{0}, views{0};
+  std::atomic<int> locked{0}, views{0}, bitmaps{0};
   std::mutex mutex;
   std::condition_variable cv;
   bool entered{false}, block{false};
@@ -229,7 +233,9 @@ TEST_P(ForwardFilterCollectionTest,
   EXPECT_GT(probe_->prepared(), 0);
   expect_sealed_access();
   int readers = probe_->prepared();
+  const int bitmaps = probe_->bitmaps.load();
   EXPECT_EQ(keys(collection_->query(query("bitmap > 48"))), baseline);
+  EXPECT_GT(probe_->bitmaps.load(), bitmaps);
   std::string inverted = "inverted IN (49";
   for (int i = 50; i < 96; ++i) inverted += "," + std::to_string(i);
   inverted += ")";

@@ -15,8 +15,8 @@
 #pragma once
 
 #include <memory>
-#include <arrow/acero/api.h>
-#include <arrow/chunked_array.h>
+#include <arrow/array.h>
+#include <arrow/compute/expression.h>
 #include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_search_result.h"
 #include "db/index/common/index_filter.h"
@@ -31,13 +31,13 @@ class DocFilter : public IndexFilter {
   using Ptr = std::shared_ptr<DocFilter>;
 
   DocFilter(Segment::Ptr segment, QueryInfo::Ptr query_info,
-            std::unique_ptr<arrow::acero::Declaration> forward_plan,
+            std::unique_ptr<arrow::compute::Expression> bitmap_filter,
             std::unique_ptr<arrow::compute::Expression> forward_filter)
       : segment_(std::move(segment)),
         query_info_(std::move(query_info)),
         delete_filter_(segment_->get_filter()),
         invert_cond_(query_info_->invert_cond()),
-        forward_plan_(std::move(forward_plan)),
+        bitmap_filter_expr_(std::move(bitmap_filter)),
         forward_filter_expr_(std::move(forward_filter)) {}
 
   Status compute_filter();
@@ -63,14 +63,14 @@ class DocFilter : public IndexFilter {
   QueryInfo::Ptr query_info_;
   IndexFilter::Ptr delete_filter_;
   QueryNode::Ptr invert_cond_;
-  // either forward_plan_ or forward_expr_ is set
-  std::unique_ptr<arrow::acero::Declaration> forward_plan_;
+  // Either a whole-column bitmap or a per-candidate expression is prepared.
+  std::unique_ptr<arrow::compute::Expression> bitmap_filter_expr_;
   std::unique_ptr<arrow::compute::Expression> forward_filter_expr_;
 
   InvertedSearchResult::Ptr invert_result_;
   IndexFilter::Ptr invert_filter_{nullptr};
 
-  std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  std::shared_ptr<arrow::BooleanArray> forward_bitmap_;
   bool forward_prepared_{false};
   // Rows captured at preparation. The access decision stays fixed even if the
   // segment is sealed later; an owning view rejects candidates beyond it.

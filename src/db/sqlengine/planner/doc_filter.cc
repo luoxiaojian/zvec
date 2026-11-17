@@ -14,15 +14,17 @@
 
 #include "db/sqlengine/planner/doc_filter.h"
 #include <optional>
-#include <arrow/acero/exec_plan.h>
+#include <arrow/compute/api.h>
 #include <arrow/table.h>
 #include <zvec/ailego/logger/logger.h>
+#include "db/sqlengine/planner/forward_bitmap.h"
 #include "db/sqlengine/planner/invert_search.h"
 
 namespace zvec::sqlengine {
 
 Status DocFilter::compute_filter() {
   forward_prepared_ = false;
+  forward_bitmap_.reset();
   forward_view_.reset();
   forward_rows_ = 0;
   sealed_deletion_.reset();
@@ -37,25 +39,66 @@ Status DocFilter::compute_filter() {
     invert_filter_ = invert_result_->make_filter();
   }
 
-  if (forward_plan_) {
-    auto forward_result = arrow::acero::DeclarationToTable(*forward_plan_);
-    if (!forward_result.ok()) {
+  // Preserve PR905's live deletion check for every prepared filter path.
+  const bool with_deletion = delete_filter_ != nullptr;
+  if (bitmap_filter_expr_) {
+    const auto &columns = query_info_->get_forward_filter_field_names();
+    auto prepared = segment_->prepare_forward_read(columns, with_deletion);
+    if (!prepared.ok()) {
+      return Status::InternalError("Prepare forward bitmap failed: ",
+                                   prepared.status().ToString());
+    }
+    auto state = prepared.MoveValueUnsafe();
+    auto compute =
+        [&]() -> arrow::Result<std::shared_ptr<arrow::BooleanArray>> {
+      if (state.view) {
+        // PR905 shares each immutable column across projections. Assemble only
+        // a Table wrapper: preserve its chunks and owned buffers without
+        // traversing rows, copying values or doing per-candidate view reads.
+        std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+        arrays.reserve(state.view->num_columns());
+        bool physical = true;
+        for (int i = 0; i < state.view->num_columns(); ++i) {
+          const auto &data = state.view->column(i)->data();
+          if (!data) {
+            physical = false;
+            break;
+          }
+          arrays.push_back(data);
+        }
+        if (physical) {
+          auto table = arrow::Table::Make(state.schema, std::move(arrays),
+                                          static_cast<int64_t>(state.num_rows));
+          return evaluate_forward_bitmap(*table, *bitmap_filter_expr_);
+        }
+      }
+      if (state.num_rows == 0) {
+        ARROW_ASSIGN_OR_RAISE(auto empty,
+                              arrow::Table::MakeEmpty(state.schema));
+        return evaluate_forward_bitmap(*empty, *bitmap_filter_expr_);
+      }
+      if (columns.empty()) {
+        auto empty = arrow::Table::Make(state.schema, arrow::ArrayVector{},
+                                        static_cast<int64_t>(state.num_rows));
+        return evaluate_forward_bitmap(*empty, *bitmap_filter_expr_);
+      }
+      // Keep bounded input memory for mutable/Parquet stores; the native reader
+      // also emits virtual LOCAL_ROW_ID columns that have no physical buffers.
+      // Retain only boolean output and evaluate the captured row prefix.
+      auto reader = segment_->scan(columns);
+      if (!reader) return arrow::Status::Invalid("Scan forward bitmap failed");
+      return evaluate_forward_bitmap(*reader, *bitmap_filter_expr_,
+                                     static_cast<int64_t>(state.num_rows));
+    };
+    auto result = compute();
+    if (!result.ok()) {
       return Status::InternalError("Execute filter bitmap failed: ",
-                                   forward_result.status().ToString());
+                                   result.status().ToString());
     }
-    // has only one column with boolean type
-    auto &forward_table = forward_result.ValueUnsafe();
-    if (forward_table->num_columns() != 1 ||
-        forward_table->column(0)->type() != arrow::boolean()) {
-      return Status::InternalError("Filter bitmap is not boolean type");
-    }
-    forward_bitmap_ = forward_table->column(0);
+    forward_bitmap_ = result.MoveValueUnsafe();
+    sealed_deletion_ = std::move(state.deletion_filter);
   }
 
-  // A sealed IPC segment also supplies a lock-free deletion check. Only a
-  // filter that exists now is replaced, so the delete bitmap observed at
-  // construction still decides whether deletion is checked at all.
-  const bool with_deletion = delete_filter_ != nullptr;
   if (forward_filter_expr_) {
     // get schema to bind to Expression
     const auto columns = query_info_->get_forward_filter_field_names();
@@ -85,7 +128,7 @@ Status DocFilter::compute_filter() {
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
     forward_prepared_ = true;
-  } else if (with_deletion) {
+  } else if (with_deletion && !bitmap_filter_expr_) {
     // Without a forward predicate the capture is only an optimization: on
     // any failure keep the segment's filter, which gives the same results.
     auto prepared = segment_->prepare_forward_read({}, true);
@@ -97,13 +140,18 @@ Status DocFilter::compute_filter() {
 }
 
 bool DocFilter::empty() const {
-  return !(delete_filter_ || invert_filter_ || forward_plan_ ||
+  return !(delete_filter_ || invert_filter_ || bitmap_filter_expr_ ||
            forward_filter_expr_);
 }
 
 bool DocFilter::is_filtered(uint64_t id) const {
   // An unprepared (or failed) forward filter never admits candidates.
   if (forward_filter_expr_ && !forward_prepared_) return true;
+  if (bitmap_filter_expr_ && !forward_bitmap_) return true;
+  if (forward_bitmap_ &&
+      id >= static_cast<uint64_t>(forward_bitmap_->length())) {
+    return true;
+  }
   // An owning view holds exactly the rows captured at preparation; nothing
   // beyond them can be read. Locked fetch keeps reading the live segment.
   if (forward_view_ && id >= forward_rows_) return true;
@@ -129,18 +177,7 @@ std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
   if (!forward_bitmap_) {
     return std::nullopt;
   }
-  uint64_t rows_seen = 0;
-  for (int c = 0; c < forward_bitmap_->num_chunks(); c++) {
-    const auto &arr = forward_bitmap_->chunk(c);
-    if (id < rows_seen + arr->length()) {
-      auto *bool_array = static_cast<arrow::BooleanArray *>(arr.get());
-      return (*bool_array)[id - rows_seen].value_or(false);
-    }
-    rows_seen += arr->length();
-  }
-  LOG_ERROR("ID is out or range: id[%zu] count[%zu]", (size_t)id,
-            (size_t)rows_seen);
-  return std::nullopt;
+  return forward_bitmap_->IsValid(id) && forward_bitmap_->Value(id);
 }
 
 std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
