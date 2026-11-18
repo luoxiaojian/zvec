@@ -217,11 +217,17 @@ set(Arrow_LIBRARIES ${LIB_ARROW} PARENT_SCOPE)
 set(Arrow_DIR ${EXTERNAL_BINARY_DIR} PARENT_SCOPE)
 set(Arrow_LIBRARY_DIR ${EXTERNAL_BINARY_DIR} PARENT_SCOPE)
 
+# The bundled dependencies include RE2. Expose its headers so predicates that
+# must match Arrow's LIKE semantics use the same engine and version.
+ExternalProject_Get_Property(ARROW.BUILD BINARY_DIR)
+set(ARROW_RE2_INCLUDE_DIR "${BINARY_DIR}/re2_ep-install/include")
+unset(BINARY_DIR)
+file(MAKE_DIRECTORY "${ARROW_RE2_INCLUDE_DIR}")
 add_library(Arrow::arrow_depends UNKNOWN IMPORTED GLOBAL)
 set_target_properties(
         Arrow::arrow_depends PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
-        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${EXTERNAL_INC_DIR}
+        INTERFACE_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${ARROW_RE2_INCLUDE_DIR}"
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${ARROW_RE2_INCLUDE_DIR}"
         IMPORTED_LOCATION "${LIB_ARROW_DEPENDS}"
 )
 add_dependencies(Arrow::arrow_depends ARROW.BUILD)

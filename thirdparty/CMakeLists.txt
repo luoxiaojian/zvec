@@ -35,6 +35,7 @@ add_subdirectory(RaBitQ-Library RaBitQ-Library EXCLUDE_FROM_ALL)
 add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
+add_subdirectory(stile stile EXCLUDE_FROM_ALL)
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)
 add_subdirectory(yaml-cpp yaml-cpp EXCLUDE_FROM_ALL)
