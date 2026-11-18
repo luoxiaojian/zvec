@@ -23,6 +23,7 @@ namespace zvec::sqlengine {
 
 Status DocFilter::compute_filter() {
   forward_prepared_ = false;
+  forward_predicate_.reset();
   forward_view_.reset();
   forward_rows_ = 0;
   sealed_deletion_.reset();
@@ -84,6 +85,19 @@ Status DocFilter::compute_filter() {
                                    bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
+    if (forward_view_) {
+      // Same results as Arrow's per-row evaluation below, without building
+      // scalars per candidate. Expressions outside its vocabulary keep Arrow.
+      auto predicate =
+          ForwardPredicate::Make(*forward_filter_expr_, forward_view_);
+      if (predicate.ok()) {
+        forward_predicate_ = predicate.MoveValueUnsafe();
+        LOG_DEBUG("Forward predicate typed: segment[%d]", segment_->id());
+      } else {
+        LOG_DEBUG("Forward predicate uses Arrow: segment[%d] %s",
+                  segment_->id(), predicate.status().ToString().c_str());
+      }
+    }
     forward_prepared_ = true;
   } else if (with_deletion) {
     // Without a forward predicate the capture is only an optimization: on
@@ -175,6 +189,7 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
+  if (forward_predicate_) return forward_predicate_->matches(id);
   ExecBatchPtr exec_batch;
   if (forward_view_) {
     exec_batch = forward_view_->read_row(id);

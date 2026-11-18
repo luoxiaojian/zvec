@@ -25,13 +25,15 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <arrow/type.h>
+#include <stile/table_index.h>
 
 namespace zvec {
 
 class SegmentImpl;
 namespace test {
 class ForwardFilterReadTest;
-}
+class ForwardPredicateTest;
+}  // namespace test
 
 // One immutable, zero-copy forward column in segment-local row order. A
 // sealed segment builds each filtered column once and shares it with every
@@ -112,10 +114,17 @@ class ForwardColumn final {
   // Arrow compatibility adapter for the interpreted evaluator.
   arrow::Result<std::shared_ptr<arrow::Scalar>> scalar(uint64_t row) const;
 
+  // The same column indexed for stile's per-row predicates, built once with
+  // the column; null if stile cannot index it.
+  const stile::ColumnIndex::Ptr &stile_index() const {
+    return stile_index_;
+  }
+
  private:
   friend class SegmentImpl;
   friend class ForwardReadView;
   friend class test::ForwardFilterReadTest;
+  friend class test::ForwardPredicateTest;
 
   // Validates the column's structure, type and length; never copies values.
   static arrow::Result<Ptr> Make(std::shared_ptr<arrow::Field> field,
@@ -134,6 +143,7 @@ class ForwardColumn final {
   std::vector<const arrow::Array *> arrays_;
   std::vector<int64_t> ends_;
   int64_t stride_{0};
+  stile::ColumnIndex::Ptr stile_index_;
 };
 
 // A query's projection: shared columns arranged in the query's column order.
@@ -171,6 +181,7 @@ class ForwardReadView final {
  private:
   friend class SegmentImpl;
   friend class test::ForwardFilterReadTest;
+  friend class test::ForwardPredicateTest;
 
   // Wraps every column of a validated, caller-owned table. The caller must
   // guarantee buffer ownership; used by tests to build views from arbitrary

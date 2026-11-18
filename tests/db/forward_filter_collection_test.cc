@@ -44,6 +44,14 @@ class ForwardAccessProbe final : public ailego::Logger {
     char text[4096];
     vsnprintf(text, sizeof(text), format, args);
     const std::string message(text);
+    if (message.find("Forward predicate typed:") != std::string::npos) {
+      ++typed;
+      return;
+    }
+    if (message.find("Forward predicate uses Arrow:") != std::string::npos) {
+      ++arrow;
+      return;
+    }
     if (message.find("Forward filter view:") != std::string::npos) {
       ++views;
     } else if (message.find("Forward filter locked fetch:") !=
@@ -69,7 +77,7 @@ class ForwardAccessProbe final : public ailego::Logger {
   int prepared() const {
     return locked.load() + views.load();
   }
-  std::atomic<int> locked{0}, views{0};
+  std::atomic<int> locked{0}, views{0}, typed{0}, arrow{0};
   std::mutex mutex;
   std::condition_variable cv;
   bool entered{false}, block{false};
@@ -395,6 +403,30 @@ TEST_P(ForwardFilterCollectionTest, AppendAfterPreparationIsEvaluatedLive) {
   EXPECT_EQ(after.count("pk_10001"), 0u);
   EXPECT_GT(probe_->locked.load(), 0);
   EXPECT_EQ(probe_->views.load(), 0);
+}
+
+// Planner and optimizer output on sealed views is evaluated by the typed
+// predicate, and returns what the bitmap path (no inverted index) returns.
+TEST_P(ForwardFilterCollectionTest, PlannerFiltersUseTypedPredicate) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(collection_->optimize().ok());
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  for (const auto &[typed, bitmap] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"value > 48", "bitmap > 48"},
+           {"value >= 10 AND value < 70", "bitmap >= 10 AND bitmap < 70"},
+           {"value < 5 OR value > 90", "bitmap < 5 OR bitmap > 90"},
+           {"(value > 20 AND value <= 40) OR value >= 80",
+            "(bitmap > 20 AND bitmap <= 40) OR bitmap >= 80"}}) {
+    SCOPED_TRACE(typed);
+    probe_->typed = 0;
+    probe_->arrow = 0;
+    const auto expected = keys(collection_->query(query(bitmap)));
+    EXPECT_FALSE(expected.empty());
+    EXPECT_EQ(keys(collection_->query(query(typed))), expected);
+    EXPECT_EQ(probe_->arrow.load(), 0);
+    EXPECT_EQ(probe_->typed.load() > 0, GetParam());
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterCollectionTest,

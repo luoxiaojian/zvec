@@ -129,6 +129,10 @@ arrow::Result<ForwardColumn::Ptr> ForwardColumn::Make(
       }
     }
   }
+  // Same buffers, no copies; stile declines layouts it cannot read.
+  if (auto index = stile::ColumnIndex::Make(field, data); index.ok()) {
+    column->stile_index_ = index.MoveValueUnsafe();
+  }
   column->field_ = std::move(field);
   column->data_ = std::move(data);
   column->length_ = length;
@@ -138,6 +142,7 @@ arrow::Result<ForwardColumn::Ptr> ForwardColumn::Make(
 ForwardColumn::Ptr ForwardColumn::MakeRowId(std::shared_ptr<arrow::Field> field,
                                             int64_t length) {
   auto column = std::shared_ptr<ForwardColumn>(new ForwardColumn);
+  column->stile_index_ = stile::ColumnIndex::MakeRowNumber(field, length);
   column->field_ = std::move(field);
   column->length_ = length;
   column->layout_ = Layout::kRowId;

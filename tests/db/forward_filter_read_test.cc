@@ -163,6 +163,12 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
   static bool uses_sealed_deletion(const sqlengine::DocFilter &filter) {
     return filter.sealed_deletion_ != nullptr;
   }
+  static bool uses_predicate(const sqlengine::DocFilter &filter) {
+    return filter.forward_predicate_ != nullptr;
+  }
+  static void drop_predicate(sqlengine::DocFilter *filter) {
+    filter->forward_predicate_.reset();
+  }
 
   std::unique_ptr<sqlengine::DocFilter> filter(
       const std::vector<std::string> &columns, cp::Expression expression) {
@@ -1276,6 +1282,64 @@ TEST_P(ForwardFilterReadTest, BindFailureAndUnfilteredDeletionRemainUnchanged) {
   ASSERT_TRUE(unfiltered.compute_filter().ok());
   EXPECT_FALSE(unfiltered.is_filtered(1));
   EXPECT_TRUE(unfiltered.is_filtered(7));
+}
+
+// The typed predicate serves sealed views only and must agree with Arrow's
+// per-row evaluation on every candidate, including deletes and the boundary.
+TEST_P(ForwardFilterReadTest, TypedPredicateMatchesArrowOnEveryCandidate) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(segment_->Delete(uint64_t{10024}).ok());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  arrow::UInt64Builder set;
+  ASSERT_TRUE(set.AppendValues({std::numeric_limits<uint64_t>::max() - 4,
+                                std::numeric_limits<uint64_t>::max() - 9})
+                  .ok());
+  const auto values = set.Finish().ValueOrDie();
+  const auto i32 = cp::field_ref("i32");
+  const std::vector<std::pair<std::vector<std::string>, cp::Expression>> cases =
+      {
+          {{"i32"}, cp::greater(i32, cp::literal(int32_t{10}))},
+          {{"i32", "text"},
+           cp::and_(cp::less(cp::literal(int32_t{-5}), i32),
+                    cp::call("match_like", {cp::field_ref("text")},
+                             cp::MatchSubstringOptions("%1_")))},
+          {{"f64", "flag"},
+           cp::or_(cp::is_null(cp::field_ref("f64")),
+                   cp::equal(cp::field_ref("flag"), cp::literal(true)))},
+          {{"u64"},
+           cp::not_(cp::call("is_in", {cp::field_ref("u64")},
+                             cp::SetLookupOptions(
+                                 values, cp::SetLookupOptions::INCONCLUSIVE)))},
+          {{"items"},
+           cp::greater(cp::call("list_value_length", {cp::field_ref("items")}),
+                       cp::literal(int32_t{1}))},
+          {{}, cp::literal(true)},
+      };
+  for (const auto &[columns, expression] : cases) {
+    SCOPED_TRACE(expression.ToString());
+    auto typed = filter(columns, expression);
+    auto arrow = filter(columns, expression);
+    ASSERT_TRUE(typed->compute_filter().ok());
+    ASSERT_TRUE(arrow->compute_filter().ok());
+    EXPECT_EQ(uses_predicate(*typed), uses_view(*typed));
+    drop_predicate(arrow.get());
+    size_t admitted = 0;
+    for (uint64_t id = 0; id < 2053; ++id) {
+      ASSERT_EQ(typed->is_filtered(id), arrow->is_filtered(id)) << id;
+      admitted += !typed->is_filtered(id);
+    }
+    EXPECT_GT(admitted, 0u);
+    EXPECT_TRUE(typed->is_filtered(24));  // deleted
+    // A view admits nothing beyond its captured rows.
+    if (uses_view(*typed)) EXPECT_TRUE(typed->is_filtered(2053));
+  }
+  // Functions outside the vocabulary stay on Arrow with the same view.
+  auto other = filter({"i32"}, cp::greater(cp::call("add", {i32, i32}),
+                                           cp::literal(int32_t{10})));
+  ASSERT_TRUE(other->compute_filter().ok());
+  EXPECT_FALSE(uses_predicate(*other));
+  EXPECT_EQ(uses_view(*other), GetParam());
+  EXPECT_FALSE(other->is_filtered(12));
 }
 
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterReadTest,

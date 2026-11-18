@@ -53,5 +53,6 @@ cc_library(
     Arrow::arrow_compute
     Arrow::arrow_acero
     utf8proc
+    stile
   VERSION "${PROXIMA_ZVEC_VERSION}"
 )
