@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "query_planner.h"
+#include <cstdlib>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -397,6 +398,15 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
     // single stage search should be performed as large ratio of docs match
     // with filter
     bool single_stage_search = only_invert_before_opt && only_forward_after_opt;
+    // Measurement only: ZVEC_FORWARD_SINGLE_STAGE=1 evaluates every
+    // forward-only filter per candidate instead of building a bitmap first.
+    static const bool force_single_stage = [] {
+      const char *value = std::getenv("ZVEC_FORWARD_SINGLE_STAGE");
+      return value && value[0] == '1';
+    }();
+    if (force_single_stage && only_forward_after_opt) {
+      single_stage_search = true;
+    }
     std::unique_ptr<arrow::compute::Expression> forward_filter;
     if (segment_query_info->filter_cond()) {
       auto filter = parse_filter(segment_query_info->filter_cond().get());
