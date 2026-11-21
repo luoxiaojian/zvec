@@ -30,6 +30,7 @@
 #include <zvec/db/config.h>
 #include "db/common/file_helper.h"
 #include "db/sqlengine/planner/doc_filter.h"
+#include "db/sqlengine/planner/hnsw_business_predicates.h"
 #include "index/utils/utils.h"
 
 namespace zvec::test {
@@ -253,6 +254,195 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
 };
 
 class IpcForwardFilterReadTest : public ForwardFilterReadTest {};
+
+TEST(HnswForwardBitmapTest, SlicedNullableChunksUseSegmentRows) {
+  arrow::BooleanBuilder builder;
+  for (int i = 0; i < 24; ++i) {
+    ASSERT_TRUE(
+        (i % 5 == 1 ? builder.AppendNull() : builder.Append(i % 3 != 0)).ok());
+  }
+  auto array = builder.Finish().ValueOrDie();
+  const arrow::ChunkedArray bitmap(arrow::ArrayVector{
+      array->Slice(0, 0), array->Slice(3, 8), array->Slice(0, 0),
+      array->Slice(15, 7), array->Slice(0, 0)});
+  const sqlengine::ForwardBitmapFilter filter(bitmap);
+  for (uint64_t row = 0; row < 15; ++row) {
+    const uint64_t source = row < 8 ? row + 3 : row + 7;
+    EXPECT_EQ(filter.reject(row), source % 5 == 1 || source % 3 == 0) << row;
+  }
+  EXPECT_FALSE(filter.reject(15));
+  EXPECT_FALSE(filter.reject(UINT64_MAX));
+  auto block = filter.single_chunk(9, 6);
+  ASSERT_NE(block, nullptr);
+  for (uint64_t row = 9; row < 15; ++row)
+    EXPECT_EQ(block->reject(row), filter.reject(row)) << row;
+  EXPECT_FALSE(filter.single_chunk(7, 2));
+  EXPECT_FALSE(filter.single_chunk(UINT64_MAX, 2));
+  const arrow::ChunkedArray empty(arrow::ArrayVector{}, arrow::boolean());
+  EXPECT_FALSE(sqlengine::ForwardBitmapFilter(empty).reject(0));
+}
+
+TEST_P(ForwardFilterReadTest, HnswBusinessFiltersAcrossBlocks) {
+  // A graph just above the small-index brute-force threshold exercises L0.
+  constexpr uint32_t block_size = 1003;
+  constexpr uint32_t row_count = 2 * block_size;
+  schema_->get_field("i32")->set_index_params(InvertIndexParams(false));
+  ASSERT_NO_FATAL_FAILURE(create(row_count));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  FieldSchema field("vec", DataType::VECTOR_FP32, 4, false,
+                    std::make_shared<HnswIndexParams>(MetricType::L2, 8, 64));
+  auto index = std::make_shared<VectorColumnIndexer>(path_ + "/graph", field);
+  ASSERT_TRUE(index->open({true, true, false}).ok());
+  for (uint32_t i = 0; i < block_size; ++i) {
+    const float point[] = {static_cast<float>(i), 0, 0, 0};
+    ASSERT_TRUE(
+        index->insert({vector_column_params::DenseVector{point}}, i).ok());
+  }
+  // Same graph, two disjoint segment-row ranges. An offset error affects
+  // either the business predicate or the lookup of the global deletion ID.
+  BlockMeta block;
+  block.set_doc_count(block_size);
+  CombinedVectorColumnIndexer blocks({index, index}, {}, field,
+                                     *segment_->meta(), {block, block},
+                                     MetricType::L2);
+  const float target[] = {30.25f, 0, 0, 0};
+  const vector_column_params::VectorData query{
+      vector_column_params::DenseVector{target}};
+  vector_column_params::QueryParams params;
+  params.data_type = DataType::VECTOR_FP32;
+  params.dimension = 4;
+  params.topk = 8;
+  params.query_params = std::make_shared<HnswQueryParams>(128);
+  const auto search = [&](CombinedVectorColumnIndexer &source) {
+    std::vector<std::pair<uint64_t, float>> hits;
+    auto result = source.search(query, params);
+    EXPECT_TRUE(result) << (result ? "" : result.error().message());
+    if (result) {
+      for (auto it = result.value()->create_iterator(); it->valid(); it->next())
+        hits.emplace_back(it->doc_id(), it->score());
+    }
+    return hits;
+  };
+  const auto compare = [&](sqlengine::DocFilter &filter,
+                           const sqlengine::HnswFilterPlan &plan,
+                           CombinedVectorColumnIndexer &source,
+                           uint64_t first_fallback_row = UINT64_MAX) {
+    uint32_t calls = 0, fallback_rows = 0;
+    auto counted = EasyIndexFilter::Create([&](uint64_t row) {
+      ++calls;
+      if (row >= first_fallback_row) ++fallback_rows;
+      return filter.is_filtered(row);
+    });
+    params.filter = counted.get();
+    params.deletion_set = nullptr;
+    params.hnsw_business_filter = {};
+    auto expected = search(source);
+    ASSERT_EQ(expected.size(), params.topk);
+    ASSERT_GT(calls, 0u);
+    const auto expected_fallbacks = fallback_rows;
+    if (first_fallback_row != UINT64_MAX) ASSERT_GT(expected_fallbacks, 0u);
+    if (first_fallback_row != 0) ASSERT_LT(expected_fallbacks, calls);
+    calls = fallback_rows = 0;
+    plan.bind(params);
+    EXPECT_EQ(search(source), expected);
+    EXPECT_EQ(calls, expected_fallbacks);
+    EXPECT_EQ(fallback_rows, expected_fallbacks);
+    params.filter = nullptr;
+    params.hnsw_business_filter = {};
+    params.deletion_set = nullptr;
+  };
+
+  auto inverted = std::make_shared<sqlengine::QueryRelNode>();
+  inverted->set_op(sqlengine::QueryNodeOp::Q_IS_NOT_NULL);
+  inverted->set_left(std::make_shared<sqlengine::QueryIDNode>("i32"));
+  inverted->left()->set_op(sqlengine::QueryNodeOp::Q_ID);
+  auto info = std::make_shared<sqlengine::QueryInfo>();
+  info->set_invert_cond(inverted);
+  arrow::BooleanBuilder builder;
+  for (uint32_t row = 0; row < row_count; ++row)
+    ASSERT_TRUE(builder.Append(row % 3 != 0).ok());
+  auto bit = builder.Finish().ValueOrDie();
+  auto table = arrow::Table::Make(
+      arrow::schema({arrow::field("match", arrow::boolean())}),
+      arrow::ArrayVector{bit});
+  for (bool with_delete : {false, true}) {
+    SCOPED_TRACE(with_delete);
+    if (with_delete) {
+      deletes_->mark_deleted(uint64_t{10000} + block_size + 30);
+    }
+    for (bool with_invert : {false, true}) {
+      SCOPED_TRACE(with_invert);
+      auto selected =
+          with_invert ? info : std::make_shared<sqlengine::QueryInfo>();
+      // The first block fits in one chunk; the second crosses into the next.
+      auto plan = std::make_unique<arrow::acero::Declaration>(
+          "table_source",
+          arrow::acero::TableSourceNodeOptions(table, block_size + 17));
+      sqlengine::DocFilter bitmap(segment_, selected, std::move(plan), nullptr);
+      ASSERT_TRUE(bitmap.compute_filter().ok());
+      const auto prepared = bitmap.prepare_hnsw_filter();
+      EXPECT_EQ(std::holds_alternative<sqlengine::InvertedAndForwardFilter>(
+                    prepared.business),
+                with_invert);
+      EXPECT_EQ(std::holds_alternative<sqlengine::ForwardBitmapFilter>(
+                    prepared.business),
+                !with_invert);
+      ASSERT_NO_FATAL_FAILURE(compare(bitmap, prepared, blocks));
+      if (!with_invert && !with_delete) {
+        // Nodes beyond a writing block's captured span need the key callback.
+        BlockMeta captured;
+        captured.set_doc_count(32);
+        CombinedVectorColumnIndexer growing(
+            {index}, {}, field, *segment_->meta(), {captured}, MetricType::L2);
+        ASSERT_NO_FATAL_FAILURE(compare(bitmap, prepared, growing, 32));
+      }
+      if (!with_invert && with_delete && GetParam()) {
+        // An incomplete deletion slice makes the entire block ineligible.
+        BlockMeta oversized;
+        oversized.set_doc_count(row_count + 1);
+        CombinedVectorColumnIndexer uncovered(
+            {index}, {}, field, *segment_->meta(), {oversized}, MetricType::L2);
+        ASSERT_NO_FATAL_FAILURE(compare(bitmap, prepared, uncovered, 0));
+      }
+      if (with_invert) {
+        auto keys = bitmap.get_bf_by_keys_and_update(1.0f);
+        ASSERT_TRUE(keys.has_value());
+        params.bf_pks.emplace_back(std::move(*keys));
+        // BF-by-keys supplies block keys to the residual bitmap/deletion
+        // filter.
+        const auto remaining = bitmap.prepare_hnsw_filter();
+        EXPECT_TRUE(std::holds_alternative<sqlengine::ForwardBitmapFilter>(
+            remaining.business));
+        ASSERT_NO_FATAL_FAILURE(compare(bitmap, remaining, blocks, 0));
+        params.bf_pks.clear();
+      }
+    }
+    sqlengine::DocFilter invert_only(segment_, info, nullptr, nullptr);
+    ASSERT_TRUE(invert_only.compute_filter().ok());
+    const auto roaring = invert_only.prepare_hnsw_filter();
+    EXPECT_TRUE(std::holds_alternative<sqlengine::InvertedBitmapFilter>(
+        roaring.business));
+    ASSERT_NO_FATAL_FAILURE(compare(invert_only, roaring, blocks));
+    for (auto expr : {cp::call("less", {cp::field_ref("i32"), cp::literal(0)}),
+                      cp::call("is_finite", {cp::field_ref("f32")})}) {
+      SCOPED_TRACE(expr.ToString());
+      const bool stile = GetParam() && expr.call()->function_name == "less";
+      auto predicate = filter({"i32", "f32"}, std::move(expr));
+      ASSERT_TRUE(predicate->compute_filter().ok());
+      const auto prepared = predicate->prepare_hnsw_filter();
+      EXPECT_EQ(
+          std::holds_alternative<sqlengine::StileFilter>(prepared.business),
+          stile);
+      EXPECT_EQ(
+          std::holds_alternative<sqlengine::ArrowViewFilter>(prepared.business),
+          GetParam() && !stile);
+      EXPECT_EQ(std::holds_alternative<sqlengine::ArrowFetchFilter>(
+                    prepared.business),
+                !GetParam());
+      ASSERT_NO_FATAL_FAILURE(compare(*predicate, prepared, blocks));
+    }
+  }
+}
 
 TEST_P(IpcForwardFilterReadTest, ConstantPredicateView) {
   ASSERT_NO_FATAL_FAILURE(create(24));
@@ -1486,6 +1676,13 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
     EXPECT_EQ(uses_sealed_deletion(unfiltered), GetParam());
     EXPECT_EQ(filtered->hnsw_deletion_set(), nullptr);
     EXPECT_EQ(unfiltered.hnsw_deletion_set() != nullptr, GetParam());
+    for (const auto *candidate : {filtered.get(), &unfiltered}) {
+      auto plan = candidate->prepare_hnsw_filter();
+      EXPECT_EQ(plan.deletions != nullptr, GetParam());
+      EXPECT_EQ(plan.segment_deletions != nullptr, !GetParam());
+      EXPECT_EQ(std::holds_alternative<std::monostate>(plan.business),
+                candidate == &unfiltered);
+    }
     auto state = segment_->prepare_forward_read({}, true);
     ASSERT_TRUE(state.ok());
     EXPECT_EQ(state->deletion_filter != nullptr, GetParam());

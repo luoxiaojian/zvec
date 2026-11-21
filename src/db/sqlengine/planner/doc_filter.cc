@@ -104,6 +104,7 @@ Status DocFilter::compute_filter() {
     forward_rows_ = state.num_rows;
     forward_view_ = std::move(state.view);
     sealed_deletion_ = std::move(state.deletion_filter);
+    deletion_set_ = state.deletion_set;
     const auto &schema = state.schema;
     // Log outside segment synchronization.
     if (forward_view_) {
@@ -147,9 +148,7 @@ Status DocFilter::compute_filter() {
     auto prepared = segment_->prepare_forward_read({}, true);
     if (prepared.ok()) {
       sealed_deletion_ = std::move(prepared->deletion_filter);
-      if (!invert_cond_ && !forward_plan_) {
-        deletion_set_ = prepared->deletion_set;
-      }
+      deletion_set_ = prepared->deletion_set;
     }
   }
   return Status::OK();
@@ -158,6 +157,51 @@ Status DocFilter::compute_filter() {
 bool DocFilter::empty() const {
   return !(delete_filter_ || invert_filter_ || forward_plan_ ||
            forward_filter_expr_);
+}
+
+HnswFilterPlan DocFilter::prepare_hnsw_filter() const {
+  HnswFilterPlan plan;
+  if (delete_filter_) {
+    if (deletion_set_) {
+      plan.deletions = &deletion_set_;
+    } else {
+      // A custom segment may supply a different filter. Specialize only if
+      // the typed plan can account for the entire original key predicate.
+      if (sealed_deletion_) return {};
+      plan.segment_deletions =
+          dynamic_cast<const SegmentIndexFilter *>(delete_filter_.get());
+      if (!plan.segment_deletions) return {};
+    }
+  }
+
+  if (forward_filter_expr_) {
+    // Per-candidate forward evaluation is selected when the optimizer moves
+    // the entire inverted condition to forward execution.
+    if (!forward_prepared_ || invert_filter_ || forward_plan_) return {};
+    if (stile_predicate_) {
+      plan.business = StileFilter{stile_predicate_.get()};
+    } else if (forward_view_) {
+      plan.business =
+          ArrowViewFilter{forward_view_.get(), forward_filter_expr_.get()};
+    } else {
+      plan.business =
+          ArrowFetchFilter{segment_.get(),
+                           &query_info_->get_forward_filter_field_names(),
+                           forward_filter_expr_.get()};
+    }
+  } else if (forward_plan_) {
+    if (!forward_bitmap_) return {};
+    ForwardBitmapFilter forward(*forward_bitmap_);
+    if (invert_filter_) {
+      plan.business = InvertedAndForwardFilter{
+          InvertedBitmapFilter(invert_result_.get()), std::move(forward)};
+    } else {
+      plan.business = std::move(forward);
+    }
+  } else if (invert_filter_) {
+    plan.business = InvertedBitmapFilter(invert_result_.get());
+  }
+  return plan;
 }
 
 bool DocFilter::is_filtered(uint64_t id) const {
@@ -237,35 +281,14 @@ std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
   if (stile_predicate_) {
     return stile_predicate_->matches(static_cast<int64_t>(id));
   }
-  ExecBatchPtr exec_batch;
   if (forward_view_) {
-    exec_batch = forward_view_->read_row(id);
-  } else {
-    const auto &columns = query_info_->get_forward_filter_field_names();
-    // Literal predicates need a one-row batch but no scalar storage access.
-    exec_batch = columns.empty() ? std::make_shared<arrow::compute::ExecBatch>(
-                                       std::vector<arrow::Datum>{}, 1)
-                                 : segment_->fetch(columns, id);
+    return ArrowViewFilter{forward_view_.get(), forward_filter_expr_.get()}
+        .match(id);
   }
-  if (!exec_batch) {
-    LOG_ERROR("Fetch forward failed, id[%zu]", (size_t)id);
-    return std::nullopt;
-  }
-  auto maybe_result = arrow::compute::ExecuteScalarExpression(
-      *forward_filter_expr_, *exec_batch);
-  if (!maybe_result.ok()) {
-    LOG_ERROR("Execute scalar expression failed, id[%zu] err[%s]", (size_t)id,
-              maybe_result.status().ToString().c_str());
-    return std::nullopt;
-  }
-  arrow::Datum datum = maybe_result.MoveValueUnsafe();
-  if (datum.is_scalar()) {
-    const auto &scalar = datum.scalar_as<arrow::BooleanScalar>();
-    return scalar.is_valid && scalar.value;
-  }
-  LOG_ERROR("Datum is not scalar, id[%zu] type[%s]", (size_t)id,
-            datum.type()->ToString().c_str());
-  return std::nullopt;
+  return ArrowFetchFilter{segment_.get(),
+                          &query_info_->get_forward_filter_field_names(),
+                          forward_filter_expr_.get()}
+      .match(id);
 }
 
 }  // namespace zvec::sqlengine

@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <cstddef>
 #include <type_traits>
 #include <variant>
 #include "hnsw_context.h"
@@ -209,8 +210,9 @@ class HnswNodeFilter {
 };
 
 // The caller owns the state through the synchronous search, including any
-// fallback that needs the original index key.
-template <typename State>
+// fallback that needs the original index key. A fixed Reject function can
+// specialize shared block state without a per-node function pointer.
+template <auto Reject = nullptr, typename State>
 HnswNodeFilter make_hnsw_node_filter(State &state) {
   static const HnswNodeFilter::Operations ops{
       [](const void *p, uint64_t key) {
@@ -220,7 +222,13 @@ HnswNodeFilter make_hnsw_node_filter(State &state) {
          dist_t *dist, TopkHeap &topk, HnswContext *ctx, std::mutex *locks,
          uint32_t lock_mask) {
         const auto &state = *static_cast<const State *>(p);
-        auto filter = [&](node_id_t node) { return state.contains(node); };
+        auto filter = [&](node_id_t node) {
+          if constexpr (std::is_same_v<decltype(Reject), std::nullptr_t>) {
+            return state.contains(node);
+          } else {
+            return Reject(state, node);
+          }
+        };
         std::visit(
             [&](const auto *entity) {
               using Entity = std::decay_t<decltype(*entity)>;

@@ -42,6 +42,22 @@
 namespace zvec {
 
 class CombinedRecordBatchReader;
+class SegmentImpl;
+
+// The live deletion filter also serves typed HNSW business predicates when
+// the row mapping must be read under the segment lock (writing/Parquet).
+class SegmentIndexFilter final : public IndexFilter {
+ public:
+  SegmentIndexFilter(const DeleteStore::Ptr &delete_store,
+                     const std::shared_ptr<SegmentImpl> &impl)
+      : delete_store_(delete_store), impl_(impl) {}
+
+  bool is_filtered(uint64_t id) const override;
+
+ private:
+  DeleteStore::Ptr delete_store_;
+  std::weak_ptr<SegmentImpl> impl_;
+};
 
 class Segment {
  public:

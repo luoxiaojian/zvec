@@ -23,18 +23,10 @@
 namespace zvec {
 namespace {
 
-struct HnswBlockFilter {
-  const NodeDeletionSet *nodes;
-  const IndexFilter *by_key;
-
-  bool contains(uint32_t node) const {
-    return nodes->contains(node);
-  }
-
-  bool is_filtered(uint64_t key) const {
-    return by_key->is_filtered(key);
-  }
-};
+bool is_node_deleted(const vector_column_params::HnswFilterBlock &block,
+                     uint32_t node) {
+  return block.deletions->contains(node);
+}
 
 }  // namespace
 
@@ -199,11 +191,18 @@ Result<IndexResults::Ptr> VectorColumnIndexer::search(
     return tl::make_unexpected(engine_query_param_result.error());
   }
   auto &engine_query_param = engine_query_param_result.value();
-  const HnswBlockFilter block_filter{query_params.deletion_set,
-                                     query_params.filter};
-  if (block_filter.nodes && engine_query_param->filter && !is_sparse_ &&
+  const auto &business = query_params.hnsw_business_filter;
+  vector_column_params::HnswFilterBlock block{
+      business.predicate, query_params.block_offset, query_params.block_size,
+      query_params.deletion_set, query_params.filter};
+  if (block.by_key && engine_query_param->filter && !is_sparse_ &&
       field_schema_.index_type() == IndexType::HNSW) {
-    engine_query_param->filter->set(core::make_hnsw_node_filter(block_filter));
+    if (business.bind) {
+      business.bind(block, *engine_query_param->filter);
+    } else if (block.deletions) {
+      engine_query_param->filter->set(
+          core::make_hnsw_node_filter<&is_node_deleted>(block));
+    }
   }
   if (query_params.bf_pks.size() > 1) {
     LOG_ERROR("bf_pks size > 1 is not supported");

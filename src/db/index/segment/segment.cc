@@ -80,21 +80,10 @@ void global_init() {
 
 class SegmentImpl : public Segment,
                     public std::enable_shared_from_this<SegmentImpl> {
+  friend class SegmentIndexFilter;
+
  public:
   using Ptr = std::shared_ptr<SegmentImpl>;
-
-  class SegmentIndexFilter : public IndexFilter {
-   public:
-    SegmentIndexFilter(const DeleteStore::Ptr &delete_store,
-                       SegmentImpl::Ptr impl)
-        : delete_store_(delete_store), impl_(impl) {}
-
-    bool is_filtered(uint64_t id) const override;
-
-   private:
-    DeleteStore::Ptr delete_store_;
-    std::weak_ptr<SegmentImpl> impl_;
-  };
 
   SegmentImpl(const std::string &path, const CollectionSchema &schema,
               const SegmentMeta &segment_meta, const IDMap::Ptr &id_map,
@@ -524,7 +513,7 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
 // SegmentImpl implementation
 ////////////////////////////////////////////////////////////////////////////////////
 
-bool SegmentImpl::SegmentIndexFilter::is_filtered(uint64_t id) const {
+bool SegmentIndexFilter::is_filtered(uint64_t id) const {
   auto impl = impl_.lock();
   if (!impl) return false;
   auto result = impl->get_global_doc_id(id);

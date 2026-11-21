@@ -167,7 +167,6 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   }
   // set filter after brute force check
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
-  query_params.deletion_set = doc_filter_->hnsw_deletion_set();
   if (const auto &group_by = query_info_->group_by(); group_by) {
     auto group_fun = [this, &group_by](uint64_t row_id) -> std::string {
       auto table = segment_->fetch({group_by->group_by_field},
@@ -207,6 +206,14 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
         vector_cond->vector_sparse_values().data()};
   }
 
+  HnswFilterPlan filter_plan;
+  if (query_params.filter && query_params.bf_pks.empty() &&
+      !query_params.group_by && vector_cond->vector_schema()->is_dense_vector() &&
+      vector_cond->vector_schema()->index_type() == IndexType::HNSW &&
+      !(query_params.query_params && query_params.query_params->is_linear())) {
+    filter_plan = doc_filter_->prepare_hnsw_filter();
+    filter_plan.bind(query_params);
+  }
   auto vector_ret = vector_indexer->search(vector_data, query_params);
   if (!vector_ret) {
     return tl::make_unexpected(vector_ret.error());

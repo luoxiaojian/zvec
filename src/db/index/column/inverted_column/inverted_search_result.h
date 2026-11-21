@@ -75,6 +75,10 @@ class InvertedSearchResult
     }
   }
 
+  const roaring_bitmap_t *bitmap() const {
+    return bitmap_;
+  }
+
 
   size_t count() const override {
     if (bitmap_) {

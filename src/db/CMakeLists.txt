@@ -67,3 +67,9 @@ set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/index/column/vector_column/vect
   TARGET_DIRECTORY zvec zvec_index APPEND PROPERTY INCLUDE_DIRECTORIES
   "${PROJECT_ROOT_DIR}/src/core"
 )
+
+# SQL instantiates the same traversal with its concrete business predicates.
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/sqlengine/planner/hnsw_filter_dispatch.cc"
+  TARGET_DIRECTORY zvec zvec_sqlengine APPEND PROPERTY INCLUDE_DIRECTORIES
+  "${PROJECT_ROOT_DIR}/src/core"
+)

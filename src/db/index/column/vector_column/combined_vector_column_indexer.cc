@@ -383,7 +383,15 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
                               scale_factor, normal_indexers_[i]})
                     : nullptr,
         query_params.extra_params,
-        block_deletions ? &block_deletions : nullptr};
+        block_deletions ? &block_deletions : nullptr,
+        query_params.hnsw_business_filter,
+        block_offsets_[i],
+        blocks_[i].doc_count_};
+    // The original key filter also checks deletions. A partial binding must
+    // not drop that check if the requested block is outside the captured rows.
+    if (query_params.deletion_set && !block_deletions) {
+      modified_query_params.hnsw_business_filter = {};
+    }
 
     if (!query_params.bf_pks.empty()) {
       modified_query_params.bf_pks.emplace_back(block_bf_pks[i]);

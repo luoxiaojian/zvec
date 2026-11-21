@@ -23,6 +23,7 @@
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/analyzer/query_node.h"
+#include "db/sqlengine/planner/hnsw_filter_dispatch.h"
 #include "db/sqlengine/stile/predicate.h"
 
 namespace zvec::sqlengine {
@@ -53,9 +54,15 @@ class DocFilter : public IndexFilter {
 
   bool empty() const;
 
+  // Only expose the bare set when it accounts for the whole filter.
   const NodeDeletionSet *hnsw_deletion_set() const {
+    if (invert_cond_ || forward_plan_ || forward_filter_expr_) return nullptr;
     return deletion_set_ ? &deletion_set_ : nullptr;
   }
+
+  // Call after get_bf_by_keys_and_update(), which can consume the inverted
+  // condition. A default plan leaves the original key filter in charge.
+  HnswFilterPlan prepare_hnsw_filter() const;
 
  private:
   friend class zvec::test::ForwardFilterReadTest;

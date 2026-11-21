@@ -26,6 +26,7 @@
 
 namespace zvec {
 class NodeDeletionSet;
+class SegmentIndexFilter;
 class VectorColumnIndexer;
 
 namespace vector_column_params {
@@ -92,6 +93,28 @@ struct RefinerParam {
   std::shared_ptr<VectorColumnIndexer> reference_indexer{nullptr};
 };
 
+// Lives through one synchronous block search. The binder may narrow the
+// borrowed predicate and adjust its row offset for this block.
+struct HnswFilterBlock {
+  const void *predicate;
+  uint64_t offset;
+  uint64_t size;
+  const NodeDeletionSet *deletions;
+  const IndexFilter *by_key;
+  const void *chunk{nullptr};
+  const SegmentIndexFilter *segment_deletions{nullptr};
+
+  bool is_filtered(uint64_t key) const {
+    return by_key->is_filtered(key);
+  }
+};
+
+struct HnswBusinessFilter {
+  const void *predicate{nullptr};
+  // Leave the existing key filter in place if this block cannot specialize.
+  void (*bind)(HnswFilterBlock &, core::IndexFilter &){nullptr};
+};
+
 // This is an internal version, while QueryParams in doc.h is an interface ver
 struct QueryParams {
   DataType data_type{DataType::UNDEFINED};
@@ -107,9 +130,12 @@ struct QueryParams {
   std::shared_ptr<RefinerParam> refiner_param{nullptr};
 
   ailego::Params extra_params{};
-  // Optional equivalent of filter for an identity-key HNSW traversal.
-  // Borrowed through this synchronous search, in the indexer's row space.
+  // Borrowed for this synchronous search. With a business binder this is its
+  // deletion component. Otherwise it must represent the complete key filter.
   const NodeDeletionSet *deletion_set{nullptr};
+  HnswBusinessFilter hnsw_business_filter{};
+  uint32_t block_offset{0};
+  uint32_t block_size{0};
 };
 }  // namespace vector_column_params
 }  // namespace zvec
