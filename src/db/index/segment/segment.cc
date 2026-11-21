@@ -2811,6 +2811,7 @@ class SealedDeletionFilter final : public IndexFilter {
 arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
     const std::vector<std::string> &columns, bool with_deletion) try {
   PersistedReadStatePtr state;
+  NodeDeletionSet deletion_set;
   {
     std::shared_lock<std::shared_mutex> lock(seg_mtx_);
     state = persisted_read_state_;
@@ -2828,6 +2829,10 @@ arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
       ARROW_ASSIGN_OR_RAISE(auto fields, forward_fields_unsafe(columns));
       return ForwardReadState{arrow::schema(std::move(fields)), rows, nullptr,
                               nullptr};
+    }
+    if (with_deletion && state->deletion_filter.ok() &&
+        *state->deletion_filter) {
+      deletion_set = NodeDeletionSet(doc_ids_, *delete_store_);
     }
   }
 
@@ -2856,7 +2861,8 @@ arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
   if (!view) return arrow::Status::Invalid("Invalid forward read view");
   return ForwardReadState{view->schema(),
                           static_cast<uint64_t>(state->num_rows),
-                          std::move(view), std::move(deletion_filter)};
+                          std::move(view), std::move(deletion_filter),
+                          deletion_set};
 } catch (const std::bad_alloc &) {
   return arrow::Status::OutOfMemory("Capture forward read view");
 } catch (const std::exception &error) {

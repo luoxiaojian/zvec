@@ -102,7 +102,7 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
     ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_WARN);
     FileHelper::RemoveDirectory(path_);
   }
-  void create(int segment_size = 1000) {
+  void create(int segment_size = 1000, int count = 2096) {
     CollectionSchema schema("forward_collection");
     schema.set_max_doc_count_per_segment(segment_size);
     schema.add_field(std::make_shared<FieldSchema>(
@@ -128,7 +128,6 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
     ASSERT_TRUE(created.has_value()) << created.error().message();
     collection_ = created.value();
     std::vector<Doc> docs;
-    const int count = segment_size == 1000 ? 2096 : 96;
     for (int i = 0; i < count; ++i) {
       auto item = doc(i);
       if (i >= 96) {
@@ -168,14 +167,14 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
     value.set<std::vector<float>>("vec", {static_cast<float>(i), 1, 2, 3});
     return value;
   }
-  SearchQuery query(std::string filter = "value > 48") {
+  SearchQuery query(std::string filter = "value > 48", float x = 60.25f) {
     SearchQuery q;
     q.topk_ = 8;
     q.filter_ = std::move(filter);
     q.output_fields_ = std::vector<std::string>{"value", "bucket"};
     q.target_.field_name_ = "vec";
     q.target_.query_params_ = std::make_shared<HnswQueryParams>(200);
-    const std::vector<float> vector{60.25f, 1, 2, 3};
+    const std::vector<float> vector{x, 1, 2, 3};
     q.target_.set_vector(
         std::string(reinterpret_cast<const char *>(vector.data()),
                     vector.size() * sizeof(float)));
@@ -268,7 +267,7 @@ TEST_P(ForwardFilterCollectionTest,
 }
 
 TEST_P(ForwardFilterCollectionTest, OptimizerBackendSelection) {
-  ASSERT_NO_FATAL_FAILURE(create(10000));
+  ASSERT_NO_FATAL_FAILURE(create(10000, 96));
   ASSERT_TRUE(collection_->optimize().ok());
   ASSERT_NO_FATAL_FAILURE(reopen());
   const std::set<std::string> expected{"pk_56", "pk_57", "pk_58", "pk_59",
@@ -302,11 +301,7 @@ TEST_P(ForwardFilterCollectionTest, CandidateIdsInLaterSegments) {
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_TRUE(collection_->optimize().ok());
   ASSERT_NO_FATAL_FAILURE(reopen());
-  auto request = query("value > -101 AND value < -99");
-  const std::vector<float> vector{1500.25f, 1, 2, 3};
-  request.target_.set_vector(
-      std::string(reinterpret_cast<const char *>(vector.data()),
-                  vector.size() * sizeof(float)));
+  auto request = query("value > -101 AND value < -99", 1500.25f);
   const std::set<std::string> expected{"pk_1497", "pk_1498", "pk_1499",
                                        "pk_1500", "pk_1501", "pk_1502",
                                        "pk_1503", "pk_1504"};
@@ -322,8 +317,37 @@ TEST_P(ForwardFilterCollectionTest, CandidateIdsInLaterSegments) {
   expect_sealed_access();
 }
 
+TEST_P(ForwardFilterCollectionTest, HnswDeletionInLaterSealedSegment) {
+  // Both full segments exceed HNSW's 1000-row brute-force threshold.
+  ASSERT_NO_FATAL_FAILURE(create(1048, 2096));
+  auto optimized = collection_->optimize();
+  ASSERT_TRUE(optimized.ok()) << optimized.message();
+  auto q = query("", 1500.25f);
+  q.topk_ = 4;
+  q.output_fields_.reset();
+  EXPECT_EQ(keys(collection_->query(q)), (std::set<std::string>{
+                "pk_1499", "pk_1500", "pk_1501", "pk_1502"}));
+  auto deleted = collection_->delete_({"pk_1500", "pk_1501"});
+  ASSERT_TRUE(deleted) << deleted.error().message();
+  for (const auto &status : deleted.value()) ASSERT_TRUE(status.ok());
+
+  const std::set<std::string> expected{"pk_1498", "pk_1499", "pk_1502",
+                                       "pk_1503"};
+  EXPECT_EQ(keys(collection_->query(q)), expected);
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  EXPECT_EQ(keys(collection_->query(q)), expected);
+  auto ids = collection_->query_internal_ids(q);
+  ASSERT_TRUE(ids) << ids.error().message();
+  EXPECT_EQ(ids->ids, (std::vector<int64_t>{1499, 1502, 1498, 1503}));
+
+  auto filtered = query("value > 48 AND value < 64");
+  filtered.topk_ = 4;
+  EXPECT_EQ(keys(collection_->query(filtered)),
+            (std::set<std::string>{"pk_58", "pk_59", "pk_62", "pk_63"}));
+}
+
 TEST_P(ForwardFilterCollectionTest, MultiQueryGroupByAndErrors) {
-  ASSERT_NO_FATAL_FAILURE(create(10000));
+  ASSERT_NO_FATAL_FAILURE(create(10000, 96));
   ASSERT_TRUE(collection_->optimize().ok());
   reopen();
   auto single = query();
@@ -434,7 +458,7 @@ TEST_P(ForwardFilterCollectionTest, WritableFlushSwitchOptimizeAndDdlHybrid) {
 }
 
 TEST_P(ForwardFilterCollectionTest, AppendAfterPreparationIsEvaluatedLive) {
-  ASSERT_NO_FATAL_FAILURE(create(10000));
+  ASSERT_NO_FATAL_FAILURE(create(10000, 96));
   probe_->block = true;
   auto pending = std::async(std::launch::async,
                             [&] { return collection_->query(query()); });

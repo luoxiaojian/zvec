@@ -1463,6 +1463,9 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
   for (uint64_t doc_id : {10000u, 10007u, 10100u, 11024u, 12052u}) {
     ASSERT_TRUE(segment_->Delete(doc_id).ok());
   }
+  auto writing = segment_->prepare_forward_read({}, true);
+  ASSERT_TRUE(writing.ok());
+  EXPECT_FALSE(writing->deletion_set);
   // First the dumped segment object a writable collection keeps using, then
   // the same data reopened from disk.
   ASSERT_TRUE(segment_->dump().ok());
@@ -1481,13 +1484,25 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
     // Sealed IPC replaces the locked segment lookup; Parquet keeps it.
     EXPECT_EQ(uses_sealed_deletion(*filtered), GetParam());
     EXPECT_EQ(uses_sealed_deletion(unfiltered), GetParam());
+    EXPECT_EQ(filtered->hnsw_deletion_set(), nullptr);
+    EXPECT_EQ(unfiltered.hnsw_deletion_set() != nullptr, GetParam());
     auto state = segment_->prepare_forward_read({}, true);
     ASSERT_TRUE(state.ok());
     EXPECT_EQ(state->deletion_filter != nullptr, GetParam());
     EXPECT_EQ(state->deletion_filter,
               segment_->prepare_forward_read({}, true)->deletion_filter);
-    EXPECT_EQ(segment_->prepare_forward_read({}, false)->deletion_filter,
-              nullptr);  // Only built on request.
+    auto without_deletion = segment_->prepare_forward_read({}, false);
+    ASSERT_TRUE(without_deletion.ok());
+    EXPECT_EQ(without_deletion->deletion_filter, nullptr);
+    EXPECT_FALSE(without_deletion->deletion_set);
+    const auto rows = state->deletion_set;
+    EXPECT_EQ(static_cast<bool>(rows), GetParam());
+    // In a block starting at segment row 2, node 5 is global doc ID 10007.
+    const auto block = rows.subspan(2, 8);
+    EXPECT_EQ(static_cast<bool>(block), GetParam());
+    EXPECT_FALSE(block.contains(8));
+    EXPECT_FALSE(rows.subspan(2052, 2));
+    EXPECT_FALSE(rows.subspan(UINT64_MAX, 1));
     auto expect_parity = [&] {
       for (uint64_t row = 0; row < 2053; ++row) {
         const bool deleted = live->is_filtered(row);
@@ -1495,6 +1510,10 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
         ASSERT_EQ(unfiltered.is_filtered(row), deleted) << row;
         if (state->deletion_filter) {
           ASSERT_EQ(state->deletion_filter->is_filtered(row), deleted) << row;
+          ASSERT_EQ(rows.contains(row), deleted) << row;
+          if (row >= 2 && row < 10) {
+            ASSERT_EQ(block.contains(row - 2), deleted) << row;
+          }
         }
       }
       // Rows outside the segment are not deleted rows, as with get_filter().

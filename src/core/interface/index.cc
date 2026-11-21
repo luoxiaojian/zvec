@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <ailego/pattern/scope_guard.h>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -811,19 +812,18 @@ int Index::search(const VectorData &vector_data,
     return core::IndexError_Runtime;
   }
 
+  // The pooled context may borrow callbacks from this synchronous search.
+  auto reset_context = ailego::ScopeGuard::Make([&] {
+    if (context) context->reset();
+  });
   int prepare_ret = _prepare_for_search(vector_data, search_param, context);
   if (prepare_ret != 0) {
     LOG_ERROR("Failed to prepare for search");
-    context->reset();
     return prepare_ret;
   }
 
   if (is_sparse_) {
-    int ret = _sparse_search(vector_data, search_param, result, context);
-    if (context) {
-      context->reset();
-    }
-    return ret;
+    return _sparse_search(vector_data, search_param, result, context);
   }
 
   // dense supports refiner, but sparse doesn't
@@ -834,19 +834,16 @@ int Index::search(const VectorData &vector_data,
     auto &reference_index = search_param->refiner_param->reference_index;
     if (reference_index == nullptr) {
       LOG_ERROR("Reference index is not set");
-      context->reset();
       return core::IndexError_Runtime;
     }
     if (reference_index->param_.index_type != IndexType::kFlat &&
         reference_index->param_.index_type != IndexType::kIVF) {
       LOG_ERROR("Reference index must be Flat or IVF");
-      context->reset();
       return core::IndexError_Runtime;
     }
 
     const int coarse_topk = _get_coarse_search_topk(search_param);
     if (coarse_topk < 0) {
-      context->reset();
       return coarse_topk;
     }
     try {
@@ -858,7 +855,6 @@ int Index::search(const VectorData &vector_data,
       ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
                                  &query_meta);
       if (ret != 0) {
-        context->reset();
         return ret;
       }
       // Refine replaces the coarse scores; only candidate membership and order
@@ -868,9 +864,6 @@ int Index::search(const VectorData &vector_data,
       if (_execute_dense_search(query, query_meta, search_param, context,
                                 &keys[0]) != 0) {
         LOG_ERROR("Failed to search");
-        if (context) {
-          context->reset();
-        }
         return core::IndexError_Runtime;
       }
       result->reverted_vector_list_.clear();
@@ -882,14 +875,8 @@ int Index::search(const VectorData &vector_data,
       // instead of terminating the process.
       LOG_ERROR("Failed to allocate coarse result heap for %d candidates",
                 coarse_topk);
-      if (context) {
-        context->reset();
-      }
       return core::IndexError_NoMemory;
     }
-  }
-  if (context) {
-    context->reset();
   }
   return ret;
 }
@@ -1148,6 +1135,9 @@ int Index::_refine_dense_candidates(
 
   auto &context = acquire_context();
   if (!context) return core::IndexError_Runtime;
+  auto reset_context = ailego::ScopeGuard::Make([&] {
+    if (context) context->reset();
+  });
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter && search_param->filter->is_valid()) {
@@ -1166,23 +1156,15 @@ int Index::_refine_dense_candidates(
   int ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
                                  &query_meta);
   if (ret != 0) {
-    context->reset();
     return ret;
   }
   ret =
       streamer_->search_bf_by_p_keys_impl(query, keys, query_meta, 1, context);
   if (ret != 0) {
-    if (context) {
-      context->reset();
-    }
     return ret;
   }
-  ret = _collect_dense_result(vector_data, query_meta, search_param, result,
-                              context);
-  if (context) {
-    context->reset();
-  }
-  return ret;
+  return _collect_dense_result(vector_data, query_meta, search_param, result,
+                               context);
 }
 
 int Index::_collect_dense_result(

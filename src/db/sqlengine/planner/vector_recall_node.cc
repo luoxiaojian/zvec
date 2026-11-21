@@ -167,6 +167,7 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   }
   // set filter after brute force check
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
+  query_params.deletion_set = doc_filter_->hnsw_deletion_set();
   if (const auto &group_by = query_info_->group_by(); group_by) {
     auto group_fun = [this, &group_by](uint64_t row_id) -> std::string {
       auto table = segment_->fetch({group_by->group_by_field},

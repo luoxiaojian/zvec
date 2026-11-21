@@ -17,6 +17,7 @@
 #include <limits>
 #include <numeric>
 #include <unordered_map>
+#include "db/index/common/node_deletion_set.h"
 
 namespace zvec {
 
@@ -363,6 +364,11 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
           });
     }
 
+    const auto block_deletions =
+        query_params.deletion_set
+            ? query_params.deletion_set->subspan(block_offsets_[i],
+                                                 blocks_[i].doc_count_)
+            : NodeDeletionSet{};
     vector_column_params::QueryParams modified_query_params{
         query_params.data_type,
         query_params.dimension,
@@ -376,7 +382,8 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
                           new vector_column_params::RefinerParam{
                               scale_factor, normal_indexers_[i]})
                     : nullptr,
-        query_params.extra_params};
+        query_params.extra_params,
+        block_deletions ? &block_deletions : nullptr};
 
     if (!query_params.bf_pks.empty()) {
       modified_query_params.bf_pks.emplace_back(block_bf_pks[i]);

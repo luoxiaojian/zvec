@@ -116,6 +116,10 @@ class HnswStreamerEntity : public HnswEntity {
     LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
   }
 
+  bool has_identity_keys() const {
+    return !use_key_info_map_;
+  }
+
  public:
   //! Constructor
   HnswStreamerEntity(IndexStreamer::Stats &stats);

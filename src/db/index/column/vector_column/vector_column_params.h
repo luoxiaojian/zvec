@@ -25,6 +25,7 @@
 #include "db/index/common/index_filter.h"
 
 namespace zvec {
+class NodeDeletionSet;
 class VectorColumnIndexer;
 
 namespace vector_column_params {
@@ -106,6 +107,9 @@ struct QueryParams {
   std::shared_ptr<RefinerParam> refiner_param{nullptr};
 
   ailego::Params extra_params{};
+  // Optional equivalent of filter for an identity-key HNSW traversal.
+  // Borrowed through this synchronous search, in the indexer's row space.
+  const NodeDeletionSet *deletion_set{nullptr};
 };
 }  // namespace vector_column_params
 }  // namespace zvec

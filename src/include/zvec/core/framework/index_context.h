@@ -214,6 +214,11 @@ class IndexContext {
     filter_.set(std::forward<T>(func));
   }
 
+  //! Copy the stored callable, preserving its concrete target type.
+  void copy_filter(const IndexFilter &filter) {
+    filter_ = filter;
+  }
+
   //! Reset the filter of context
   void reset_filter() {
     filter_.reset();

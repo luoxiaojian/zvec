@@ -34,6 +34,7 @@
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
+#include "db/index/common/node_deletion_set.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/forward_read_view.h"
 #include "db/index/storage/base_forward_store.h"
@@ -56,13 +57,16 @@ class Segment {
     // per-candidate segment lock. The delete bitmap is still read live.
     // Null selects get_filter().
     IndexFilter::Ptr deletion_filter;
+    // Borrows the sealed segment's row IDs for a synchronous HNSW search.
+    // Callers must keep the segment alive and stable while using the set.
+    NodeDeletionSet deletion_set{};
   };
 
   // Captures how a query reads `columns` per candidate. Sealed IPC segments
   // return an owning view over columns prepared at open/seal/DDL; writing,
   // Parquet and segments whose preparation failed return a null view (locked
   // fetch, which reads live rows and must be protected from close/DDL).
-  // `with_deletion` also requests deletion_filter.
+  // `with_deletion` also requests the deletion filter and its borrowed set.
   virtual arrow::Result<ForwardReadState> prepare_forward_read(
       const std::vector<std::string> &columns, bool with_deletion) = 0;
 

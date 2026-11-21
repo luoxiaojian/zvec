@@ -61,3 +61,9 @@ set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/sqlengine/stile/predicate.cc"
   TARGET_DIRECTORY zvec zvec_sqlengine APPEND PROPERTY COMPILE_OPTIONS
   "$<$<CXX_COMPILER_ID:Clang,AppleClang>:-ffp-model=precise>"
 )
+
+# The block indexer instantiates HNSW traversal with the DB deletion set.
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/index/column/vector_column/vector_column_indexer.cc"
+  TARGET_DIRECTORY zvec zvec_index APPEND PROPERTY INCLUDE_DIRECTORIES
+  "${PROJECT_ROOT_DIR}/src/core"
+)

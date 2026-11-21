@@ -62,6 +62,12 @@ class IndexFilter {
     return (!!filter_);
   }
 
+  //! Retrieve the concrete callable when a search supports a typed fast path.
+  template <typename T>
+  const T *target() const noexcept {
+    return filter_.target<T>();
+  }
+
  private:
   //! Members
   std::function<bool(uint64_t key)> filter_{};

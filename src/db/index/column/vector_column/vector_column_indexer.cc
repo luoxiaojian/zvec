@@ -15,10 +15,28 @@
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/db/status.h>
+#include "core/algorithm/hnsw/hnsw_node_filter.h"
+#include "db/index/common/node_deletion_set.h"
 #include "engine_helper.hpp"
 
 
 namespace zvec {
+namespace {
+
+struct HnswBlockFilter {
+  const NodeDeletionSet *nodes;
+  const IndexFilter *by_key;
+
+  bool contains(uint32_t node) const {
+    return nodes->contains(node);
+  }
+
+  bool is_filtered(uint64_t key) const {
+    return by_key->is_filtered(key);
+  }
+};
+
+}  // namespace
 
 Status VectorColumnIndexer::open(
     const vector_column_params::ReadOptions &read_options) {
@@ -181,6 +199,12 @@ Result<IndexResults::Ptr> VectorColumnIndexer::search(
     return tl::make_unexpected(engine_query_param_result.error());
   }
   auto &engine_query_param = engine_query_param_result.value();
+  const HnswBlockFilter block_filter{query_params.deletion_set,
+                                     query_params.filter};
+  if (block_filter.nodes && engine_query_param->filter && !is_sparse_ &&
+      field_schema_.index_type() == IndexType::HNSW) {
+    engine_query_param->filter->set(core::make_hnsw_node_filter(block_filter));
+  }
   if (query_params.bf_pks.size() > 1) {
     LOG_ERROR("bf_pks size > 1 is not supported");
     return tl::make_unexpected(

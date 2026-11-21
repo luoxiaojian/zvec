@@ -33,6 +33,7 @@
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
+#include "hnsw_node_filter.h"
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -1689,6 +1690,74 @@ TEST_F(HnswStreamerTest, TestFilter) {
   ASSERT_EQ(99, results3[0].key());
   ASSERT_EQ(102, results3[1].key());
   ASSERT_EQ(98, results3[2].key());
+}
+
+TEST_F(HnswStreamerTest, NodeFilterUsesNodeIdsOnlyForIdentityKeys) {
+  for (bool use_map : {false, true}) {
+    SCOPED_TRACE(use_map);
+    auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_NE(nullptr, storage);
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, use_map);
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(dir_ + (use_map ? "mapped" : "identity"), true));
+    ASSERT_EQ(0, streamer->open(storage));
+
+    auto ctx = streamer->create_context();
+    auto *hnsw = dynamic_cast<HnswContext *>(ctx.get());
+    ASSERT_NE(nullptr, hnsw);
+    const uint64_t key = use_map ? 73 : 0;
+    float vector[dim]{};
+    IndexQueryMeta meta(IndexMeta::DT_FP32, dim);
+    ASSERT_EQ(0, streamer->add_impl(key, vector, meta, ctx));
+    hnsw->set_bruteforce_threshold(0);
+    hnsw->set_force_padding_topk(false);
+    hnsw->set_topk(1);
+
+    struct Predicate {
+      uint64_t key;
+      mutable int node_calls{0};
+      mutable int key_calls{0};
+
+      bool contains(node_id_t node) const {
+        ++node_calls;
+        return node == 0;
+      }
+
+      bool is_filtered(uint64_t candidate) const {
+        ++key_calls;
+        return candidate == key;
+      }
+    } predicate{key};
+    IndexFilter filter;
+    filter.set(make_hnsw_node_filter(predicate));
+    ctx->copy_filter(filter);
+    ASSERT_EQ(0, streamer->search_impl(vector, meta, ctx));
+    EXPECT_TRUE(ctx->result().empty());
+    EXPECT_EQ(use_map ? 0 : 1, predicate.node_calls);
+    EXPECT_EQ(use_map ? 1 : 0, predicate.key_calls);
+
+    // A brute-force scan always supplies index keys to the same filter.
+    ASSERT_EQ(0, streamer->search_bf_impl(vector, meta, ctx));
+    EXPECT_TRUE(ctx->result().empty());
+    EXPECT_EQ(use_map ? 0 : 1, predicate.node_calls);
+    EXPECT_EQ(use_map ? 2 : 1, predicate.key_calls);
+
+    ctx->set_filter([](uint64_t) { return false; });
+    ASSERT_EQ(0, streamer->search_impl(vector, meta, ctx));
+    ASSERT_EQ(1u, ctx->result().size());
+    EXPECT_EQ(key, ctx->result()[0].key());
+    ctx->copy_filter(filter);
+    ctx->reset_filter();
+    ASSERT_EQ(0, streamer->search_impl(vector, meta, ctx));
+    ASSERT_EQ(1u, ctx->result().size());
+    EXPECT_EQ(key, ctx->result()[0].key());
+    EXPECT_EQ(use_map ? 0 : 1, predicate.node_calls);
+    EXPECT_EQ(use_map ? 2 : 1, predicate.key_calls);
+  }
 }
 
 TEST_F(HnswStreamerTest, TestMaxIndexSize) {

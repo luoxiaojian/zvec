@@ -61,6 +61,7 @@ Status DocFilter::compute_filter() {
   forward_view_.reset();
   forward_rows_ = 0;
   sealed_deletion_.reset();
+  deletion_set_ = {};
   if (invert_cond_) {
     InvertSearch search(segment_.get());
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
@@ -87,7 +88,7 @@ Status DocFilter::compute_filter() {
     forward_bitmap_ = forward_table->column(0);
   }
 
-  // A sealed IPC segment also supplies a lock-free deletion check. Only a
+  // A sealed IPC segment can omit the segment lock on each lookup. Only a
   // filter that exists now is replaced, so the delete bitmap observed at
   // construction still decides whether deletion is checked at all.
   const bool with_deletion = delete_filter_ != nullptr;
@@ -146,6 +147,9 @@ Status DocFilter::compute_filter() {
     auto prepared = segment_->prepare_forward_read({}, true);
     if (prepared.ok()) {
       sealed_deletion_ = std::move(prepared->deletion_filter);
+      if (!invert_cond_ && !forward_plan_) {
+        deletion_set_ = prepared->deletion_set;
+      }
     }
   }
   return Status::OK();

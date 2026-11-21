@@ -53,6 +53,10 @@ class DocFilter : public IndexFilter {
 
   bool empty() const;
 
+  const NodeDeletionSet *hnsw_deletion_set() const {
+    return deletion_set_ ? &deletion_set_ : nullptr;
+  }
+
  private:
   friend class zvec::test::ForwardFilterReadTest;
 
@@ -81,6 +85,7 @@ class DocFilter : public IndexFilter {
   // Sealed IPC replacement for delete_filter_: same results without a
   // per-candidate segment lock. Null keeps delete_filter_.
   IndexFilter::Ptr sealed_deletion_;
+  NodeDeletionSet deletion_set_;
 };
 
 }  // namespace zvec::sqlengine

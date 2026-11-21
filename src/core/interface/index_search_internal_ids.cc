@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <ailego/pattern/scope_guard.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/index.h>
@@ -81,6 +82,9 @@ int Index::search_internal_ids(const VectorData &vector_data,
   auto &context = acquire_context();
   if (!context) return core::IndexError_Runtime;
 
+  auto reset_context = ailego::ScopeGuard::Make([&] {
+    if (context) context->reset();
+  });
   int ret = _prepare_for_search(vector_data, search_param, context);
   std::string transformed_query;
   const void *query = nullptr;
@@ -122,7 +126,6 @@ int Index::search_internal_ids(const VectorData &vector_data,
       }
     }
   }
-  context->reset();
   return ret;
 }
 
